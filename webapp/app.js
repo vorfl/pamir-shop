@@ -1,5 +1,5 @@
 /* PAMIR — витрина (Telegram Mini App). Чистый JS, без сборки.
- * Этап 1: каталог. Этап 2: корзина и оформление (отправка заказа — этап 3).
+ * Этап 1: каталог. Этап 2: корзина и оформление. Этап 3: отправка заказа на сервер.
  */
 (function () {
   'use strict';
@@ -73,7 +73,15 @@
       errFix: 'Перевірте виділені поля',
       doneTitle: 'Замовлення прийнято',
       doneText: 'Ми підтвердимо наявність і напишемо вам у Telegram.',
-      doneStub: 'Тестова версія: замовлення поки не надсилається магазину.',
+      doneStub: 'Демо-режим: замовлення нікуди не надсилається.',
+      doneTest: 'Тестове замовлення: у таблиці воно позначене як test.',
+      sending: 'Надсилаємо…',
+      errSend: 'Не вдалося надіслати замовлення. Перевірте інтернет і спробуйте ще раз.',
+      errRate: 'Забагато замовлень за годину. Спробуйте пізніше або напишіть нам у Telegram.',
+      errAuth: 'Не вдалося підтвердити ваш Telegram-акаунт. Закрийте магазин і відкрийте його знову з бота.',
+      errNeedTg: 'Замовлення оформлюється в Telegram. Відкрийте магазин у нашому боті:',
+      errTestOff: 'Тестові замовлення вимкнені на сервері (властивість ALLOW_TEST_ORDERS).',
+      cartChanged: 'Ціни або наявність щойно змінилися. Перевірте кошик і оформіть замовлення ще раз.',
       doneBack: 'Повернутися до каталогу'
     },
     ru: {
@@ -143,7 +151,15 @@
       errFix: 'Проверьте выделенные поля',
       doneTitle: 'Заказ принят',
       doneText: 'Мы подтвердим наличие и напишем вам в Telegram.',
-      doneStub: 'Тестовая версия: заказ пока не отправляется магазину.',
+      doneStub: 'Демо-режим: заказ никуда не отправляется.',
+      doneTest: 'Тестовый заказ: в таблице он помечен как test.',
+      sending: 'Отправляем…',
+      errSend: 'Не удалось отправить заказ. Проверьте интернет и попробуйте ещё раз.',
+      errRate: 'Слишком много заказов за час. Попробуйте позже или напишите нам в Telegram.',
+      errAuth: 'Не удалось подтвердить ваш Telegram-аккаунт. Закройте магазин и откройте его снова из бота.',
+      errNeedTg: 'Заказ оформляется в Telegram. Откройте магазин в нашем боте:',
+      errTestOff: 'Тестовые заказы выключены на сервере (свойство ALLOW_TEST_ORDERS).',
+      cartChanged: 'Цены или наличие только что изменились. Проверьте корзину и оформите заказ ещё раз.',
       doneBack: 'Вернуться в каталог'
     }
   };
@@ -206,7 +222,9 @@
     scrollY: 0,
     cart: { t: 0, i: [] }, // i: [{ id, g (граммы, 0 = штука/упаковка), q, pr (цена за единицу), was? }]
     form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '' },
-    done: null
+    done: null,
+    cartNotice: '',
+    rid: ''            // id попытки заказа: повторная отправка не создаст второй заказ
   };
 
   var el = {
@@ -316,7 +334,7 @@
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 20000);
 
-    fetch(catalogUrl(), ctrl ? { signal: ctrl.signal } : undefined)
+    return fetch(catalogUrl(), ctrl ? { signal: ctrl.signal } : undefined)
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -663,7 +681,7 @@
   /* --------------------- Экраны и нижняя кнопка --------------------- */
   function go(view) {
     if (state.view === 'catalog') state.scrollY = window.scrollY || 0;
-    if (state.view === 'cart' && view !== 'cart') ackPriceChanges();
+    if (state.view === 'cart' && view !== 'cart') { ackPriceChanges(); state.cartNotice = ''; }
     if (view === 'checkout' && !(cartTotal() > 0)) view = 'cart';
     if (state.sheet) closeSheet();
     state.view = view;
@@ -744,6 +762,7 @@
 
   function cartHtml() {
     var html = pageHead(t('cart'));
+    if (state.cartNotice) html += '<p class="form__err" role="alert">' + esc(state.cartNotice) + '</p>';
     if (!state.cart.i.length) {
       return html + '<div class="state">' + MARK +
         '<p class="state__title">' + esc(t('cartEmptyTitle')) + '</p>' +
@@ -829,7 +848,7 @@
   }
 
   function option(group, value, ico, label) {
-    return '<label class="opt"><input type="radio" name="' + group + '" value="' + value + '"' +
+    return '<label class="opt" data-opt="' + group + '-' + value + '"><input type="radio" name="' + group + '" value="' + value + '"' +
       (state.form[group] === value ? ' checked' : '') + '><span class="opt__box">' + (ico ? icon(ico) : '') +
       '<span>' + esc(label) + '</span></span></label>';
   }
@@ -879,6 +898,15 @@
     var np = state.form.delivery === 'np';
     pickup.hidden = np;
     document.getElementById('npFields').hidden = !np;
+    // Наложенный платёж бывает только у Новой почты.
+    var cod = el.page.querySelector('[data-opt="pay-cod"]');
+    if (cod) cod.hidden = !np;
+    if (!np && state.form.pay === 'cod') {
+      state.form.pay = 'cash';
+      var cash = el.page.querySelector('input[name="pay"][value="cash"]');
+      if (cash) cash.checked = true;
+      saveForm();
+    }
     document.getElementById('cardNote').hidden = state.form.pay !== 'card';
   }
 
@@ -946,31 +974,101 @@
     };
   }
 
-  /** Этап 2: заглушка. На этапе 3 здесь будет отправка на сервер. */
+  function newRid() {
+    return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+  }
+
+  /** Отправка на сервер. text/plain — чтобы браузер не делал предварительный CORS-запрос. */
   function sendOrder(order) {
-    return Promise.resolve({ ok: true, number: '', stub: true, order: order });
+    if (!cfg.API_URL) return Promise.resolve({ ok: true, number: '', stub: true }); // демо без бэкенда
+    if (!state.rid) state.rid = newRid();
+    order.action = 'order';
+    order.rid = state.rid;
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 45000);
+    return fetch(cfg.API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(order),
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (r) {
+      clearTimeout(timer);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }, function (err) { clearTimeout(timer); throw err; });
+  }
+
+  /** Просим разрешение писать клиенту в Telegram: иначе бот не сможет сообщить статус. */
+  function askWriteAccess() {
+    return new Promise(function (resolve) {
+      try {
+        if (inTelegram && typeof tg.requestWriteAccess === 'function' && tg.isVersionAtLeast('6.9')) {
+          tg.requestWriteAccess(function () { resolve(); });
+          return;
+        }
+      } catch (e) { /* старый клиент Telegram */ }
+      resolve();
+    });
+  }
+
+  function showFormError(text, linkBot) {
+    var box = document.getElementById('formErr');
+    if (!box) return;
+    box.innerHTML = esc(text) + (linkBot && cfg.BOT
+      ? ' <a href="https://t.me/' + esc(cfg.BOT) + '">@' + esc(cfg.BOT) + '</a>' : '');
+    box.hidden = false;
+    box.scrollIntoView({ block: 'center' });
   }
 
   var sending = false;
+  function setBusy(busy) {
+    sending = busy;
+    el.barBtn.disabled = busy;
+    if (busy) el.barBtn.textContent = t('sending');
+    if (useNativeMain) {
+      try { if (busy) tg.MainButton.showProgress(false); else tg.MainButton.hideProgress(); } catch (e) { /* нет индикатора */ }
+    }
+    if (!busy) updateChrome();
+  }
+
   function submitOrder() {
     if (sending) return;
     readForm();
     if (!validateForm()) { haptic('error'); return; }
+    if (cfg.API_URL && !inTelegram && !DEBUG) { showFormError(t('errNeedTg'), true); return; }
     var lines = state.cart.i.filter(function (l) { return lineInfo(l).ok; }).map(function (l) {
       var info = lineInfo(l);
       return { name: info.p ? name(info.p) : l.id, label: lineLabel(l, info), q: l.q, sum: info.sum };
     });
     var total = cartTotal();
-    sending = true;
-    sendOrder(buildOrder()).then(function (res) {
-      sending = false;
-      state.done = { number: res.number, stub: !!res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay };
+    setBusy(true);
+    askWriteAccess().then(function () { return sendOrder(buildOrder()); }).then(function (res) {
+      if (!res || !res.ok) { orderFailed(res && res.error); return; }
+      state.done = { number: res.number || '', stub: !!res.stub, test: DEBUG && !res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay };
       state.cart.i = [];
       state.form.comment = '';
+      state.rid = '';
       saveCart();
+      setBusy(false);
       haptic('success');
       go('done');
-    }, function () { sending = false; });
+    }).catch(function () { orderFailed('network'); });
+  }
+
+  function orderFailed(code) {
+    haptic('error');
+    if (code === 'changed') {
+      // Сервер пересчитал заказ по таблице и получил другую сумму: показываем свежую корзину.
+      state.rid = '';
+      loadCatalog().then(function () {
+        setBusy(false);
+        state.cartNotice = t('cartChanged');
+        go('cart');
+      });
+      return;
+    }
+    setBusy(false);
+    showFormError(t({ rate_limit: 'errRate', bad_auth: 'errAuth', test_off: 'errTestOff' }[code] || 'errSend'));
   }
 
   function doneHtml() {
@@ -980,6 +1078,7 @@
       '<h2 class="page__title">' + esc(t('doneTitle')) + (d.number ? ' ' + esc(d.number) : '') + '</h2>' +
       '<p class="done__text">' + esc(t('doneText')) + '</p></div>';
     if (d.stub) html += '<p class="note note--out">' + esc(t('doneStub')) + '</p>';
+    else if (d.test) html += '<p class="note note--opt">' + esc(t('doneTest')) + '</p>';
     html += '<div class="recap"><p class="label">' + esc(t('order')) + '</p><ul class="recap__list">';
     d.lines.forEach(function (l) {
       html += '<li><span>' + esc(l.name) + ', ' + l.label + ' × ' + l.q + '</span><span class="recap__sum">' + money(l.sum) + '</span></li>';

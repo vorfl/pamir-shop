@@ -442,3 +442,6 @@ body.has-bar { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
 .recap__list li span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .recap__sum { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .recap__meta { margin: 0 0 var(--space-3); font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+
+.form__err a { color: inherit; font-weight: 700; }
+.bar .btn:disabled { background: var(--apricot); border-color: var(--apricot); color: var(--on-apricot); opacity: .6; }
