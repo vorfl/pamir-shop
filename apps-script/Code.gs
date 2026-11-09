@@ -10,6 +10,8 @@
  *   doPost({action:'order', ...}) → проверка подписи Telegram, пересчёт цен, запись в «Замовлення»,
  *   сообщение админам с кнопками. pollUpdates() раз в минуту забирает нажатия кнопок и сообщения боту.
  *
+ * ЭТАП 4 (в конце файла): setup() — кнопка меню «Магазин», команды и описание бота.
+ *
  * Секретов в этом файле нет. Токен бота хранится только в Script Properties.
  */
 
@@ -925,4 +927,47 @@ function testBot() {
   console.log('Тестовые заказы из браузера: ' + (props.getProperty('ALLOW_TEST_ORDERS') === '1' ? 'разрешены (перед запуском удалите ALLOW_TEST_ORDERS)' : 'выключены'));
   var polling = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'pollUpdates'; });
   console.log('Опрос Telegram: ' + (polling ? 'включён' : 'выключен, запустите startPolling'));
+}
+
+/* ======================================================================== */
+/* ЭТАП 4: подключение магазина к боту                                        */
+/* ======================================================================== */
+
+/**
+ * Запустить один раз из редактора. Ставит кнопку меню «Магазин», команды и описание бота,
+ * удаляет webhook и включает опрос. Повторный запуск безопасен: всё просто выставится заново.
+ */
+function setup() {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty('BOT_TOKEN');
+  var webapp = props.getProperty('WEBAPP_URL');
+  if (!token) throw new Error('Нет BOT_TOKEN в Свойствах скрипта.');
+  if (!/^https:\/\//.test(webapp || '')) throw new Error('Нет WEBAPP_URL в Свойствах скрипта (должен начинаться с https://).');
+
+  startPolling();
+
+  var steps = [
+    ['Кнопка меню «Магазин»', 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Магазин', web_app: { url: webapp } } }],
+    ['Команды (UA)', 'setMyCommands', { commands: [
+      { command: 'start', description: 'Відкрити магазин' },
+      { command: 'id', description: 'Показати мій chat id' }] }],
+    ['Команды (RU)', 'setMyCommands', { language_code: 'ru', commands: [
+      { command: 'start', description: 'Открыть магазин' },
+      { command: 'id', description: 'Показать мой chat id' }] }],
+    ['Описание (UA)', 'setMyDescription', { description:
+      'PAMIR — горіхи, сухофрукти та східні солодощі з Центрального ринку Харкова. Курага з власного саду в Ісфарі.\n\nНатисніть «Магазин», зберіть кошик і оформіть замовлення: самовивіз з ринку або Нова пошта.' }],
+    ['Описание (RU)', 'setMyDescription', { language_code: 'ru', description:
+      'PAMIR — орехи, сухофрукты и восточные сладости с Центрального рынка Харькова. Курага из собственного сада в Исфаре.\n\nНажмите «Магазин», соберите корзину и оформите заказ: самовывоз с рынка или Новая почта.' }],
+    ['Короткое описание (UA)', 'setMyShortDescription', { short_description: 'Горіхи, сухофрукти, східні солодощі. Центральний ринок, Харків' }],
+    ['Короткое описание (RU)', 'setMyShortDescription', { language_code: 'ru', short_description: 'Орехи, сухофрукты, восточные сладости. Центральный рынок, Харьков' }]
+  ];
+  var failed = 0;
+  steps.forEach(function (s) {
+    var res = tg_(token, s[1], s[2]);
+    if (!res.ok) failed++;
+    console.log(s[0] + ': ' + (res.ok ? 'готово' : 'ОШИБКА — ' + res.description));
+  });
+  console.log(failed
+    ? 'Не всё получилось: ' + failed + ' шаг(ов) с ошибкой, см. выше.'
+    : 'Всё готово. Закройте и заново откройте чат с ботом: слева от поля ввода появится кнопка «Магазин».');
 }
