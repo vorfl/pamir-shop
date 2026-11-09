@@ -9,10 +9,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
-<body>
+<body data-view="catalog">
   <!-- Знак гор PAMIR и иконки, на которые ссылаются карточки -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <symbol id="mark" viewBox="0 0 48 32">
@@ -35,19 +35,31 @@
   </header>
 
   <div class="tools">
-    <label class="search">
-      <span class="search__icon" id="searchIcon" aria-hidden="true"></span>
-      <input id="search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" spellcheck="false">
-    </label>
+    <div class="tools__row">
+      <label class="search">
+        <span class="search__icon" id="searchIcon" aria-hidden="true"></span>
+        <input id="search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" spellcheck="false">
+      </label>
+      <button type="button" id="cartBtn" class="cartbtn" aria-label="Кошик">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>
+        <span id="cartCount" class="cartbtn__count" hidden>0</span>
+      </button>
+    </div>
     <div class="chips" id="chips" role="group"></div>
   </div>
 
   <main id="main" class="main" aria-live="polite"></main>
 
+  <!-- Экраны: корзина, оформление, «замовлення прийнято» -->
+  <section id="page" class="page"></section>
+
+  <div id="bar" class="bar" hidden><button type="button" id="barBtn" class="btn btn--primary btn--block"></button></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+
   <div id="backdrop" class="backdrop" hidden></div>
   <section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden></section>
 
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="config.js?v=2"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 /* PAMIR — витрина (Telegram Mini App). Чистый JS, без сборки.
- * Этап 1: каталог только для чтения. Корзина и оформление — этап 2.
+ * Этап 1: каталог. Этап 2: корзина и оформление (отправка заказа — этап 3).
  */
 (function () {
   'use strict';
@@ -31,7 +31,50 @@
       errText: 'Перевірте інтернет і спробуйте ще раз.',
       retry: 'Спробувати ще раз',
       demo: 'Демо-товари: URL бекенда ще не вказано в config.js',
-      debug: 'Тестовий режим'
+      debug: 'Тестовий режим',
+      addToCart: 'Додати в кошик',
+      inCart: 'У кошику',
+      added: 'Додано в кошик',
+      cart: 'Кошик',
+      checkoutBtn: 'Оформити замовлення',
+      confirmBtn: 'Підтвердити замовлення',
+      back: 'Назад',
+      cartEmptyTitle: 'Кошик порожній',
+      cartEmptyText: 'Додайте товари з каталогу.',
+      toCatalog: 'Перейти до каталогу',
+      remove: 'Видалити',
+      total: 'Разом',
+      lineOut: 'Немає в наявності. Не увійде в замовлення',
+      lineGone: 'Товар знято з продажу',
+      priceWas: 'Ціна змінилася, було',
+      removeOut: 'Прибрати відсутні товари',
+      checkout: 'Оформлення',
+      order: 'Ваше замовлення',
+      fName: 'Ім\u2019я',
+      fPhone: 'Телефон',
+      sharePhone: 'Поділитися номером',
+      delivery: 'Доставка',
+      pickup: 'Самовивіз з ринку',
+      np: 'Нова пошта',
+      fCity: 'Місто',
+      fBranch: '№ відділення або поштомата',
+      payment: 'Оплата',
+      payCash: 'При отриманні',
+      payCard: 'Переказ на картку',
+      payCod: 'Накладений платіж',
+      payCardNote: 'Реквізити надішлемо в Telegram після підтвердження замовлення.',
+      fComment: 'Коментар',
+      optional: 'необов\u2019язково',
+      commentPh: 'Побажання до замовлення',
+      errName: 'Вкажіть ім\u2019я, щоб ми знали, як до вас звертатися',
+      errPhone: 'Введіть номер повністю: +380 і ще 9 цифр',
+      errCity: 'Вкажіть місто для доставки Новою поштою',
+      errBranch: 'Вкажіть номер відділення або поштомата',
+      errFix: 'Перевірте виділені поля',
+      doneTitle: 'Замовлення прийнято',
+      doneText: 'Ми підтвердимо наявність і напишемо вам у Telegram.',
+      doneStub: 'Тестова версія: замовлення поки не надсилається магазину.',
+      doneBack: 'Повернутися до каталогу'
     },
     ru: {
       search: 'Поиск товаров',
@@ -58,7 +101,50 @@
       errText: 'Проверьте интернет и попробуйте ещё раз.',
       retry: 'Попробовать ещё раз',
       demo: 'Демо-товары: URL бэкенда ещё не указан в config.js',
-      debug: 'Тестовый режим'
+      debug: 'Тестовый режим',
+      addToCart: 'Добавить в корзину',
+      inCart: 'В корзине',
+      added: 'Добавлено в корзину',
+      cart: 'Корзина',
+      checkoutBtn: 'Оформить заказ',
+      confirmBtn: 'Подтвердить заказ',
+      back: 'Назад',
+      cartEmptyTitle: 'Корзина пуста',
+      cartEmptyText: 'Добавьте товары из каталога.',
+      toCatalog: 'Перейти в каталог',
+      remove: 'Удалить',
+      total: 'Итого',
+      lineOut: 'Нет в наличии. Не войдёт в заказ',
+      lineGone: 'Товар снят с продажи',
+      priceWas: 'Цена изменилась, было',
+      removeOut: 'Убрать отсутствующие товары',
+      checkout: 'Оформление',
+      order: 'Ваш заказ',
+      fName: 'Имя',
+      fPhone: 'Телефон',
+      sharePhone: 'Поделиться номером',
+      delivery: 'Доставка',
+      pickup: 'Самовывоз с рынка',
+      np: 'Новая почта',
+      fCity: 'Город',
+      fBranch: '№ отделения или почтомата',
+      payment: 'Оплата',
+      payCash: 'При получении',
+      payCard: 'Перевод на карту',
+      payCod: 'Наложенный платёж',
+      payCardNote: 'Реквизиты пришлём в Telegram после подтверждения заказа.',
+      fComment: 'Комментарий',
+      optional: 'необязательно',
+      commentPh: 'Пожелания к заказу',
+      errName: 'Укажите имя, чтобы мы знали, как к вам обращаться',
+      errPhone: 'Введите номер полностью: +380 и ещё 9 цифр',
+      errCity: 'Укажите город для доставки Новой почтой',
+      errBranch: 'Укажите номер отделения или почтомата',
+      errFix: 'Проверьте выделенные поля',
+      doneTitle: 'Заказ принят',
+      doneText: 'Мы подтвердим наличие и напишем вам в Telegram.',
+      doneStub: 'Тестовая версия: заказ пока не отправляется магазину.',
+      doneBack: 'Вернуться в каталог'
     }
   };
 
@@ -73,7 +159,13 @@
     search: '<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
     plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
     minus: '<path d="M5 12h14"/>',
-    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    'shopping-cart': '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>',
+    'trash-2': '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+    truck: '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>',
+    store: '<path d="M3 9.5 4.5 4h15L21 9.5"/><path d="M3 9.5a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"/><path d="M5 12.2V20h14v-7.8"/><path d="M10 20v-4h4v4"/>',
+    'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>'
   };
 
   function icon(name) {
@@ -93,6 +185,10 @@
 
   var CACHE_KEY = 'pamir_catalog_v1';
   var LANG_KEY = 'pamir_lang';
+  var CART_KEY = 'pamir_cart_v1';
+  var FORM_KEY = 'pamir_form_v1';
+  var MAX_QTY = 99;
+  var useNativeMain = !!(inTelegram && tg.MainButton);
 
   var store = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -105,7 +201,12 @@
     q: '',
     catalog: null,
     status: 'loading', // loading | ready | error
-    sheet: null        // { id, vi, qty }
+    sheet: null,       // { id, vi, qty }
+    view: 'catalog',   // catalog | cart | checkout | done
+    scrollY: 0,
+    cart: { t: 0, i: [] }, // i: [{ id, g (граммы, 0 = штука/упаковка), q, pr (цена за единицу), was? }]
+    form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '' },
+    done: null
   };
 
   var el = {
@@ -114,7 +215,13 @@
     chips: document.getElementById('chips'),
     main: document.getElementById('main'),
     sheet: document.getElementById('sheet'),
-    backdrop: document.getElementById('backdrop')
+    backdrop: document.getElementById('backdrop'),
+    page: document.getElementById('page'),
+    bar: document.getElementById('bar'),
+    barBtn: document.getElementById('barBtn'),
+    toast: document.getElementById('toast'),
+    cartBtn: document.getElementById('cartBtn'),
+    cartCount: document.getElementById('cartCount')
   };
 
   /* ------------------------------ Форматы ------------------------------ */
@@ -191,6 +298,7 @@
     state.catalog = data;
     state.status = 'ready';
     if (state.cat && !data.categories.some(function (c) { return c.code === state.cat; })) state.cat = '';
+    reconcileCart();
   }
 
   function loadCatalog() {
@@ -247,6 +355,8 @@
     renderChips();
     renderMain();
     if (state.sheet) renderSheet();
+    if (state.view === 'checkout') updateCheckoutSum(); else renderPage();
+    updateChrome();
   }
 
   function renderBanner() {
@@ -293,7 +403,10 @@
   function cardHtml(p) {
     var cp = cardPrice(p);
     var meta = cp ? '<span class="price">' + money(cp.price) + '</span><span class="unit">' + esc(cp.unit) + '</span>' : '';
-    var btn = p.a
+    var inCart = p.a ? cartQty(p.id) : 0;
+    var btn = inCart
+      ? '<button type="button" class="btn btn--soft btn--block">' + esc(t('inCart')) + ' · ' + inCart + '</button>'
+      : p.a
       ? '<button type="button" class="btn btn--primary btn--block"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>' + esc(t('toCart')) + '</button>'
       : '<button type="button" class="btn btn--block" disabled>' + esc(t('out')) + '</button>';
     return '<article class="card' + (p.a ? '' : ' card--out') + '" data-id="' + esc(p.id) + '">' +
@@ -336,7 +449,7 @@
     el.sheet.hidden = false;
     el.backdrop.hidden = false;
     document.body.classList.add('is-locked');
-    if (inTelegram) { try { tg.BackButton.show(); } catch (e) { /* нет BackButton */ } }
+    updateChrome();
     var closeBtn = el.sheet.querySelector('.sheet__close');
     if (closeBtn) closeBtn.focus({ preventScroll: true });
   }
@@ -347,7 +460,7 @@
     el.sheet.hidden = true;
     el.backdrop.hidden = true;
     document.body.classList.remove('is-locked');
-    if (inTelegram) { try { tg.BackButton.hide(); } catch (e) { /* нет BackButton */ } }
+    updateChrome();
   }
 
   /** Сумма позиции. Та же формула, что на сервере: цена варианта × количество. */
@@ -401,9 +514,542 @@
 
     var scroll = el.sheet.querySelector('.sheet__body');
     var top = scroll ? scroll.scrollTop : 0;
+    var foot = p.a && lineTotal(p, s.vi, s.qty) > 0
+      ? '<div class="sheet__foot"><button type="button" class="btn btn--primary btn--block" data-action="add">' +
+        icon('shopping-cart') + esc(t('addToCart')) + '</button></div>'
+      : '';
     el.sheet.innerHTML = '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
-      '<div class="sheet__body">' + body + '</div>';
+      '<div class="sheet__body">' + body + '</div>' + foot;
     el.sheet.querySelector('.sheet__body').scrollTop = top;
+  }
+
+  /* ------------------------------ Корзина ------------------------------ */
+  function product(id) { return state.catalog ? state.catalog.byId[id] : null; }
+
+  /** Цена за единицу позиции по текущему каталогу; 0 — купить нельзя. */
+  function unitPrice(p, g) {
+    if (!p || !p.a) return 0;
+    if (p.t === 'w') {
+      for (var i = 0; i < p.v.length; i++) if (p.v[i][0] === g) return p.v[i][1];
+      return 0;
+    }
+    return p.p > 0 ? p.p : 0;
+  }
+
+  /** Состояние строки корзины. Пока каталог не загружен, верим сохранённой цене. */
+  function lineInfo(l) {
+    if (!state.catalog) return { p: null, ok: true, price: l.pr, sum: l.pr * l.q };
+    var p = product(l.id);
+    var price = unitPrice(p, l.g);
+    return { p: p, ok: price > 0, price: price, sum: price * l.q };
+  }
+
+  function cartTotal() {
+    return state.cart.i.reduce(function (s, l) { return s + lineInfo(l).sum; }, 0);
+  }
+  function cartCount() {
+    return state.cart.i.reduce(function (s, l) { return s + l.q; }, 0);
+  }
+  function cartQty(id) {
+    return state.cart.i.reduce(function (s, l) { return s + (l.id === id ? l.q : 0); }, 0);
+  }
+
+  function parseCart(text) {
+    try {
+      var c = JSON.parse(text);
+      if (!c || !Array.isArray(c.i)) return null;
+      var items = [];
+      c.i.forEach(function (l) {
+        if (!l || typeof l.id !== 'string') return;
+        var q = Math.floor(Number(l.q)), g = Number(l.g) || 0, pr = Number(l.pr) || 0;
+        if (!(q >= 1)) return;
+        var item = { id: l.id, g: g, q: Math.min(MAX_QTY, q), pr: pr };
+        if (Number(l.was) > 0) item.was = Number(l.was);
+        items.push(item);
+      });
+      return { t: Number(c.t) || 0, i: items };
+    } catch (e) { return null; }
+  }
+
+  function cloudOk() {
+    try { return inTelegram && tg.CloudStorage && tg.isVersionAtLeast('6.9'); } catch (e) { return false; }
+  }
+
+  function saveCart() {
+    state.cart.t = Date.now();
+    var text = JSON.stringify(state.cart);
+    store.set(CART_KEY, text);
+    if (cloudOk() && text.length <= 4096) {
+      try { tg.CloudStorage.setItem('cart', text, function () {}); } catch (e) { /* облако недоступно */ }
+    }
+  }
+
+  function loadCart() {
+    var local = parseCart(store.get(CART_KEY));
+    if (local) state.cart = local;
+    if (!cloudOk()) return;
+    try {
+      tg.CloudStorage.getItem('cart', function (err, value) {
+        var cloud = err ? null : parseCart(value);
+        // Берём копию из Telegram, только если она новее той, что на телефоне.
+        if (cloud && cloud.t > state.cart.t) {
+          state.cart = cloud;
+          store.set(CART_KEY, JSON.stringify(cloud));
+          reconcileCart();
+          renderAll();
+        }
+      });
+    } catch (e) { /* облако недоступно */ }
+  }
+
+  /** Сверка с каталогом: если цена изменилась, запоминаем старую, чтобы показать в корзине. */
+  function reconcileCart() {
+    if (!state.catalog) return;
+    var changed = false;
+    state.cart.i.forEach(function (l) {
+      var price = unitPrice(product(l.id), l.g);
+      if (price > 0 && price !== l.pr) {
+        if (!l.was) l.was = l.pr;
+        l.pr = price;
+        if (l.was === l.pr) delete l.was;
+        changed = true;
+      }
+    });
+    if (changed) saveCart();
+  }
+
+  /** Пользователь увидел изменения цен — больше о них не напоминаем. */
+  function ackPriceChanges() {
+    var changed = false;
+    state.cart.i.forEach(function (l) { if (l.was) { delete l.was; changed = true; } });
+    if (changed) saveCart();
+  }
+
+  function addFromSheet() {
+    var s = state.sheet;
+    var p = s && product(s.id);
+    if (!p) return;
+    var g = p.t === 'w' ? (p.v[s.vi] ? p.v[s.vi][0] : 0) : 0;
+    var price = unitPrice(p, g);
+    if (!(price > 0)) return;
+    var line = null;
+    state.cart.i.forEach(function (l) { if (l.id === p.id && l.g === g) line = l; });
+    if (line) {
+      line.q = Math.min(MAX_QTY, line.q + s.qty);
+      line.pr = price;
+    } else {
+      state.cart.i.push({ id: p.id, g: g, q: s.qty, pr: price });
+    }
+    saveCart();
+    haptic('success');
+    closeSheet();
+    renderMain();
+    toast(t('added'));
+  }
+
+  function haptic(kind) {
+    if (!inTelegram) return;
+    try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) { /* нет вибрации */ }
+  }
+
+  var toastTimer;
+  function toast(text) {
+    clearTimeout(toastTimer);
+    el.toast.textContent = text;
+    el.toast.hidden = false;
+    toastTimer = setTimeout(function () { el.toast.hidden = true; }, 1800);
+  }
+
+  /* --------------------- Экраны и нижняя кнопка --------------------- */
+  function go(view) {
+    if (state.view === 'catalog') state.scrollY = window.scrollY || 0;
+    if (state.view === 'cart' && view !== 'cart') ackPriceChanges();
+    if (view === 'checkout' && !(cartTotal() > 0)) view = 'cart';
+    if (state.sheet) closeSheet();
+    state.view = view;
+    document.body.setAttribute('data-view', view);
+    if (view === 'catalog') renderMain();
+    renderPage();
+    updateChrome();
+    window.scrollTo(0, view === 'catalog' ? state.scrollY : 0);
+  }
+
+  function goBack() {
+    if (state.sheet) { closeSheet(); return; }
+    if (state.view === 'checkout') { readForm(); go('cart'); return; }
+    if (state.view !== 'catalog') go('catalog');
+  }
+
+  /** Что сейчас делает главная кнопка: null — кнопки нет. */
+  function mainSpec() {
+    var total = cartTotal();
+    if (state.sheet || state.view === 'done' || !(total > 0)) return null;
+    if (state.view === 'checkout') return { text: t('confirmBtn') + ' · ' + money(total), run: submitOrder };
+    if (state.view === 'cart') return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('checkout'); } };
+    return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('cart'); } };
+  }
+
+  function mainAction() {
+    var spec = mainSpec();
+    if (spec) spec.run();
+  }
+
+  function updateChrome() {
+    var n = cartCount();
+    el.cartCount.textContent = n > 99 ? '99+' : String(n);
+    el.cartCount.hidden = n === 0;
+    el.cartBtn.setAttribute('aria-label', t('cart') + (n ? ': ' + n : ''));
+
+    var spec = mainSpec();
+    if (useNativeMain) {
+      try {
+        if (spec) {
+          tg.MainButton.setParams({ text: spec.text, color: '#E8913A', text_color: '#2B2E32', is_active: true, is_visible: true });
+        } else {
+          tg.MainButton.hide();
+        }
+      } catch (e) { useNativeMain = false; }
+    }
+    var showBar = !useNativeMain && !!spec;
+    el.bar.hidden = !showBar;
+    if (spec) el.barBtn.textContent = spec.text;
+    document.body.classList.toggle('has-bar', showBar);
+
+    if (inTelegram) {
+      try {
+        if (state.sheet || state.view !== 'catalog') tg.BackButton.show(); else tg.BackButton.hide();
+      } catch (e) { /* нет BackButton */ }
+    }
+  }
+
+  function pageHead(title) {
+    return '<header class="page__head"><button type="button" class="iconbtn" data-nav="back" aria-label="' + esc(t('back')) + '">' +
+      icon('arrow-left') + '</button><h2 class="page__title">' + esc(title) + '</h2></header>';
+  }
+
+  function renderPage() {
+    if (state.view === 'cart') el.page.innerHTML = cartHtml();
+    else if (state.view === 'checkout') { el.page.innerHTML = checkoutHtml(); syncCheckout(); }
+    else if (state.view === 'done') el.page.innerHTML = doneHtml();
+    else el.page.innerHTML = '';
+  }
+
+  /* ------------------------------ Экран корзины ------------------------------ */
+  function lineLabel(l, info) {
+    var p = info.p || product(l.id);
+    if (l.g) return weight(l.g);
+    if (p && p.t === 'p' && p.pk) return p.pk.replace(/ /g, NBSP);
+    return '1' + NBSP + t('pcs');
+  }
+
+  function cartHtml() {
+    var html = pageHead(t('cart'));
+    if (!state.cart.i.length) {
+      return html + '<div class="state">' + MARK +
+        '<p class="state__title">' + esc(t('cartEmptyTitle')) + '</p>' +
+        '<p class="state__text">' + esc(t('cartEmptyText')) + '</p>' +
+        '<button type="button" class="btn btn--primary" data-nav="catalog">' + esc(t('toCatalog')) + '</button></div>';
+    }
+    var hasOut = false;
+    html += '<ul class="lines">';
+    state.cart.i.forEach(function (l, i) {
+      var info = lineInfo(l);
+      var p = info.p;
+      if (!info.ok) hasOut = true;
+      var note = '';
+      if (!info.ok) note = '<p class="line__note line__note--out">' + esc(p ? t('lineOut') : t('lineGone')) + '</p>';
+      else if (l.was) note = '<p class="line__note">' + esc(t('priceWas')) + ' ' + money(l.was) + '</p>';
+      html += '<li class="line' + (info.ok ? '' : ' line--out') + '">' +
+        '<div class="line__img">' + (p ? photoHtml(p) : MARK) + '</div>' +
+        '<div class="line__text"><p class="line__name">' + esc(p ? name(p) : l.id) + '</p>' +
+        '<p class="line__sub">' + lineLabel(l, info) + (info.ok ? ' · ' + money(info.price) : '') + '</p>' + note + '</div>' +
+        '<button type="button" class="iconbtn iconbtn--plain" data-line-del="' + i + '" aria-label="' + esc(t('remove')) + '">' + icon('trash-2') + '</button>';
+      if (info.ok) {
+        html += '<div class="line__ctl"><div class="step step--sm" role="group" aria-label="' + esc(t('qty')) + '">' +
+          '<button type="button" data-line-step="-1" data-i="' + i + '" aria-label="' + esc(t('less')) + '"' + (l.q <= 1 ? ' disabled' : '') + '>' + icon('minus') + '</button>' +
+          '<output>' + l.q + '</output>' +
+          '<button type="button" data-line-step="1" data-i="' + i + '" aria-label="' + esc(t('more')) + '"' + (l.q >= MAX_QTY ? ' disabled' : '') + '>' + icon('plus') + '</button>' +
+          '</div><span class="line__sum">' + money(info.sum) + '</span></div>';
+      }
+      html += '</li>';
+    });
+    html += '</ul>';
+    if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
+    html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
+    return html;
+  }
+
+  /* ------------------------------ Оформление ------------------------------ */
+  function loadForm() {
+    try {
+      var f = JSON.parse(store.get(FORM_KEY) || 'null');
+      if (f) {
+        ['name', 'phone', 'city', 'branch'].forEach(function (k) { if (typeof f[k] === 'string') state.form[k] = f[k]; });
+        if (f.delivery === 'np' || f.delivery === 'pickup') state.form.delivery = f.delivery;
+        if (f.pay === 'cash' || f.pay === 'card' || f.pay === 'cod') state.form.pay = f.pay;
+      }
+    } catch (e) { /* испорченная копия — игнорируем */ }
+    if (!state.form.name && tgUser) {
+      state.form.name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').slice(0, 60);
+    }
+  }
+
+  function saveForm() {
+    var f = state.form;
+    store.set(FORM_KEY, JSON.stringify({ name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay }));
+  }
+
+  /** Маска +380 XX XXX XX XX. Понимает ввод с 0, 80 и 380 в начале. */
+  function formatPhone(raw) {
+    var text = String(raw || '').replace(/\s+/g, '');
+    if (text.length < 4 && '+380'.indexOf(text) === 0) return '+380';
+    var d = text.replace(/\D/g, '');
+    if (d.indexOf('380') === 0) d = d.slice(3);
+    else if (d.indexOf('80') === 0 && d.length > 9) d = d.slice(2);
+    d = d.replace(/^0+/, ''); // коды операторов с нуля не начинаются: «+380 050…» → «+380 50…»
+    d = d.slice(0, 9);
+    var out = '+380';
+    if (d.length) out += ' ' + d.slice(0, 2);
+    if (d.length > 2) out += ' ' + d.slice(2, 5);
+    if (d.length > 5) out += ' ' + d.slice(5, 7);
+    if (d.length > 7) out += ' ' + d.slice(7, 9);
+    return out;
+  }
+
+  function phoneValid(value) {
+    var v = String(value || '').replace(/[^\d+]/g, '');
+    if (v.indexOf('+380') === 0) return v.length === 13;
+    return /^\+\d{10,15}$/.test(v); // иностранный номер, которым поделились из Telegram
+  }
+
+  function field(id, label, attrs, value, extra) {
+    return '<div class="field"><label class="label" for="f-' + id + '">' + label + '</label>' +
+      '<input class="input" id="f-' + id + '" name="' + id + '" ' + attrs + ' value="' + esc(value) + '" aria-describedby="e-' + id + '">' +
+      (extra || '') + '<p class="field__err" id="e-' + id + '" hidden></p></div>';
+  }
+
+  function option(group, value, ico, label) {
+    return '<label class="opt"><input type="radio" name="' + group + '" value="' + value + '"' +
+      (state.form[group] === value ? ' checked' : '') + '><span class="opt__box">' + (ico ? icon(ico) : '') +
+      '<span>' + esc(label) + '</span></span></label>';
+  }
+
+  function canSharePhone() {
+    try { return inTelegram && typeof tg.requestContact === 'function' && tg.isVersionAtLeast('6.9'); } catch (e) { return false; }
+  }
+
+  function checkoutHtml() {
+    var f = state.form;
+    var shop = (state.catalog && state.catalog.shop) || {};
+    var L = state.lang === 'ru' ? 'ru' : 'ua';
+    var addr = shop.address ? (shop.address[L] || shop.address.ua || '') : '';
+    var hours = shop.hours ? (shop.hours[L] || shop.hours.ua || '') : '';
+    var share = canSharePhone()
+      ? '<button type="button" class="btn btn--block field__btn" data-action="share-phone">' + esc(t('sharePhone')) + '</button>'
+      : '';
+
+    return pageHead(t('checkout')) + '<form class="form" id="form" novalidate>' +
+      '<p class="form__err" id="formErr" role="alert" hidden></p>' +
+      field('name', esc(t('fName')), 'type="text" autocomplete="name" maxlength="60" enterkeyhint="next"', f.name) +
+      field('phone', esc(t('fPhone')), 'type="tel" inputmode="tel" autocomplete="tel" maxlength="20" enterkeyhint="next"', f.phone || '+380', share) +
+
+      '<fieldset class="group"><legend class="label">' + esc(t('delivery')) + '</legend><div class="opts">' +
+      option('delivery', 'pickup', 'store', t('pickup')) + option('delivery', 'np', 'truck', t('np')) + '</div>' +
+      '<div class="info" id="pickupInfo"><p>' + esc(addr) + '</p><p class="info__muted">' + esc(hours) + '</p></div>' +
+      '<div id="npFields" class="stack">' +
+      field('city', esc(t('fCity')), 'type="text" autocomplete="address-level2" maxlength="60" enterkeyhint="next"', f.city) +
+      field('branch', esc(t('fBranch')), 'type="text" inputmode="numeric" autocomplete="off" maxlength="30" enterkeyhint="next"', f.branch) +
+      '</div></fieldset>' +
+
+      '<fieldset class="group"><legend class="label">' + esc(t('payment')) + '</legend><div class="opts opts--col">' +
+      option('pay', 'cash', '', t('payCash')) + option('pay', 'card', '', t('payCard')) + option('pay', 'cod', '', t('payCod')) + '</div>' +
+      '<p class="info info__muted" id="cardNote">' + esc(t('payCardNote')) + '</p></fieldset>' +
+
+      '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
+      '<textarea class="input input--area" id="f-comment" name="comment" rows="3" maxlength="300" placeholder="' + esc(t('commentPh')) + '">' + esc(f.comment) + '</textarea></div>' +
+
+      '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total" id="coSum">' + money(cartTotal()) + '</span></div>' +
+      '</form>';
+  }
+
+  /** Показывает блоки, которые зависят от выбранной доставки и оплаты. */
+  function syncCheckout() {
+    var pickup = document.getElementById('pickupInfo');
+    if (!pickup) return;
+    var np = state.form.delivery === 'np';
+    pickup.hidden = np;
+    document.getElementById('npFields').hidden = !np;
+    document.getElementById('cardNote').hidden = state.form.pay !== 'card';
+  }
+
+  function updateCheckoutSum() {
+    var sum = document.getElementById('coSum');
+    if (sum) sum.textContent = money(cartTotal());
+    if (!(cartTotal() > 0)) go('cart');
+  }
+
+  function readForm() {
+    var form = document.getElementById('form');
+    if (!form) return;
+    var f = state.form;
+    f.name = form.elements.name.value.trim();
+    f.phone = form.elements.phone.value.trim();
+    f.city = form.elements.city.value.trim();
+    f.branch = form.elements.branch.value.trim();
+    f.comment = form.elements.comment.value.trim();
+    f.delivery = form.elements.delivery.value === 'np' ? 'np' : 'pickup';
+    f.pay = { card: 'card', cod: 'cod' }[form.elements.pay.value] || 'cash';
+    if (f.phone === '+380') f.phone = '';
+    saveForm();
+  }
+
+  function setError(id, text) {
+    var input = document.getElementById('f-' + id);
+    var err = document.getElementById('e-' + id);
+    if (!input || !err) return;
+    err.textContent = text || '';
+    err.hidden = !text;
+    if (text) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
+  }
+
+  function validateForm() {
+    var f = state.form;
+    var errors = {};
+    if (f.name.length < 2) errors.name = t('errName');
+    if (!phoneValid(f.phone)) errors.phone = t('errPhone');
+    if (f.delivery === 'np') {
+      if (f.city.length < 2) errors.city = t('errCity');
+      if (!f.branch) errors.branch = t('errBranch');
+    }
+    ['name', 'phone', 'city', 'branch'].forEach(function (id) { setError(id, errors[id]); });
+    var ids = Object.keys(errors);
+    var box = document.getElementById('formErr');
+    box.textContent = ids.length ? t('errFix') : '';
+    box.hidden = !ids.length;
+    if (ids.length) {
+      var first = document.getElementById('f-' + ['name', 'phone', 'city', 'branch'].filter(function (id) { return errors[id]; })[0]);
+      if (first) { first.focus(); first.scrollIntoView({ block: 'center' }); }
+    }
+    return !ids.length;
+  }
+
+  /** Данные заказа в том виде, в каком их получит сервер на этапе 3. Цены сервер считает сам. */
+  function buildOrder() {
+    var f = state.form;
+    return {
+      items: state.cart.i.filter(function (l) { return lineInfo(l).ok; })
+        .map(function (l) { return { id: l.id, g: l.g, q: l.q }; }),
+      name: f.name, phone: f.phone.replace(/\s+/g, ''),
+      delivery: f.delivery, city: f.delivery === 'np' ? f.city : '', branch: f.delivery === 'np' ? f.branch : '',
+      pay: f.pay, comment: f.comment, lang: state.lang, total: cartTotal(),
+      initData: inTelegram ? tg.initData : '', test: DEBUG
+    };
+  }
+
+  /** Этап 2: заглушка. На этапе 3 здесь будет отправка на сервер. */
+  function sendOrder(order) {
+    return Promise.resolve({ ok: true, number: '', stub: true, order: order });
+  }
+
+  var sending = false;
+  function submitOrder() {
+    if (sending) return;
+    readForm();
+    if (!validateForm()) { haptic('error'); return; }
+    var lines = state.cart.i.filter(function (l) { return lineInfo(l).ok; }).map(function (l) {
+      var info = lineInfo(l);
+      return { name: info.p ? name(info.p) : l.id, label: lineLabel(l, info), q: l.q, sum: info.sum };
+    });
+    var total = cartTotal();
+    sending = true;
+    sendOrder(buildOrder()).then(function (res) {
+      sending = false;
+      state.done = { number: res.number, stub: !!res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay };
+      state.cart.i = [];
+      state.form.comment = '';
+      saveCart();
+      haptic('success');
+      go('done');
+    }, function () { sending = false; });
+  }
+
+  function doneHtml() {
+    var d = state.done;
+    if (!d) return '';
+    var html = '<div class="done"><span class="done__ico">' + icon('check') + '</span>' +
+      '<h2 class="page__title">' + esc(t('doneTitle')) + (d.number ? ' ' + esc(d.number) : '') + '</h2>' +
+      '<p class="done__text">' + esc(t('doneText')) + '</p></div>';
+    if (d.stub) html += '<p class="note note--out">' + esc(t('doneStub')) + '</p>';
+    html += '<div class="recap"><p class="label">' + esc(t('order')) + '</p><ul class="recap__list">';
+    d.lines.forEach(function (l) {
+      html += '<li><span>' + esc(l.name) + ', ' + l.label + ' × ' + l.q + '</span><span class="recap__sum">' + money(l.sum) + '</span></li>';
+    });
+    html += '</ul><p class="recap__meta">' + esc(t('delivery')) + ': ' + esc(t(d.delivery === 'np' ? 'np' : 'pickup')) + '<br>' +
+      esc(t('payment')) + ': ' + esc(t({ cash: 'payCash', card: 'payCard', cod: 'payCod' }[d.pay])) + '</p>' +
+      '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(d.total) + '</span></div></div>' +
+      '<button type="button" class="btn btn--primary btn--block" data-nav="catalog">' + esc(t('doneBack')) + '</button>';
+    return html;
+  }
+
+  function bindPage() {
+    el.page.addEventListener('click', function (e) {
+      var nav = e.target.closest('[data-nav]');
+      if (nav) {
+        if (nav.getAttribute('data-nav') === 'back') goBack(); else go('catalog');
+        return;
+      }
+      var del = e.target.closest('[data-line-del]');
+      if (del) {
+        state.cart.i.splice(Number(del.getAttribute('data-line-del')), 1);
+        saveCart(); renderPage(); updateChrome();
+        return;
+      }
+      var st = e.target.closest('[data-line-step]');
+      if (st && !st.disabled) {
+        var line = state.cart.i[Number(st.getAttribute('data-i'))];
+        if (line) {
+          line.q = Math.min(MAX_QTY, Math.max(1, line.q + Number(st.getAttribute('data-line-step'))));
+          saveCart(); renderPage(); updateChrome();
+        }
+        return;
+      }
+      var act = e.target.closest('[data-action]');
+      if (!act) return;
+      if (act.getAttribute('data-action') === 'clear-out') {
+        state.cart.i = state.cart.i.filter(function (l) { return lineInfo(l).ok; });
+        saveCart(); renderPage(); updateChrome();
+      }
+      if (act.getAttribute('data-action') === 'share-phone') {
+        try {
+          tg.requestContact(function (ok, res) {
+            var c = ok && res && res.responseUnsafe && res.responseUnsafe.contact;
+            var input = document.getElementById('f-phone');
+            if (!c || !c.phone_number || !input) return;
+            var digits = String(c.phone_number).replace(/\D/g, '');
+            input.value = digits.indexOf('380') === 0 ? formatPhone(digits) : '+' + digits;
+            setError('phone', '');
+            readForm();
+          });
+        } catch (err) { /* старый клиент Telegram — остаётся ручной ввод */ }
+      }
+    });
+
+    el.page.addEventListener('input', function (e) {
+      var input = e.target;
+      if (!input.name || state.view !== 'checkout') return;
+      if (input.name === 'phone') input.value = formatPhone(input.value);
+      if (input.getAttribute('aria-invalid')) setError(input.name, '');
+      if (!el.page.querySelector('[aria-invalid]')) document.getElementById('formErr').hidden = true;
+      readForm();
+      syncCheckout();
+    });
+    el.page.addEventListener('focusin', function (e) {
+      if (e.target.name === 'phone' && !e.target.value) e.target.value = '+380';
+    });
+    el.page.addEventListener('submit', function (e) { e.preventDefault(); });
+    el.page.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); e.target.blur(); }
+    });
   }
 
   /* ------------------------------ События ------------------------------ */
@@ -450,7 +1096,7 @@
     document.addEventListener('error', function (e) {
       var img = e.target;
       if (img && img.tagName === 'IMG' && img.parentNode &&
-          (img.parentNode.classList.contains('card__img') || img.parentNode.classList.contains('sheet__img'))) {
+          /(^| )(card|sheet|line)__img( |$)/.test(img.parentNode.className)) {
         var holder = document.createElement('span');
         holder.innerHTML = MARK;
         img.parentNode.replaceChild(holder.firstChild, img);
@@ -459,6 +1105,7 @@
 
     el.sheet.addEventListener('click', function (e) {
       if (e.target.closest('.sheet__close')) { closeSheet(); return; }
+      if (e.target.closest('[data-action="add"]')) { addFromSheet(); return; }
       var v = e.target.closest('[data-vi]');
       if (v) { state.sheet.vi = Number(v.getAttribute('data-vi')); renderSheet(); return; }
       var st = e.target.closest('[data-step]');
@@ -470,8 +1117,13 @@
     el.backdrop.addEventListener('click', closeSheet);
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeSheet(); });
 
+    el.cartBtn.addEventListener('click', function () { go('cart'); });
+    el.barBtn.addEventListener('click', mainAction);
+    bindPage();
+
     if (inTelegram) {
-      try { tg.BackButton.onClick(closeSheet); } catch (e) { /* нет BackButton */ }
+      try { tg.BackButton.onClick(goBack); } catch (e) { /* нет BackButton */ }
+      if (useNativeMain) { try { tg.MainButton.onClick(mainAction); } catch (e) { useNativeMain = false; } }
       try { tg.onEvent('themeChanged', applyTheme); } catch (e) { /* нет события */ }
     } else if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -486,6 +1138,8 @@
   }
   applyTheme();
   initLang();
+  loadForm();
+  loadCart();
   bind();
   loadCatalog();
 })();
