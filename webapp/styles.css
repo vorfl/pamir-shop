@@ -440,3 +440,42 @@ body.has-bar { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
 
 .form__err a { color: inherit; font-weight: 700; }
 .bar .btn:disabled { background: var(--apricot); border-color: var(--apricot); color: var(--on-apricot); opacity: .6; }
+
+/* ================= Этап 5: админ-панель ================= */
+.top__right { display: flex; align-items: center; gap: var(--space-1); flex: none; }
+.badge--ship { background: var(--apricot-soft); color: var(--on-apricot-soft); }
+.tabs { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); }
+.tabs button { height: var(--tap); border: 0; border-radius: 9px; background: transparent; font-size: 15px; font-weight: 700; color: var(--ink-muted); }
+.tabs button[aria-pressed="true"] { background: var(--apricot-soft); color: var(--on-apricot-soft); }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.stats div { padding: var(--space-3); border-radius: var(--radius-md); background: var(--surface-sunken); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stats span { font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+.stats b { font-size: 15px; line-height: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chips--flush { padding: 0; margin: 0 calc(var(--space-4) * -1); padding: 0 var(--space-4); }
+.adm__msg { margin: var(--space-4) 0; text-align: center; }
+.ord, .prod { background: var(--surface-raised); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
+.ord__head {
+  width: 100%; display: grid; grid-template-columns: auto auto auto 1fr; align-items: center; column-gap: var(--space-2); row-gap: 2px;
+  padding: var(--space-3); border: 0; border-radius: var(--radius-lg); background: transparent; text-align: left;
+}
+.ord__num { font-weight: 700; font-variant-numeric: tabular-nums; }
+.ord__sum { grid-column: -2 / -1; justify-self: end; font-weight: 700; color: var(--apricot-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ord__meta { grid-column: 1 / -1; font-size: 13px; line-height: 18px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ord__body { padding: 0 var(--space-3) var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); border-top: 1px solid var(--line); padding-top: var(--space-3); }
+.ord__body p { margin: 0; overflow-wrap: anywhere; }
+.ord__body a { color: var(--lapis); font-weight: 700; }
+.ord__items { margin: 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-1); }
+.ord__acts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.ord__acts .btn { padding: 0 var(--space-2); font-size: 13px; line-height: 16px; }
+.prod { display: flex; align-items: center; gap: var(--space-2); padding-right: var(--space-3); }
+.prod__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); border: 0; background: transparent; text-align: left; border-radius: var(--radius-lg); }
+.prod__name { font-size: 15px; line-height: 20px; font-weight: 600; overflow-wrap: anywhere; }
+.prod__sub { font-size: 13px; line-height: 18px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.sw { position: relative; width: 52px; height: 32px; flex: none; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--line-strong); transition: background .15s; }
+.sw::before { content: ''; position: absolute; inset: -6px 0; } /* зона нажатия 44 px */
+.sw span { position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.sw[aria-checked="true"] { background: var(--pistachio); }
+.sw[aria-checked="true"] span { transform: translateX(20px); }
+.field__hint { margin: var(--space-1) 0 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+.check { display: flex; align-items: center; gap: var(--space-3); min-height: var(--tap); font-weight: 700; }
+.check input { width: 22px; height: 22px; accent-color: var(--apricot); }

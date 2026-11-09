@@ -11,6 +11,7 @@
  *   сообщение админам с кнопками. pollUpdates() раз в минуту забирает нажатия кнопок и сообщения боту.
  *
  * ЭТАП 4 (в конце файла): setup() — кнопка меню «Магазин», команды и описание бота.
+ * ЭТАП 5 (в конце файла): админ-панель — admin.orders, admin.status, admin.products, admin.product.
  *
  * Секретов в этом файле нет. Токен бота хранится только в Script Properties.
  */
@@ -41,7 +42,8 @@ var PRODUCT_COLS = {
   descUa:  ['опис (ua)'],
   descRu:  ['описание (ru)'],
   whPrice: ['опт: ціна', 'опт ціна'],
-  whMin:   ['опт: мін', 'опт мін']
+  whMin:   ['опт: мін', 'опт мін'],
+  p100:    ['ціна за 100 г']
 };
 
 var CATEGORY_COLS = {
@@ -451,7 +453,9 @@ function doPost(e) {
     var text = (e && e.postData && e.postData.contents) || '';
     if (text.length > 20000) throw new Error('body too large');
     var body = JSON.parse(text || '{}');
-    out = body.action === 'order' ? handleOrder_(body) : { ok: false, error: 'unknown_action' };
+    if (body.action === 'order') out = handleOrder_(body);
+    else if (String(body.action).indexOf('admin.') === 0) out = handleAdmin_(body);
+    else out = { ok: false, error: 'unknown_action' };
   } catch (err) {
     console.error('doPost: ' + (err && err.stack || err));
     out = { ok: false, error: 'server_error' };
@@ -795,6 +799,14 @@ function handleMessage_(msg, token, props) {
     return;
   }
   if (msg.chat.type !== 'private') return;
+  var webappUrl = props.getProperty('WEBAPP_URL');
+  if (/^\/admin(@\w+)?$/i.test(text) && adminIds_(props).indexOf(String(msg.chat.id)) >= 0 && /^https:\/\//.test(webappUrl || '')) {
+    tg_(token, 'sendMessage', {
+      chat_id: msg.chat.id, text: 'Адмін-панель PAMIR: замовлення та товари.',
+      reply_markup: { inline_keyboard: [[{ text: '🛠 Відкрити адмін-панель', web_app: { url: webappUrl + (webappUrl.indexOf('?') < 0 ? '?' : '&') + 'admin=1' } }]] }
+    });
+    return;
+  }
   var ru = String((msg.from && msg.from.language_code) || '').toLowerCase().indexOf('ru') === 0;
   var payload = {
     chat_id: msg.chat.id,
@@ -817,15 +829,27 @@ function handleCallback_(cq, token, admins) {
   if (admins.indexOf(fromId) < 0 && admins.indexOf(chatId) < 0) { answer('Немає доступу'); return; }
   var m = String(cq.data || '').match(/^st:(P-\d+):([cnsd])$/);
   if (!m) { answer(''); return; }
-  var status = STATUS_BY_CODE[m[2]];
+  var res = setOrderStatus_(m[1], m[2], (cq.from && cq.from.first_name) || '', token, cq.message ? [chatId, cq.message.message_id] : null);
+  if (res.error === 'not_found') answer('Замовлення ' + m[1] + ' не знайдено в таблиці');
+  else if (res.same) answer('Статус уже: ' + res.status);
+  else answer('Статус: ' + res.status + (res.told === false ? '. Клієнту написати не вдалося' : ''));
+}
 
+/**
+ * Меняет статус заказа: таблица → сообщения админов → сообщение клиенту.
+ * Одна функция и для кнопок в Telegram, и для админ-панели.
+ * told: true — клиенту написали, false — не получилось, null — писать некому (тестовый заказ).
+ */
+function setOrderStatus_(num, code, actor, token, extraTarget) {
+  var status = STATUS_BY_CODE[code];
+  if (!status) return { ok: false, error: 'bad_status' };
   var found;
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    found = findOrder_(m[1]);
-    if (!found) { answer('Замовлення ' + m[1] + ' не знайдено в таблиці'); return; }
-    if (found.o.status === status) { answer('Статус уже: ' + status); return; }
+    found = findOrder_(num);
+    if (!found) return { ok: false, error: 'not_found' };
+    if (found.o.status === status) return { ok: true, same: true, status: status, told: null };
     found.sheet.getRange(found.rowIndex, found.col.status + 1).setValue(status);
     SpreadsheetApp.flush();
   } finally {
@@ -834,11 +858,11 @@ function handleCallback_(cq, token, admins) {
 
   var o = found.o;
   o.status = status;
-  var note = ((cq.from && cq.from.first_name) || '') + ', ' + Utilities.formatDate(new Date(), 'Europe/Kiev', 'dd.MM HH:mm');
+  var note = (actor ? actor + ', ' : '') + Utilities.formatDate(new Date(), 'Europe/Kiev', 'dd.MM HH:mm');
   var targets = [];
   try { targets = (JSON.parse(o.svc || '{}').m) || []; } catch (err) { targets = []; }
-  if (cq.message && !targets.some(function (t) { return String(t[0]) === chatId && t[1] === cq.message.message_id; })) {
-    targets.push([chatId, cq.message.message_id]);
+  if (extraTarget && !targets.some(function (t) { return String(t[0]) === String(extraTarget[0]) && t[1] === extraTarget[1]; })) {
+    targets.push(extraTarget);
   }
   targets.forEach(function (t) {
     tg_(token, 'editMessageText', {
@@ -846,11 +870,11 @@ function handleCallback_(cq, token, admins) {
       disable_web_page_preview: true, reply_markup: adminKeyboard_(o.num)
     });
   });
-  var told = false;
+  var told = null;
   if (o.uid && String(o.source).indexOf('test') < 0) {
-    told = tg_(token, 'sendMessage', { chat_id: o.uid, text: clientText_(m[2], o) }).ok;
+    told = !!tg_(token, 'sendMessage', { chat_id: o.uid, text: clientText_(code, o) }).ok;
   }
-  answer('Статус: ' + status + (o.uid && String(o.source).indexOf('test') < 0 && !told ? '. Клієнту написати не вдалося' : ''));
+  return { ok: true, status: status, told: told };
 }
 
 /* ------------------------------ Служебное ------------------------------ */
@@ -961,13 +985,160 @@ function setup() {
     ['Короткое описание (UA)', 'setMyShortDescription', { short_description: 'Горіхи, сухофрукти, східні солодощі. Центральний ринок, Харків' }],
     ['Короткое описание (RU)', 'setMyShortDescription', { language_code: 'ru', short_description: 'Орехи, сухофрукты, восточные сладости. Центральный рынок, Харьков' }]
   ];
+  // Админам — дополнительная команда /admin (видна только в их чатах с ботом).
+  adminIds_(props).forEach(function (id) {
+    steps.push(['Команды админа ' + id, 'setMyCommands', { scope: { type: 'chat', chat_id: id }, commands: [
+      { command: 'start', description: 'Відкрити магазин' },
+      { command: 'admin', description: 'Адмін-панель: замовлення і товари' },
+      { command: 'id', description: 'Показати мій chat id' }] }]);
+  });
   var failed = 0;
   steps.forEach(function (s) {
     var res = tg_(token, s[1], s[2]);
     if (!res.ok) failed++;
-    console.log(s[0] + ': ' + (res.ok ? 'готово' : 'ОШИБКА — ' + res.description));
+    console.log(s[0] + ': ' + (res.ok ? 'готово' : 'ОШИБКА — ' + res.description + (s[1] === 'setMyCommands' && s[2].scope ? ' (этот админ ещё не нажал Start у бота)' : '')));
   });
   console.log(failed
     ? 'Не всё получилось: ' + failed + ' шаг(ов) с ошибкой, см. выше.'
     : 'Всё готово. Закройте и заново откройте чат с ботом: слева от поля ввода появится кнопка «Магазин».');
+}
+
+
+/* ======================================================================== */
+/* ЭТАП 5: админ-панель (заказы и товары)                                     */
+/* ======================================================================== */
+/*
+ * Все действия admin.* выполняются только если подпись Telegram верна И id пользователя есть
+ * в ADMIN_CHAT_IDS. Проверка идёт при каждом запросе; тестового обхода (?debug=1) здесь нет.
+ */
+
+function handleAdmin_(body) {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty('BOT_TOKEN');
+  if (!token) return { ok: false, error: 'not_configured' };
+  var user = verifyInitData_(String(body.initData || ''), token);
+  if (!user || adminIds_(props).indexOf(String(user.id)) < 0) return { ok: false, error: 'forbidden' };
+
+  if (body.action === 'admin.orders') return listOrders_();
+  if (body.action === 'admin.status') {
+    return setOrderStatus_(String(body.num || ''), String(body.code || ''), user.first_name || '', token, null);
+  }
+  if (body.action === 'admin.products') return { ok: true, products: listProductsAdmin_() };
+  if (body.action === 'admin.product') return updateProduct_(String(body.id || ''), body.patch || {});
+  return { ok: false, error: 'unknown_action' };
+}
+
+/** Последние 100 заказов (новые сверху) и итоги за сегодня и за 7 дней. */
+function listOrders_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
+  var stats = { today: { n: 0, sum: 0 }, week: { n: 0, sum: 0 } };
+  if (!sheet || sheet.getLastRow() < 2) return { ok: true, orders: [], stats: stats };
+  var col = orderCols_(sheet);
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  var now = new Date();
+  var todayKey = Utilities.formatDate(now, 'Europe/Kiev', 'yyyy-MM-dd');
+  var weekAgo = now.getTime() - 7 * 24 * 3600 * 1000;
+  var orders = [];
+  for (var r = values.length - 1; r >= 0; r--) {
+    var row = values[r];
+    var num = cell_(row, col.num);
+    if (!num) continue;
+    var date = col.date >= 0 ? row[col.date] : '';
+    var isDate = Object.prototype.toString.call(date) === '[object Date]' && !isNaN(date.getTime());
+    var status = cell_(row, col.status) || STATUS_NEW;
+    var source = cell_(row, col.source);
+    var total = toNum_(col.total >= 0 ? row[col.total] : 0);
+    // В итоги не идут тестовые, отменённые и те, где товара не оказалось.
+    if (isDate && source.indexOf('test') < 0 && status !== 'немає в наявності' && status !== 'скасовано') {
+      if (Utilities.formatDate(date, 'Europe/Kiev', 'yyyy-MM-dd') === todayKey) { stats.today.n++; stats.today.sum += total; }
+      if (date.getTime() >= weekAgo) { stats.week.n++; stats.week.sum += total; }
+    }
+    if (orders.length < 100) {
+      orders.push({
+        num: num, date: isDate ? Utilities.formatDate(date, 'Europe/Kiev', 'dd.MM HH:mm') : String(date || ''),
+        status: status, uid: cell_(row, col.uid), username: cell_(row, col.username), name: cell_(row, col.name),
+        phone: cell_(row, col.phone), delivery: cell_(row, col.delivery), city: cell_(row, col.city),
+        branch: cell_(row, col.branch), pay: cell_(row, col.pay), comment: cell_(row, col.comment),
+        items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0
+      });
+    }
+  }
+  return { ok: true, orders: orders, stats: stats };
+}
+
+function productCols_(sheet) {
+  var col = mapHeaders_(sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0], PRODUCT_COLS);
+  ['id', 'nameUa', 'type', 'stock'].forEach(function (k) {
+    if (col[k] < 0) throw new Error('В листе «Товари» не найдена колонка: ' + PRODUCT_COLS[k][0]);
+  });
+  return col;
+}
+
+function adminProduct_(row, col) {
+  var info = priceInfo_(cell_(row, col.type), cell_(row, col.packs), col.pKg >= 0 ? row[col.pKg] : '', col.pUnit >= 0 ? row[col.pUnit] : '');
+  return {
+    id: cell_(row, col.id), ua: cell_(row, col.nameUa), ru: cell_(row, col.nameRu), t: info.t,
+    packs: cell_(row, col.packs), price: info.t === 'w' ? toNum_(col.pKg >= 0 ? row[col.pKg] : 0) : toNum_(col.pUnit >= 0 ? row[col.pUnit] : 0),
+    stock: isInStock_(cell_(row, col.stock)) ? 1 : 0, dUa: cell_(row, col.descUa), dRu: cell_(row, col.descRu)
+  };
+}
+
+/** Товары для админ-панели: только те же клиентские колонки, служебные (закупка, маржа) не читаются. */
+function listProductsAdmin_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
+  var col = productCols_(sheet);
+  var values = sheet.getDataRange().getValues();
+  var list = [];
+  for (var r = 1; r < values.length; r++) {
+    var p = adminProduct_(values[r], col);
+    if (p.id && p.ua) list.push(p);
+  }
+  return list;
+}
+
+/** Правка одного товара. patch: { stock, price, ua, ru, packs, dUa, dRu } — любое подмножество. */
+function updateProduct_(id, patch) {
+  if (!id) return { ok: false, error: 'bad_form' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
+    var col = productCols_(sheet);
+    var values = sheet.getDataRange().getValues();
+    var r = -1;
+    for (var i = 1; i < values.length; i++) if (cell_(values[i], col.id) === id) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' };
+    var isWeight = priceInfo_(cell_(values[r], col.type), '', 0, 0).t === 'w';
+    function set(c, value) { if (c >= 0) sheet.getRange(r + 1, c + 1).setValue(value); }
+    function text(key, c, max, required) {
+      if (typeof patch[key] !== 'string') return true;
+      var v = clean_(patch[key], max);
+      if (required && !v) return false;
+      set(c, safeCell_(v));
+      return true;
+    }
+    if (!text('ua', col.nameUa, 120, true)) return { ok: false, error: 'bad_form' };
+    text('ru', col.nameRu, 120); text('packs', col.packs, 80);
+    if (typeof patch.dUa === 'string') set(col.descUa, safeCell_(String(patch.dUa).replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ').trim().slice(0, 600)));
+    if (typeof patch.dRu === 'string') set(col.descRu, safeCell_(String(patch.dRu).replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ').trim().slice(0, 600)));
+    if (patch.stock !== undefined) set(col.stock, patch.stock ? 'є' : 'немає');
+    if (patch.price !== undefined) {
+      var price = Number(patch.price);
+      if (!(price >= 0 && price < 1000000)) return { ok: false, error: 'bad_form' };
+      price = Math.round(price * 100) / 100;
+      if (isWeight) {
+        set(col.pKg, price || '');
+        // «Ціна за 100 г» обновляем, только если там число, а не формула.
+        if (col.p100 >= 0 && !sheet.getRange(r + 1, col.p100 + 1).getFormula()) set(col.p100, price ? Math.round(price) / 10 : '');
+      } else {
+        set(col.pUnit, price || '');
+      }
+    }
+    SpreadsheetApp.flush();
+    clearCatalogCache_();
+    var fresh = sheet.getRange(r + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    return { ok: true, product: adminProduct_(fresh, col) };
+  } finally {
+    lock.releaseLock();
+  }
 }

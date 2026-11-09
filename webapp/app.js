@@ -82,7 +82,18 @@
       errNeedTg: 'Замовлення оформлюється в Telegram. Відкрийте магазин у нашому боті:',
       errTestOff: 'Тестові замовлення вимкнені на сервері (властивість ALLOW_TEST_ORDERS).',
       cartChanged: 'Ціни або наявність щойно змінилися. Перевірте кошик і оформіть замовлення ще раз.',
-      doneBack: 'Повернутися до каталогу'
+      doneBack: 'Повернутися до каталогу',
+      admin: 'Адмін-панель', admOrders: 'Замовлення', admProducts: 'Товари', admToday: 'Сьогодні', admWeek: '7 днів',
+      admSearchO: 'Номер, телефон або ім\u2019я', admSearchP: 'Назва або ID', admAll: 'Усі', admEmpty: 'Нічого немає',
+      admLoading: 'Завантаження…', admError: 'Не вдалося завантажити. Спробуйте ще раз.',
+      admForbidden: 'Немає доступу. Адмін-панель відкривається лише з Telegram-акаунта адміністратора.',
+      admRefresh: 'Оновити', admWrite: 'Написати клієнту', admSaved: 'Збережено', admNotTold: 'Клієнту написати не вдалося',
+      admFail: 'Не вдалося зберегти. Спробуйте ще раз.', admStock: 'В наявності', admPriceKg: 'Ціна за 1 кг, ₴',
+      admPriceUnit: 'Ціна за упаковку / шт, ₴', admNameUa: 'Назва (UA)', admNameRu: 'Название (RU)', admPacks: 'Фасування',
+      admPacksHint: 'Через « / », наприклад: 100 г / 250 г / 1 кг', admDescUa: 'Опис (UA)', admDescRu: 'Описание (RU)',
+      admSave: 'Зберегти', admMore: 'Показано перші 60. Уточніть пошук.', admTest: 'тест',
+      admErrName: 'Назва (UA) не може бути порожньою', admErrPrice: 'Ціна має бути числом',
+      stC: 'Підтвердити', stN: 'Немає в наявності', stS: 'Відправлено', stD: 'Виконано'
     },
     ru: {
       search: 'Поиск товаров',
@@ -160,7 +171,18 @@
       errNeedTg: 'Заказ оформляется в Telegram. Откройте магазин в нашем боте:',
       errTestOff: 'Тестовые заказы выключены на сервере (свойство ALLOW_TEST_ORDERS).',
       cartChanged: 'Цены или наличие только что изменились. Проверьте корзину и оформите заказ ещё раз.',
-      doneBack: 'Вернуться в каталог'
+      doneBack: 'Вернуться в каталог',
+      admin: 'Админ-панель', admOrders: 'Заказы', admProducts: 'Товары', admToday: 'Сегодня', admWeek: '7 дней',
+      admSearchO: 'Номер, телефон или имя', admSearchP: 'Название или ID', admAll: 'Все', admEmpty: 'Ничего нет',
+      admLoading: 'Загрузка…', admError: 'Не удалось загрузить. Попробуйте ещё раз.',
+      admForbidden: 'Нет доступа. Админ-панель открывается только с Telegram-аккаунта администратора.',
+      admRefresh: 'Обновить', admWrite: 'Написать клиенту', admSaved: 'Сохранено', admNotTold: 'Клиенту написать не удалось',
+      admFail: 'Не удалось сохранить. Попробуйте ещё раз.', admStock: 'В наличии', admPriceKg: 'Цена за 1 кг, ₴',
+      admPriceUnit: 'Цена за упаковку / шт, ₴', admNameUa: 'Назва (UA)', admNameRu: 'Название (RU)', admPacks: 'Фасовка',
+      admPacksHint: 'Через « / », например: 100 г / 250 г / 1 кг', admDescUa: 'Опис (UA)', admDescRu: 'Описание (RU)',
+      admSave: 'Сохранить', admMore: 'Показаны первые 60. Уточните поиск.', admTest: 'тест',
+      admErrName: 'Назва (UA) не может быть пустой', admErrPrice: 'Цена должна быть числом',
+      stC: 'Подтвердить', stN: 'Нет в наличии', stS: 'Отправлено', stD: 'Выполнено'
     }
   };
 
@@ -218,7 +240,7 @@
     catalog: null,
     status: 'loading', // loading | ready | error
     sheet: null,       // { id, vi, qty }
-    view: 'catalog',   // catalog | cart | checkout | done
+    view: 'catalog',   // catalog | cart | checkout | done | admin
     scrollY: 0,
     cart: { t: 0, i: [] }, // i: [{ id, g (граммы, 0 = штука/упаковка), q, pr (цена за единицу), was? }]
     form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '' },
@@ -239,7 +261,8 @@
     barBtn: document.getElementById('barBtn'),
     toast: document.getElementById('toast'),
     cartBtn: document.getElementById('cartBtn'),
-    cartCount: document.getElementById('cartCount')
+    cartCount: document.getElementById('cartCount'),
+    adminBtn: document.getElementById('adminBtn')
   };
 
   /* ------------------------------ Форматы ------------------------------ */
@@ -373,7 +396,7 @@
     renderChips();
     renderMain();
     if (state.sheet) renderSheet();
-    if (state.view === 'checkout') updateCheckoutSum(); else renderPage();
+    if (state.view === 'checkout') updateCheckoutSum(); else if (state.view !== 'admin') renderPage();
     updateChrome();
   }
 
@@ -689,19 +712,21 @@
     if (view === 'catalog') renderMain();
     renderPage();
     updateChrome();
+    if (view === 'admin') loadAdmin(false);
     window.scrollTo(0, view === 'catalog' ? state.scrollY : 0);
   }
 
   function goBack() {
     if (state.sheet) { closeSheet(); return; }
     if (state.view === 'checkout') { readForm(); go('cart'); return; }
+    if (state.view === 'admin' && adm.edit) { adm.edit = ''; renderPage(); return; }
     if (state.view !== 'catalog') go('catalog');
   }
 
   /** Что сейчас делает главная кнопка: null — кнопки нет. */
   function mainSpec() {
     var total = cartTotal();
-    if (state.sheet || state.view === 'done' || !(total > 0)) return null;
+    if (state.sheet || state.view === 'done' || state.view === 'admin' || !(total > 0)) return null;
     if (state.view === 'checkout') return { text: t('confirmBtn') + ' · ' + money(total), run: submitOrder };
     if (state.view === 'cart') return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('checkout'); } };
     return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('cart'); } };
@@ -749,6 +774,7 @@
     if (state.view === 'cart') el.page.innerHTML = cartHtml();
     else if (state.view === 'checkout') { el.page.innerHTML = checkoutHtml(); syncCheckout(); }
     else if (state.view === 'done') el.page.innerHTML = doneHtml();
+    else if (state.view === 'admin') el.page.innerHTML = adminHtml();
     else el.page.innerHTML = '';
   }
 
@@ -1090,8 +1116,248 @@
     return html;
   }
 
+  /* ------------------------------ Админ-панель (этап 5) ------------------------------ */
+  /* Вход: команда /admin у бота (ссылка с ?admin=1). Права проверяет сервер при каждом запросе. */
+  var ADMIN_KEY = 'pamir_admin';
+  var adminHint = inTelegram && (params.get('admin') === '1' || store.get(ADMIN_KEY) === '1');
+  var ADMIN_STATUSES = ['новий', 'підтверджено', 'відправлено', 'виконано', 'немає в наявності'];
+  var STATUS_BADGE = { 'новий': 'badge--opt', 'підтверджено': 'badge--stock', 'відправлено': 'badge--ship', 'немає в наявності': 'badge--out', 'скасовано': 'badge--out' };
+  var STATUS_BTNS = [['c', 'stC', 'підтверджено'], ['n', 'stN', 'немає в наявності'], ['s', 'stS', 'відправлено'], ['d', 'stD', 'виконано']];
+  var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, pq: '', edit: '', loading: false, error: '', busy: false };
+
+  function api(action, data) {
+    var body = { action: action, initData: inTelegram ? tg.initData : '' };
+    Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
+    return fetch(cfg.API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+
+  function loadAdmin(force) {
+    var isOrders = adm.tab === 'orders';
+    if (adm.loading || (!force && (isOrders ? adm.orders : adm.products))) return;
+    adm.loading = true; adm.error = '';
+    renderAdminList();
+    api(isOrders ? 'admin.orders' : 'admin.products').then(function (res) {
+      adm.loading = false;
+      if (!res || !res.ok) {
+        adm.error = res && res.error === 'forbidden' ? 'admForbidden' : 'admError';
+        if (res && res.error === 'forbidden') { store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true; }
+      } else {
+        store.set(ADMIN_KEY, '1');
+        if (isOrders) { adm.orders = res.orders || []; adm.stats = res.stats || null; } else adm.products = res.products || [];
+      }
+      if (state.view === 'admin') renderPage();
+    }).catch(function () {
+      adm.loading = false; adm.error = 'admError';
+      if (state.view === 'admin') renderAdminList();
+    });
+  }
+
+  function adminHtml() {
+    var html = pageHead(t('admin'));
+    if (adm.edit) return html + productFormHtml();
+    html += '<div class="tabs" role="group">' +
+      '<button type="button" data-tab="orders" aria-pressed="' + (adm.tab === 'orders') + '">' + esc(t('admOrders')) + '</button>' +
+      '<button type="button" data-tab="products" aria-pressed="' + (adm.tab === 'products') + '">' + esc(t('admProducts')) + '</button></div>';
+    if (adm.tab === 'orders') {
+      if (adm.stats) {
+        html += '<div class="stats"><div><span>' + esc(t('admToday')) + '</span><b>' + adm.stats.today.n + ' · ' + money(adm.stats.today.sum) + '</b></div>' +
+          '<div><span>' + esc(t('admWeek')) + '</span><b>' + adm.stats.week.n + ' · ' + money(adm.stats.week.sum) + '</b></div></div>';
+      }
+      html += '<input class="input" id="admQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchO')) + '" value="' + esc(adm.q) + '">' +
+        '<div class="chips chips--flush" id="admFilter">' + ['' ].concat(ADMIN_STATUSES).map(function (s) {
+          return '<button type="button" class="chip" data-filter="' + esc(s) + '" aria-pressed="' + (adm.filter === s) + '">' + esc(s || t('admAll')) + '</button>';
+        }).join('') + '</div>';
+    } else {
+      html += '<input class="input" id="admPQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchP')) + '" value="' + esc(adm.pq) + '">';
+    }
+    return html + '<div id="admList">' + adminListHtml() + '</div>' +
+      '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>';
+  }
+
+  function renderAdminList() {
+    var box = document.getElementById('admList');
+    if (box) box.innerHTML = adminListHtml();
+  }
+
+  function adminListHtml() {
+    if (adm.loading) return '<p class="state__text adm__msg">' + esc(t('admLoading')) + '</p>';
+    if (adm.error) return '<p class="form__err">' + esc(t(adm.error)) + '</p>';
+    return adm.tab === 'orders' ? ordersHtml() : productsHtml();
+  }
+
+  function ordersHtml() {
+    var q = adm.q.trim().toLowerCase().replace(/\s+/g, '');
+    var list = (adm.orders || []).filter(function (o) {
+      if (adm.filter && o.status !== adm.filter) return false;
+      return !q || (o.num + ' ' + o.phone + ' ' + o.name).toLowerCase().replace(/\s+/g, '').indexOf(q) >= 0;
+    });
+    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    return '<ul class="lines">' + list.map(function (o) {
+      var open = adm.open === o.num;
+      var html = '<li class="ord"><button type="button" class="ord__head" data-ord="' + esc(o.num) + '" aria-expanded="' + open + '">' +
+        '<span class="ord__num">' + esc(o.num) + '</span><span class="badge ' + (STATUS_BADGE[o.status] || '') + '">' + esc(o.status) + '</span>' +
+        (o.test ? '<span class="badge">' + esc(t('admTest')) + '</span>' : '') +
+        '<span class="ord__sum">' + money(o.total) + '</span>' +
+        '<span class="ord__meta">' + esc(o.date) + ' · ' + esc(o.name) + '</span></button>';
+      if (open) {
+        html += '<div class="ord__body"><ul class="ord__items">' + String(o.items).split('; ').map(function (s) {
+          return s ? '<li>' + esc(s) + '</li>' : '';
+        }).join('') + '</ul>' +
+          '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br><a href="tel:' + esc(o.phone) + '">' + esc(o.phone) + '</a></p>' +
+          '<p>' + esc(o.delivery) + (o.city ? ': ' + esc(o.city) + ', ' + esc(o.branch) : '') + '<br>' + esc(o.pay) + '</p>' +
+          (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') +
+          '<div class="ord__acts">' + STATUS_BTNS.map(function (b) {
+            return '<button type="button" class="btn' + (o.status === b[2] ? ' btn--soft' : '') + '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' +
+              (o.status === b[2] || adm.busy ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
+          }).join('') + '</div>' +
+          '<button type="button" class="btn btn--block" data-chat="' + esc(o.username ? 'https://t.me/' + o.username.replace(/^@/, '') : 'https://t.me/' + o.phone) + '">' +
+          esc(t('admWrite')) + '</button></div>';
+      }
+      return html + '</li>';
+    }).join('') + '</ul>';
+  }
+
+  function adminPrice(p) {
+    return p.price > 0 ? String(p.price).replace('.', ',') + NBSP + '₴' + (p.t === 'w' ? '/' + weight(1000) : '') : '—';
+  }
+
+  function productsHtml() {
+    var q = adm.pq.trim().toLowerCase();
+    var list = (adm.products || []).filter(function (p) {
+      return !q || (p.ua + ' ' + p.ru + ' ' + p.id).toLowerCase().indexOf(q) >= 0;
+    });
+    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    var html = '<ul class="lines">' + list.slice(0, 60).map(function (p) {
+      return '<li class="prod"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
+        '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) + '</span></button>' +
+        '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"><span></span></button></li>';
+    }).join('') + '</ul>';
+    if (list.length > 60) html += '<p class="state__text adm__msg">' + esc(t('admMore')) + '</p>';
+    return html;
+  }
+
+  function adminProduct(id) {
+    var found = null;
+    (adm.products || []).forEach(function (p) { if (p.id === id) found = p; });
+    return found;
+  }
+
+  function productFormHtml() {
+    var p = adminProduct(adm.edit);
+    if (!p) return '';
+    function row(id, label, value, attrs, hint) {
+      return '<div class="field"><label class="label" for="a-' + id + '">' + esc(label) + '</label>' +
+        '<input class="input" id="a-' + id + '" ' + attrs + ' value="' + esc(value) + '">' + (hint ? '<p class="field__hint">' + esc(hint) + '</p>' : '') + '</div>';
+    }
+    function area(id, label, value) {
+      return '<div class="field"><label class="label" for="a-' + id + '">' + esc(label) + '</label>' +
+        '<textarea class="input input--area" id="a-' + id + '" rows="3" maxlength="600">' + esc(value) + '</textarea></div>';
+    }
+    return '<form class="form" id="admForm" novalidate><p class="label">' + esc(p.id) + '</p>' +
+      '<p class="form__err" id="admErr" role="alert" hidden></p>' +
+      row('ua', t('admNameUa'), p.ua, 'type="text" maxlength="120"') +
+      row('ru', t('admNameRu'), p.ru, 'type="text" maxlength="120"') +
+      row('price', t(p.t === 'w' ? 'admPriceKg' : 'admPriceUnit'), p.price || '', 'type="text" inputmode="decimal" maxlength="9"') +
+      row('packs', t('admPacks'), p.packs, 'type="text" maxlength="80"', p.t === 'w' ? t('admPacksHint') : '') +
+      area('dUa', t('admDescUa'), p.dUa) + area('dRu', t('admDescRu'), p.dRu) +
+      '<label class="check"><input type="checkbox" id="a-stock"' + (p.stock ? ' checked' : '') + '><span>' + esc(t('admStock')) + '</span></label>' +
+      '<button type="button" class="btn btn--primary btn--block" data-action="adm-save">' + esc(t('admSave')) + '</button></form>';
+  }
+
+  function saveProductForm() {
+    var p = adminProduct(adm.edit);
+    if (!p || adm.busy) return;
+    function val(id) { return document.getElementById('a-' + id).value.trim(); }
+    var next = { ua: val('ua'), ru: val('ru'), packs: val('packs'), dUa: val('dUa'), dRu: val('dRu') };
+    var price = Number(val('price').replace(/\s/g, '').replace(',', '.') || 0);
+    var err = document.getElementById('admErr');
+    if (!next.ua || !(price >= 0)) {
+      err.textContent = t(!next.ua ? 'admErrName' : 'admErrPrice'); err.hidden = false;
+      return;
+    }
+    var patch = {};
+    Object.keys(next).forEach(function (k) { if (next[k] !== p[k]) patch[k] = next[k]; });
+    if (price !== p.price) patch.price = price;
+    var stock = document.getElementById('a-stock').checked ? 1 : 0;
+    if (stock !== p.stock) patch.stock = !!stock;
+    if (!Object.keys(patch).length) { adm.edit = ''; renderPage(); return; }
+    patchProduct(p, patch, function (ok) {
+      if (ok) { adm.edit = ''; renderPage(); window.scrollTo(0, 0); }
+      else { err.textContent = t('admFail'); err.hidden = false; }
+    });
+  }
+
+  function patchProduct(p, patch, done) {
+    adm.busy = true;
+    api('admin.product', { id: p.id, patch: patch }).then(function (res) {
+      adm.busy = false;
+      if (!res || !res.ok) throw new Error('fail');
+      Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
+      toast(t('admSaved'));
+      loadCatalog(); // витрина сразу подхватывает правку
+      done(true);
+    }).catch(function () { adm.busy = false; toast(t('admFail')); done(false); });
+  }
+
+  function adminClick(e) {
+    var tab = e.target.closest('[data-tab]');
+    if (tab) { adm.tab = tab.getAttribute('data-tab'); renderPage(); loadAdmin(false); return true; }
+    var f = e.target.closest('[data-filter]');
+    if (f) {
+      adm.filter = f.getAttribute('data-filter');
+      Array.prototype.forEach.call(document.querySelectorAll('#admFilter .chip'), function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-filter') === adm.filter));
+      });
+      renderAdminList(); return true;
+    }
+    var ord = e.target.closest('[data-ord]');
+    if (ord) { var num = ord.getAttribute('data-ord'); adm.open = adm.open === num ? '' : num; renderAdminList(); return true; }
+    var st = e.target.closest('[data-st]');
+    if (st && !st.disabled) {
+      var order = null;
+      adm.orders.forEach(function (o) { if (o.num === st.getAttribute('data-num')) order = o; });
+      if (!order) return true;
+      adm.busy = true; renderAdminList();
+      api('admin.status', { num: order.num, code: st.getAttribute('data-st') }).then(function (res) {
+        adm.busy = false;
+        if (!res || !res.ok) throw new Error('fail');
+        order.status = res.status;
+        toast(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''));
+        renderAdminList();
+      }).catch(function () { adm.busy = false; toast(t('admFail')); renderAdminList(); });
+      return true;
+    }
+    var chat = e.target.closest('[data-chat]');
+    if (chat) {
+      var url = chat.getAttribute('data-chat');
+      try { tg.openTelegramLink(url); } catch (err) { window.open(url, '_blank'); }
+      return true;
+    }
+    var sw = e.target.closest('[data-stock]');
+    if (sw && !adm.busy) {
+      var p = adminProduct(sw.getAttribute('data-stock'));
+      if (!p) return true;
+      var want = !p.stock;
+      sw.setAttribute('aria-checked', String(want));
+      patchProduct(p, { stock: want }, function () { renderAdminList(); });
+      return true;
+    }
+    var ed = e.target.closest('[data-edit]');
+    if (ed) { adm.edit = ed.getAttribute('data-edit'); renderPage(); window.scrollTo(0, 0); return true; }
+    var act = e.target.closest('[data-action]');
+    if (act && act.getAttribute('data-action') === 'adm-refresh') { loadAdmin(true); return true; }
+    if (act && act.getAttribute('data-action') === 'adm-save') { saveProductForm(); return true; }
+    return false;
+  }
+
   function bindPage() {
     el.page.addEventListener('click', function (e) {
+      if (state.view === 'admin' && !e.target.closest('[data-nav]') && adminClick(e)) return;
       var nav = e.target.closest('[data-nav]');
       if (nav) {
         if (nav.getAttribute('data-nav') === 'back') goBack(); else go('catalog');
@@ -1135,6 +1401,8 @@
 
     el.page.addEventListener('input', function (e) {
       var input = e.target;
+      if (input.id === 'admQ') { adm.q = input.value; renderAdminList(); return; }
+      if (input.id === 'admPQ') { adm.pq = input.value; renderAdminList(); return; }
       if (!input.name || state.view !== 'checkout') return;
       if (input.name === 'phone') input.value = formatPhone(input.value);
       if (input.getAttribute('aria-invalid')) setError(input.name, '');
@@ -1217,6 +1485,7 @@
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeSheet(); });
 
     el.cartBtn.addEventListener('click', function () { go('cart'); });
+    el.adminBtn.addEventListener('click', function () { go('admin'); });
     el.barBtn.addEventListener('click', mainAction);
     bindPage();
 
@@ -1240,5 +1509,7 @@
   loadForm();
   loadCart();
   bind();
+  el.adminBtn.hidden = !adminHint;
   loadCatalog();
+  if (adminHint && params.get('admin') === '1') go('admin');
 })();
