@@ -7,5 +7,5 @@ window.PAMIR_CONFIG = {
   BOT: 'pamir_spices_bot',
   // Короткое имя Mini App из BotFather (/newapp), например 'shop'. Пока пусто, ссылки на товар
   // идут через чат бота (t.me/бот?start=ID); с именем — открывают товар сразу (t.me/бот/shop?startapp=ID).
-  APP: ''
+  APP: 'shop'
 };
