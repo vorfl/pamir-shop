@@ -13,6 +13,14 @@
       out: 'Немає в наявності',
       badgeIn: 'Є в наявності',
       badgeNew: 'Новинка', badgeHit: 'Хіт', badgeSale: 'Знижка', featureCta: 'Обрати',
+      myOrders: 'Мої замовлення', myEmpty: 'Замовлень поки немає', myEmptyText: 'Після першого замовлення воно з’явиться тут.',
+      myErr: 'Не вдалося завантажити замовлення. Спробуйте ще раз.', myTg: 'Свої замовлення видно, коли магазин відкрито в Telegram.',
+      myRefresh: 'Оновити', repeat: 'Повторити замовлення', repeatOld: 'Це замовлення зроблено до оновлення: зберіть кошик заново.',
+      repeatNone: 'Цих товарів зараз немає в наявності.',
+      repeatPart: 'Додано позицій: {a} з {b}. Решти зараз немає в наявності або змінилася фасовка.',
+      repeatOk: 'Товари з замовлення додано в кошик. Перевірте суму і кількість.',
+      ost_новий: 'Прийнято', 'ost_підтверджено': 'Підтверджено', 'ost_немає в наявності': 'Немає в наявності',
+      'ost_відправлено': 'Відправлено', 'ost_виконано': 'Виконано', 'ost_скасовано': 'Скасовано',
       admBadge: 'Бейдж на картці', admBadgeNone: 'Без бейджа', admOld: 'Стара ціна, ₴ (буде закреслена)',
       admOldHint: 'У тих самих одиницях, що й ціна. Порожньо — без знижки.',
       admLink: 'Посилання на товар для постів', admLinkCopy: 'Скопіювати посилання', admLinkCopied: 'Посилання скопійовано',
@@ -121,6 +129,14 @@
       out: 'Нет в наличии',
       badgeIn: 'В наличии',
       badgeNew: 'Новинка', badgeHit: 'Хит', badgeSale: 'Скидка', featureCta: 'Выбрать',
+      myOrders: 'Мои заказы', myEmpty: 'Заказов пока нет', myEmptyText: 'После первого заказа он появится здесь.',
+      myErr: 'Не удалось загрузить заказы. Попробуйте ещё раз.', myTg: 'Свои заказы видно, когда магазин открыт в Telegram.',
+      myRefresh: 'Обновить', repeat: 'Повторить заказ', repeatOld: 'Этот заказ сделан до обновления: соберите корзину заново.',
+      repeatNone: 'Этих товаров сейчас нет в наличии.',
+      repeatPart: 'Добавлено позиций: {a} из {b}. Остальных сейчас нет в наличии или изменилась фасовка.',
+      repeatOk: 'Товары из заказа добавлены в корзину. Проверьте сумму и количество.',
+      ost_новий: 'Принят', 'ost_підтверджено': 'Подтверждён', 'ost_немає в наявності': 'Нет в наличии',
+      'ost_відправлено': 'Отправлен', 'ost_виконано': 'Выполнен', 'ost_скасовано': 'Отменён',
       admBadge: 'Бейдж на карточке', admBadgeNone: 'Без бейджа', admOld: 'Старая цена, ₴ (будет зачёркнута)',
       admOldHint: 'В тех же единицах, что и цена. Пусто — без скидки.',
       admLink: 'Ссылка на товар для постов', admLinkCopy: 'Скопировать ссылку', admLinkCopied: 'Ссылка скопирована',
@@ -241,7 +257,8 @@
     truck: '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>',
     store: '<path d="M3 9.5 4.5 4h15L21 9.5"/><path d="M3 9.5a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"/><path d="M5 12.2V20h14v-7.8"/><path d="M10 20v-4h4v4"/>',
     'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
-    check: '<path d="M20 6 9 17l-5-5"/>'
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    rotate: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'
   };
 
   function icon(name) {
@@ -278,7 +295,7 @@
     catalog: null,
     status: 'loading', // loading | ready | error
     sheet: null,       // { id, vi, qty }
-    view: 'catalog',   // catalog | cart | checkout | done | admin
+    view: 'catalog',   // catalog | cart | checkout | done | admin | orders
     scrollY: 0,
     cart: { t: 0, i: [] }, // i: [{ id, g (граммы, 0 = штука/упаковка), q, pr (цена за единицу), was? }]
     form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '' },
@@ -301,7 +318,8 @@
     toast: document.getElementById('toast'),
     cartBtn: document.getElementById('cartBtn'),
     cartCount: document.getElementById('cartCount'),
-    adminBtn: document.getElementById('adminBtn')
+    adminBtn: document.getElementById('adminBtn'),
+    ordersBtn: document.getElementById('ordersBtn')
   };
 
   /* ------------------------------ Форматы ------------------------------ */
@@ -806,7 +824,7 @@
   /* --------------------- Экраны и нижняя кнопка --------------------- */
   function go(view) {
     if (state.view === 'catalog') state.scrollY = window.scrollY || 0;
-    if (state.view === 'cart' && view !== 'cart') { ackPriceChanges(); state.cartNotice = ''; }
+    if (state.view === 'cart' && view !== 'cart') { ackPriceChanges(); state.cartNotice = ''; state.cartNoticeInfo = false; }
     if (view === 'checkout' && !(cartTotal() > 0)) view = 'cart';
     if (state.sheet) closeSheet();
     state.view = view;
@@ -815,6 +833,7 @@
     renderPage();
     updateChrome();
     if (view === 'admin') loadAdmin(false);
+    if (view === 'orders') loadMyOrders();
     window.scrollTo(0, view === 'catalog' ? state.scrollY : 0);
   }
 
@@ -828,11 +847,11 @@
   /** Что сейчас делает главная кнопка: null — кнопки нет. */
   function mainSpec() {
     var total = cartTotal();
-    if (state.sheet || state.view === 'done' || state.view === 'admin' || !(total > 0)) return null;
+    if (state.sheet || state.view === 'done' || state.view === 'admin' || state.view === 'orders' || !(total > 0)) return null;
     if (state.view === 'checkout') return { text: t('confirmBtn') + ' · ' + money(total), run: submitOrder };
     if (state.view === 'cart') return { text: t('checkoutBtn') + ' · ' + money(total), run: function () {
       var min = Number(shopInfo().min) || 0;
-      if (min > 0 && cartTotal() < min) { state.cartNotice = t('minOrder') + ' ' + money(min); renderPage(); window.scrollTo(0, 0); haptic('error'); return; }
+      if (min > 0 && cartTotal() < min) { state.cartNoticeInfo = false; state.cartNotice = t('minOrder') + ' ' + money(min); renderPage(); window.scrollTo(0, 0); haptic('error'); return; }
       go('checkout');
     } };
     return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('cart'); } };
@@ -881,6 +900,7 @@
     else if (state.view === 'checkout') { el.page.innerHTML = checkoutHtml(); syncCheckout(); }
     else if (state.view === 'done') el.page.innerHTML = doneHtml();
     else if (state.view === 'admin') el.page.innerHTML = adminHtml();
+    else if (state.view === 'orders') el.page.innerHTML = myOrdersHtml();
     else el.page.innerHTML = '';
   }
 
@@ -894,7 +914,9 @@
 
   function cartHtml() {
     var html = pageHead(t('cart'));
-    if (state.cartNotice) html += '<p class="form__err" role="alert">' + esc(state.cartNotice) + '</p>';
+    if (state.cartNotice) html += state.cartNoticeInfo
+      ? '<p class="note note--opt" role="status">' + esc(state.cartNotice) + '</p>'
+      : '<p class="form__err" role="alert">' + esc(state.cartNotice) + '</p>';
     if (!state.cart.i.length) {
       return html + '<div class="state">' + MARK +
         '<p class="state__title">' + esc(t('cartEmptyTitle')) + '</p>' +
@@ -1195,7 +1217,7 @@
       state.rid = '';
       loadCatalog().then(function () {
         setBusy(false);
-        state.cartNotice = t('cartChanged');
+        state.cartNoticeInfo = false; state.cartNotice = t('cartChanged');
         go('cart');
       });
       return;
@@ -1222,6 +1244,84 @@
       '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(d.total) + '</span></div></div>' +
       '<button type="button" class="btn btn--primary btn--block" data-nav="catalog">' + esc(t('doneBack')) + '</button>';
     return html;
+  }
+
+  /* ------------------------------ Мои заказы (этап 6) ------------------------------ */
+  var my = { list: null, loading: false, error: '' };
+
+  function postApi(action, data) {
+    var body = { action: action, initData: inTelegram ? tg.initData : '' };
+    Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
+    return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  }
+
+  function loadMyOrders() {
+    if (!cfg.API_URL || !inTelegram) { my.error = 'myTg'; renderPage(); return; }
+    if (my.loading) return;
+    my.loading = true; my.error = '';
+    renderPage();
+    postApi('orders.my').then(function (res) {
+      my.loading = false;
+      if (!res || !res.ok) throw new Error('fail');
+      my.list = res.orders || [];
+      if (state.view === 'orders') renderPage();
+    }).catch(function () {
+      my.loading = false; my.error = 'myErr';
+      if (state.view === 'orders') renderPage();
+    });
+  }
+
+  function myOrdersHtml() {
+    var html = pageHead(t('myOrders'));
+    if (my.loading && !my.list) return html + '<div class="skeleton skeleton--row"></div><div class="skeleton skeleton--row"></div>';
+    if (my.error && !my.list) {
+      return html + '<p class="state__text adm__msg">' + esc(t(my.error)) + '</p>' +
+        (my.error === 'myTg' ? '' : '<button type="button" class="btn btn--block" data-action="my-refresh">' + esc(t('myRefresh')) + '</button>');
+    }
+    if (!my.list || !my.list.length) {
+      return html + '<div class="state">' + MARK + '<p class="state__title">' + esc(t('myEmpty')) + '</p><p class="state__text">' + esc(t('myEmptyText')) + '</p>' +
+        '<button type="button" class="btn btn--primary" data-nav="catalog">' + esc(t('doneBack')) + '</button></div>';
+    }
+    html += '<ul class="lines">' + my.list.map(function (o) {
+      var items = String(o.items).split('; ').filter(Boolean).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
+      return '<li class="my"><div class="my__head"><span class="ord__num">' + esc(o.num) + '</span>' +
+        '<span class="badge ' + (STATUS_BADGE[o.status] || '') + '">' + esc(t('ost_' + o.status) === 'ost_' + o.status ? o.status : t('ost_' + o.status)) + '</span>' +
+        '<span class="my__date">' + esc(o.date) + '</span></div>' +
+        '<ul class="my__items">' + items + '</ul>' +
+        '<div class="my__foot"><span class="total">' + money(o.total) + '</span>' +
+        (o.i ? '<button type="button" class="btn btn--soft" data-repeat="' + esc(o.num) + '">' + icon('rotate') + esc(t('repeat')) + '</button>'
+             : '<span class="my__old">' + esc(t('repeatOld')) + '</span>') + '</div></li>';
+    }).join('') + '</ul>' +
+      '<button type="button" class="btn btn--block" data-action="my-refresh">' + esc(t('myRefresh')) + '</button>';
+    return html;
+  }
+
+  /** «Повторить заказ»: кладём в корзину то, что сейчас можно купить по тем же фасовкам. */
+  function repeatOrder(num) {
+    var order = null;
+    (my.list || []).forEach(function (o) { if (o.num === num) order = o; });
+    if (!order || !order.i) return;
+    var added = 0;
+    order.i.forEach(function (it) {
+      var id = String(it[0]), g = Number(it[1]) || 0, q = Math.max(1, Math.min(MAX_QTY, Math.floor(Number(it[2])) || 1));
+      var p = product(id);
+      var price = unitPrice(p, g);
+      if (!(price > 0)) return;
+      var line = null;
+      state.cart.i.forEach(function (l) { if (l.id === id && l.g === g) line = l; });
+      if (line) { line.q = Math.min(MAX_QTY, line.q + q); line.pr = price; }
+      else state.cart.i.push({ id: id, g: g, q: q, pr: price });
+      added++;
+    });
+    if (!added) { toast(t('repeatNone')); haptic('error'); return; }
+    saveCart();
+    haptic('success');
+    state.cartNotice = added < order.i.length ? t('repeatPart').replace('{a}', added).replace('{b}', order.i.length) : t('repeatOk');
+    renderMain();
+    go('cart');
+    state.cartNoticeInfo = true; // это подсказка, а не ошибка
+    renderPage();
   }
 
   /* ------------------------------ Админ-панель (этап 5) ------------------------------ */
@@ -1680,6 +1780,10 @@
         if (nav.getAttribute('data-nav') === 'back') goBack(); else go('catalog');
         return;
       }
+      var rep = e.target.closest('[data-repeat]');
+      if (rep) { repeatOrder(rep.getAttribute('data-repeat')); return; }
+      var myr = e.target.closest('[data-action="my-refresh"]');
+      if (myr) { loadMyOrders(); return; }
       var del = e.target.closest('[data-line-del]');
       if (del) {
         state.cart.i.splice(Number(del.getAttribute('data-line-del')), 1);
@@ -1806,6 +1910,7 @@
 
     el.cartBtn.addEventListener('click', function () { go('cart'); });
     el.adminBtn.addEventListener('click', function () { go('admin'); });
+    el.ordersBtn.addEventListener('click', function () { go('orders'); });
     el.barBtn.addEventListener('click', mainAction);
     bindPage();
 
@@ -1830,6 +1935,7 @@
   loadCart();
   bind();
   el.adminBtn.hidden = !adminHint;
+  el.ordersBtn.hidden = !(inTelegram || DEBUG);
   loadCatalog();
   if (adminHint && params.get('admin') === '1') go('admin');
 })();

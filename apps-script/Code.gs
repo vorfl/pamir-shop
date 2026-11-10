@@ -492,6 +492,7 @@ function doPost(e) {
     var body = JSON.parse(text || '{}');
     if (body.action !== 'admin.photo' && text.length > 20000) throw new Error('body too large');
     if (body.action === 'order') out = handleOrder_(body);
+    else if (body.action === 'orders.my') out = handleMyOrders_(body);
     else if (String(body.action).indexOf('admin.') === 0) out = handleAdmin_(body);
     else out = { ok: false, error: 'unknown_action' };
   } catch (err) {
@@ -554,6 +555,7 @@ function handleOrder_(body) {
   var byId = {};
   catalog.products.forEach(function (p) { byId[p.id] = p; });
   var lines = [];
+  var compact = []; // [id, граммы, количество] — по этому «Повторить заказ» собирает корзину заново
   var total = 0;
   var bad = false;
   body.items.forEach(function (it) {
@@ -568,6 +570,7 @@ function handleOrder_(body) {
     }
     if (!(price > 0)) { bad = true; return; }
     lines.push(p.ua + (p.t === 'w' ? ' ' + weightLabel_(g) : '') + ' × ' + q + ' = ' + price * q + ' ₴');
+    compact.push([id, g, q]);
     total += price * q;
   });
   if (bad || Number(body.total) !== total) return { ok: false, error: 'changed' };
@@ -603,6 +606,7 @@ function handleOrder_(body) {
     put('city', safeCell_(o.city)); put('branch', safeCell_(o.branch));
     put('pay', PAY_UA[o.pay]); put('comment', safeCell_(o.comment));
     put('items', safeCell_(o.items)); put('total', o.total); put('lang', o.lang); put('source', o.source);
+    put('svc', JSON.stringify({ i: compact }));
     sheet.appendRow(row);
     rowIndex = sheet.getLastRow();
     SpreadsheetApp.flush();
@@ -624,7 +628,7 @@ function handleOrder_(body) {
     });
     var sheet2 = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
     var col2 = orderCols_(sheet2);
-    if (col2.svc >= 0 && sent.length) sheet2.getRange(rowIndex, col2.svc + 1).setValue(JSON.stringify({ m: sent }));
+    if (col2.svc >= 0 && sent.length) sheet2.getRange(rowIndex, col2.svc + 1).setValue(JSON.stringify({ i: compact, m: sent }));
     if (o.uid && !isTest) {
       tg_(token, 'sendMessage', { chat_id: o.uid, text: clientText_('new', o) });
     }
@@ -632,6 +636,44 @@ function handleOrder_(body) {
     console.error('notify: ' + (err && err.stack || err));
   }
   return { ok: true, number: o.num };
+}
+
+/** «Мої замовлення»: последние заказы этого клиента. Кто спрашивает — определяется только по подписи Telegram. */
+function handleMyOrders_(body) {
+  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  if (!token) return { ok: false, error: 'not_configured' };
+  var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
+  if (!user) return { ok: false, error: 'bad_auth' };
+  var uid = String(user.id);
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
+  if (!sheet || sheet.getLastRow() < 2) return { ok: true, orders: [] };
+  var col = orderCols_(sheet);
+  if (col.uid < 0) return { ok: true, orders: [] };
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  var orders = [];
+  for (var r = values.length - 1; r >= 0 && orders.length < 20; r--) {
+    var row = values[r];
+    if (String(row[col.uid]).trim() !== uid || !cell_(row, col.num)) continue;
+    if (cell_(row, col.source).indexOf('test') >= 0) continue;
+    var date = col.date >= 0 ? row[col.date] : '';
+    var isDate = Object.prototype.toString.call(date) === '[object Date]' && !isNaN(date.getTime());
+    var again = null;
+    try {
+      var svc = JSON.parse(cell_(row, col.svc) || '{}');
+      if (Array.isArray(svc.i) && svc.i.length) again = svc.i;
+    } catch (err) { again = null; }
+    var delivery = cell_(row, col.delivery);
+    orders.push({
+      num: cell_(row, col.num),
+      date: isDate ? Utilities.formatDate(date, 'Europe/Kiev', 'dd.MM.yyyy HH:mm') : '',
+      status: cell_(row, col.status) || STATUS_NEW,
+      items: cell_(row, col.items),
+      total: toNum_(col.total >= 0 ? row[col.total] : 0),
+      delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
+      i: again
+    });
+  }
+  return { ok: true, orders: orders };
 }
 
 /**

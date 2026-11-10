@@ -508,3 +508,13 @@ select.input { -webkit-appearance: menulist; appearance: auto; }
 .feature__text { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .feature__foot { margin-top: auto; padding-top: var(--space-2); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
 .feature .btn { margin-top: 0; padding: 0 var(--space-4); }
+
+/* ---------- Этап 6: мои заказы ---------- */
+.my { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); list-style: none; }
+.my__head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.my__date { margin-left: auto; font-size: 13px; line-height: 18px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.my__items { margin: 0; padding: 0 0 0 var(--space-4); font-size: 14px; line-height: 20px; }
+.my__foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; padding-top: var(--space-2); border-top: 1px solid var(--line); }
+.my__old { font-size: 13px; line-height: 18px; color: var(--ink-muted); flex: 1; min-width: 160px; }
+.my .btn { gap: var(--space-2); padding: 0 var(--space-4); }
+.skeleton--row { aspect-ratio: auto; height: 120px; border-radius: var(--radius-lg); }
