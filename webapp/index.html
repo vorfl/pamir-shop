@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#FAF6EF">
+  <meta name="format-detection" content="telephone=no">
   <title>PAMIR</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=11">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body data-view="catalog">
@@ -28,9 +30,6 @@
   <header class="top">
     <h1 class="brand"><svg class="brand__logo" role="img" aria-label="PAMIR"><use href="#logo"/></svg></h1>
     <div class="top__right">
-      <button type="button" id="ordersBtn" class="iconbtn" aria-label="Мої замовлення" hidden>
-        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="m7.5 4.27 9 5.15"/></svg>
-      </button>
       <button type="button" id="adminBtn" class="iconbtn" aria-label="Адмін-панель" hidden>
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg>
       </button>
@@ -45,28 +44,33 @@
     <div class="tools__row">
       <label class="search">
         <span class="search__icon" id="searchIcon" aria-hidden="true"></span>
-        <input id="search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" spellcheck="false">
+        <input id="search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button type="button" id="searchClear" class="search__clear" aria-label="Очистити" hidden></button>
       </label>
-      <button type="button" id="cartBtn" class="cartbtn" aria-label="Кошик">
-        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>
-        <span id="cartCount" class="cartbtn__count" hidden>0</span>
+      <button type="button" id="filterBtn" class="toolbtn" aria-label="Сортування і фільтри">
+        <span id="filterIcon" aria-hidden="true"></span>
+        <span id="filterDot" class="toolbtn__dot" hidden></span>
       </button>
     </div>
+    <div class="recent" id="recent" hidden></div>
     <div class="chips" id="chips" role="group"></div>
   </div>
 
-  <main id="main" class="main" aria-live="polite"></main>
+  <main id="main" class="main"></main>
 
   <!-- Экраны: корзина, оформление, «замовлення прийнято» -->
   <section id="page" class="page"></section>
 
+  <!-- Нижняя навигация: каталог, избранное, корзина, профиль -->
+  <nav id="tabbar" class="tabbar" aria-label="PAMIR"></nav>
+
   <div id="bar" class="bar" hidden><button type="button" id="barBtn" class="btn btn--primary btn--block"></button></div>
-  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="toast" class="toast" role="status" hidden><span id="toastText"></span><button type="button" id="toastBtn" class="toast__btn" hidden></button></div>
 
   <div id="backdrop" class="backdrop" hidden></div>
   <section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden></section>
 
-  <script src="config.js?v=10"></script>
-  <script src="app.js?v=10"></script>
+  <script src="config.js?v=11"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>

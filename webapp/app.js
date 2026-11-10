@@ -1,5 +1,6 @@
 /* PAMIR — витрина (Telegram Mini App). Чистый JS, без сборки.
  * Этап 1: каталог. Этап 2: корзина и оформление. Этап 3: отправка заказа на сервер.
+ * Этап 7: главная с подборками, нижняя навигация, избранное, фильтры, профиль, подарки, аналитика.
  */
 (function () {
   'use strict';
@@ -267,6 +268,94 @@
     rotate: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'
   };
 
+
+  /* Тексты этапа 7 (главная, избранное, фильтры, профиль, подарки, аналитика). */
+  var I18N_MORE = {
+    ua: {
+      navHome: 'Каталог', navFav: 'Обране', navCart: 'Кошик', navMe: 'Профіль',
+      favTitle: 'Обране', favEmptyTitle: 'В обраному поки порожньо', favEmpty: 'Натисніть на сердечко біля товару, і він збережеться тут.',
+      favAdd: 'Додати в обране', favDel: 'Прибрати з обраного', favAdded: 'Додано в обране', favRemoved: 'Прибрано з обраного',
+      secAgain: 'Купити знову', secPop: 'Популярне', secPopSub: 'за замовленнями за 30 днів', secSale: 'Знижки', secNew: 'Новинки',
+      secSets: 'Набори', secSeen: 'Ви дивилися', secForYou: 'Вам може сподобатися', secAll: 'Усі товари',
+      found: 'Знайдено: {n}', showMore: 'Показати ще',
+      sortBtn: 'Сортування і фільтри', sortTitle: 'Сортування', sortDef: 'Як у магазині', sortPop: 'Спочатку популярні',
+      sortAsc: 'Спочатку дешевші', sortDesc: 'Спочатку дорожчі', sortAz: 'За назвою',
+      filTitle: 'Показувати', filStock: 'Лише в наявності', filSale: 'Лише зі знижкою', filApply: 'Показати товари', filReset: 'Скинути',
+      badgeSet: 'Набір', bought: 'Замовлень за 30 днів: {n}', leftPcs: 'Залишилось {n} шт', leftKg: 'Залишилось {n} кг',
+      saleTill: 'Знижка діє до {d} включно', benefit: 'Вигода {n}',
+      related: 'Разом із цим купують', similar: 'Схожі товари',
+      notifyBtn: 'Повідомити, коли з’явиться', notifyOk: 'Напишемо вам у Telegram, щойно товар з’явиться', notifyDup: 'Ви вже підписані на цей товар',
+      notifyFail: 'Не вдалося підписатися. Спробуйте ще раз.', notifyTg: 'Підписка працює, коли магазин відкрито в Telegram.',
+      share: 'Поділитися', shareCopied: 'Посилання скопійовано', open: 'Відкрити',
+      undo: 'Повернути', removed: 'Товар прибрано з кошика', clearCart: 'Очистити кошик', clearAsk: 'Прибрати всі товари з кошика?', cleared: 'Кошик очищено',
+      cartMore: 'Додайте до замовлення', inCartNow: 'У кошику: {n}',
+      giftLeft: 'Ще {n} до подарунка: {g}', giftOk: 'Подарунок до замовлення: {g}', giftFrom: 'Подарунок до замовлення від {n}: {g}',
+      minLeft: 'До мінімальної суми замовлення ще {n}',
+      loyalTitle: 'Постійним клієнтам', loyalText: 'До кожного {k}-го замовлення даруємо: {g}',
+      loyalLeft: 'Виконано замовлень: {a}. До подарунка ще {b}.', loyalNext: 'Наступне замовлення буде з подарунком.',
+      meShop: 'Де нас знайти', meHome: 'Додати на головний екран', meHomeOk: 'PAMIR додано на головний екран', meLang: 'Мова',
+      doneGift: 'До замовлення додамо подарунок: {g}', recent: 'Ви шукали', clear: 'Очистити',
+      coItems: 'Товарів: {n}', edit: 'Змінити', offline: 'Немає з’єднання. Показуємо збережений каталог.',
+      admQty: 'Залишок (кг для вагового, шт для решти)', admQtyHint: 'Порожньо — не рахувати. Після кожного замовлення зменшується сам; на нулі товар стає «немає».',
+      admEnd: 'Знижка діє до', admEndHint: 'Після цієї дати товар знову коштує як «стара ціна». Порожньо — без терміну.',
+      admKpi: 'Середній чек', admRepeat: 'Повторні покупці', admFunnel: 'Воронка за 30 днів (сесії)',
+      fOpen: 'Відкрили магазин', fView: 'Дивилися товар', fAdd: 'Додали в кошик', fCheckout: 'Почали оформлення', fOrder: 'Замовили',
+      admCr: 'Конверсія в замовлення', admZero: 'Шукали і не знайшли', admViewed: 'Найчастіше дивляться',
+      admNoEvents: 'Дані про поведінку з’являться після перших відвідувань.', admOf: 'з'
+    },
+    ru: {
+      navHome: 'Каталог', navFav: 'Избранное', navCart: 'Корзина', navMe: 'Профиль',
+      favTitle: 'Избранное', favEmptyTitle: 'В избранном пока пусто', favEmpty: 'Нажмите на сердечко у товара, и он сохранится здесь.',
+      favAdd: 'Добавить в избранное', favDel: 'Убрать из избранного', favAdded: 'Добавлено в избранное', favRemoved: 'Убрано из избранного',
+      secAgain: 'Купить снова', secPop: 'Популярное', secPopSub: 'по заказам за 30 дней', secSale: 'Скидки', secNew: 'Новинки',
+      secSets: 'Наборы', secSeen: 'Вы смотрели', secForYou: 'Вам может понравиться', secAll: 'Все товары',
+      found: 'Найдено: {n}', showMore: 'Показать ещё',
+      sortBtn: 'Сортировка и фильтры', sortTitle: 'Сортировка', sortDef: 'Как в магазине', sortPop: 'Сначала популярные',
+      sortAsc: 'Сначала дешевле', sortDesc: 'Сначала дороже', sortAz: 'По названию',
+      filTitle: 'Показывать', filStock: 'Только в наличии', filSale: 'Только со скидкой', filApply: 'Показать товары', filReset: 'Сбросить',
+      badgeSet: 'Набор', bought: 'Заказов за 30 дней: {n}', leftPcs: 'Осталось {n} шт', leftKg: 'Осталось {n} кг',
+      saleTill: 'Скидка действует до {d} включительно', benefit: 'Выгода {n}',
+      related: 'Вместе с этим покупают', similar: 'Похожие товары',
+      notifyBtn: 'Сообщить, когда появится', notifyOk: 'Напишем вам в Telegram, как только товар появится', notifyDup: 'Вы уже подписаны на этот товар',
+      notifyFail: 'Не удалось подписаться. Попробуйте ещё раз.', notifyTg: 'Подписка работает, когда магазин открыт в Telegram.',
+      share: 'Поделиться', shareCopied: 'Ссылка скопирована', open: 'Открыть',
+      undo: 'Вернуть', removed: 'Товар убран из корзины', clearCart: 'Очистить корзину', clearAsk: 'Убрать все товары из корзины?', cleared: 'Корзина очищена',
+      cartMore: 'Добавьте к заказу', inCartNow: 'В корзине: {n}',
+      giftLeft: 'Ещё {n} до подарка: {g}', giftOk: 'Подарок к заказу: {g}', giftFrom: 'Подарок к заказу от {n}: {g}',
+      minLeft: 'До минимальной суммы заказа ещё {n}',
+      loyalTitle: 'Постоянным клиентам', loyalText: 'К каждому {k}-му заказу дарим: {g}',
+      loyalLeft: 'Выполнено заказов: {a}. До подарка ещё {b}.', loyalNext: 'Следующий заказ будет с подарком.',
+      meShop: 'Где нас найти', meHome: 'Добавить на главный экран', meHomeOk: 'PAMIR добавлен на главный экран', meLang: 'Язык',
+      doneGift: 'К заказу добавим подарок: {g}', recent: 'Вы искали', clear: 'Очистить',
+      coItems: 'Товаров: {n}', edit: 'Изменить', offline: 'Нет соединения. Показываем сохранённый каталог.',
+      admQty: 'Остаток (кг для весового, шт для остального)', admQtyHint: 'Пусто — не считать. После каждого заказа уменьшается сам; на нуле товар становится «немає».',
+      admEnd: 'Скидка действует до', admEndHint: 'После этой даты товар снова стоит как «старая цена». Пусто — без срока.',
+      admKpi: 'Средний чек', admRepeat: 'Повторные покупатели', admFunnel: 'Воронка за 30 дней (сессии)',
+      fOpen: 'Открыли магазин', fView: 'Смотрели товар', fAdd: 'Добавили в корзину', fCheckout: 'Начали оформление', fOrder: 'Заказали',
+      admCr: 'Конверсия в заказ', admZero: 'Искали и не нашли', admViewed: 'Чаще всего смотрят',
+      admNoEvents: 'Данные о поведении появятся после первых посещений.', admOf: 'из'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_MORE[lang]).forEach(function (k) { I18N[lang][k] = I18N_MORE[lang][k]; });
+  });
+
+  var ICONS_MORE = {
+    heart: '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>',
+    home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    sliders: '<path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/>',
+    share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.82 3.98"/>',
+    bell: '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
+    gift: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M12 8v13"/><path d="M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7"/><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5"/>',
+    pin: '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    phone: '<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>',
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    box: '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="m7.5 4.27 9 5.15"/>'
+  };
+  Object.keys(ICONS_MORE).forEach(function (k) { ICONS[k] = ICONS_MORE[k]; });
+
   function icon(name) {
     return ICONS[name] ? '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">' + ICONS[name] + '</svg>' : '';
   }
@@ -307,7 +396,8 @@
     form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '' },
     done: null,
     cartNotice: '',
-    rid: ''            // id попытки заказа: повторная отправка не создаст второй заказ
+    rid: '',           // id попытки заказа: повторная отправка не создаст второй заказ
+    offline: false     // свежий каталог не загрузился, показываем сохранённую копию
   };
 
   var el = {
@@ -322,10 +412,14 @@
     bar: document.getElementById('bar'),
     barBtn: document.getElementById('barBtn'),
     toast: document.getElementById('toast'),
-    cartBtn: document.getElementById('cartBtn'),
-    cartCount: document.getElementById('cartCount'),
+    toastText: document.getElementById('toastText'),
+    toastBtn: document.getElementById('toastBtn'),
     adminBtn: document.getElementById('adminBtn'),
-    ordersBtn: document.getElementById('ordersBtn')
+    tabbar: document.getElementById('tabbar'),
+    searchClear: document.getElementById('searchClear'),
+    filterBtn: document.getElementById('filterBtn'),
+    filterDot: document.getElementById('filterDot'),
+    recent: document.getElementById('recent')
   };
 
   /* ------------------------------ Форматы ------------------------------ */
@@ -399,6 +493,7 @@
   function setCatalog(data) {
     data.byId = {};
     data.products.forEach(function (p) { data.byId[p.id] = p; });
+    buildSearchIndex(data);
     state.catalog = data;
     state.status = 'ready';
     if (state.cat && !data.categories.some(function (c) { return c.code === state.cat; })) state.cat = '';
@@ -440,6 +535,7 @@
       .then(function (data) {
         clearTimeout(timer);
         if (!data || !data.ok || !Array.isArray(data.products)) throw new Error('bad catalog');
+        if (state.offline) { state.offline = false; renderBanner(); }
         var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
         var old = state.catalog
           ? JSON.stringify({ c: state.catalog.categories, p: state.catalog.products, s: state.catalog.shop })
@@ -457,8 +553,170 @@
         if (!state.catalog) {
           state.status = 'error';
           renderMain();
+        } else if (cfg.API_URL) {
+          state.offline = true;
+          renderBanner();
         }
       });
+  }
+
+  /* ------------------------- Избранное, просмотренное, поиск ------------------------- */
+  var PAGE_SIZE = 30;
+  var FAV_KEY = 'pamir_fav_v1', SEEN_KEY = 'pamir_seen_v1', SEARCH_KEY = 'pamir_search_v1';
+  var SUBS_KEY = 'pamir_subs_v1', HASORD_KEY = 'pamir_has_orders';
+  var favs = [], seen = [], searches = [], subs = [];
+  var flt = { sort: '', onlyStock: false, onlySale: false, limit: PAGE_SIZE };
+
+  /** Текст с подстановками: tf('found', { n: 12 }) → «Знайдено: 12». */
+  function tf(key, vars) {
+    return t(key).replace(/\{(\w+)\}/g, function (m, k) { return vars[k] === undefined ? m : String(vars[k]); });
+  }
+
+  function readList(key, max) {
+    try {
+      var a = JSON.parse(store.get(key) || '[]');
+      return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string' && x; }).slice(0, max) : [];
+    } catch (e) { return []; }
+  }
+
+  function saveList(key, cloudKey, list) {
+    var text = JSON.stringify(list);
+    store.set(key, text);
+    if (cloudKey && cloudOk() && text.length <= 4096) {
+      try { tg.CloudStorage.setItem(cloudKey, text, function () {}); } catch (e) { /* облако недоступно */ }
+    }
+  }
+
+  function loadLists() {
+    favs = readList(FAV_KEY, 200);
+    seen = readList(SEEN_KEY, 12);
+    searches = readList(SEARCH_KEY, 6);
+    subs = readList(SUBS_KEY, 40);
+    if (!cloudOk()) return;
+    // Новый телефон: избранное и просмотренное приезжают из Telegram, если здесь ещё пусто.
+    try {
+      tg.CloudStorage.getItems(['fav', 'seen'], function (err, values) {
+        if (err || !values) return;
+        var changed = false;
+        function take(cloudKey, max) {
+          try {
+            var a = JSON.parse(values[cloudKey] || '[]');
+            return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string' && x; }).slice(0, max) : [];
+          } catch (e) { return []; }
+        }
+        if (!favs.length) { favs = take('fav', 200); if (favs.length) { store.set(FAV_KEY, JSON.stringify(favs)); changed = true; } }
+        if (!seen.length) { seen = take('seen', 12); if (seen.length) { store.set(SEEN_KEY, JSON.stringify(seen)); changed = true; } }
+        if (!changed) return;
+        if (state.status === 'ready' && state.view === 'catalog') renderMain();
+        if (state.view === 'fav') renderPage();
+        renderTabbar();
+      });
+    } catch (e) { /* облако недоступно */ }
+  }
+
+  function isFav(id) { return favs.indexOf(id) >= 0; }
+
+  function toggleFav(id) {
+    var i = favs.indexOf(id), on = i < 0;
+    if (on) favs.unshift(id); else favs.splice(i, 1);
+    favs = favs.slice(0, 200);
+    saveList(FAV_KEY, 'fav', favs);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-fav]'), function (b) {
+      if (b.getAttribute('data-fav') !== id) return;
+      b.setAttribute('aria-pressed', String(on));
+      b.setAttribute('aria-label', t(on ? 'favDel' : 'favAdd'));
+      if (on) { b.classList.remove('is-pop'); void b.offsetWidth; b.classList.add('is-pop'); }
+    });
+    hapticLight();
+    if (on) track('fav', id);
+    renderTabbar();
+    if (state.view === 'fav' && !state.sheet) renderPage();
+  }
+
+  function favBtn(p) {
+    var on = isFav(p.id);
+    return '<button type="button" class="fav" data-fav="' + esc(p.id) + '" aria-pressed="' + on + '" aria-label="' + esc(t(on ? 'favDel' : 'favAdd')) + '">' + icon('heart') + '</button>';
+  }
+
+  function markSeen(id) {
+    var i = seen.indexOf(id);
+    if (i === 0) return;
+    if (i > 0) seen.splice(i, 1);
+    seen.unshift(id);
+    seen = seen.slice(0, 12);
+    saveList(SEEN_KEY, 'seen', seen);
+  }
+
+  /** Нижний регистр, «ё» = «е», без апострофов: «мʼята» и «мята» находят одно и то же. */
+  function norm(s) {
+    return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[ʼ’'`]/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  function buildSearchIndex(data) {
+    var cats = {};
+    data.categories.forEach(function (c) { cats[c.code] = c.ua + ' ' + c.ru; });
+    data.sx = {}; data.sn = {};
+    data.products.forEach(function (p) {
+      data.sn[p.id] = norm(p.ua + ' ' + (p.ru || '') + ' ' + p.id);
+      data.sx[p.id] = data.sn[p.id] + ' ' + norm((cats[p.c] || '') + ' ' + (p.dUa || '') + ' ' + (p.dRu || ''));
+    });
+  }
+
+  function rememberSearch(q) {
+    q = q.trim().slice(0, 40);
+    if (q.length < 2) return;
+    var key = norm(q);
+    searches = searches.filter(function (s) { return norm(s) !== key; });
+    searches.unshift(q);
+    searches = searches.slice(0, 6);
+    saveList(SEARCH_KEY, '', searches);
+  }
+
+  /** Поиск завершён (Enter, уход из поля): запоминаем запрос и отмечаем в аналитике, нашлось ли что-то. */
+  var lastTracked = '';
+  function commitSearch() {
+    var q = state.q.trim();
+    if (q.length < 2 || !state.catalog || norm(q) === lastTracked) return;
+    lastTracked = norm(q);
+    var n = visibleProducts().length;
+    if (n) rememberSearch(q);
+    track(n ? 'search' : 'search0', '', q.slice(0, 60));
+  }
+
+  function renderRecent() {
+    var show = document.activeElement === el.search && !el.search.value && searches.length > 0;
+    el.recent.hidden = !show;
+    if (!show) return;
+    el.recent.innerHTML = '<span class="recent__label">' + esc(t('recent')) + '</span>' + searches.map(function (s) {
+      return '<button type="button" class="chip chip--sm" data-recent="' + esc(s) + '">' + esc(s) + '</button>';
+    }).join('') + '<button type="button" class="recent__clear" data-recent-clear="1">' + esc(t('clear')) + '</button>';
+  }
+
+  /* ------------------------------ Аналитика ------------------------------ */
+  /* События копятся и уходят пачкой: при сворачивании магазина, раз в 20 секунд или когда набралось 20 штук. */
+  var SID = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  var evQueue = [], evTimer = null;
+
+  function track(name, id, value) {
+    if (!cfg.API_URL || !inTelegram) return;
+    evQueue.push({ e: name, id: id || '', v: value === undefined || value === null ? '' : String(value), t: Date.now() });
+    if (evQueue.length >= 20) flushEvents(false);
+    else if (!evTimer) evTimer = setTimeout(function () { flushEvents(false); }, evQueue.length === 1 && name === 'open' ? 8000 : 20000);
+  }
+
+  function flushEvents(leaving) {
+    clearTimeout(evTimer);
+    evTimer = null;
+    if (!evQueue.length || !cfg.API_URL || !inTelegram) return;
+    var body = JSON.stringify({ action: 'ev', initData: tg.initData, sid: SID, events: evQueue.splice(0, 40) });
+    try {
+      if (leaving && navigator.sendBeacon) {
+        navigator.sendBeacon(cfg.API_URL, new Blob([body], { type: 'text/plain;charset=utf-8' }));
+        return;
+      }
+      fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, keepalive: true })
+        .catch(function () { /* аналитика не должна мешать магазину */ });
+    } catch (e) { /* аналитика не должна мешать магазину */ }
   }
 
   /* ------------------------------ Отрисовка ------------------------------ */
@@ -466,11 +724,14 @@
     document.documentElement.lang = state.lang === 'ru' ? 'ru' : 'uk';
     el.search.placeholder = t('search');
     el.search.setAttribute('aria-label', t('search'));
+    el.searchClear.setAttribute('aria-label', t('clear'));
+    el.filterBtn.setAttribute('aria-label', t('sortBtn'));
     Array.prototype.forEach.call(document.querySelectorAll('.lang button'), function (b) {
       b.setAttribute('aria-pressed', String(b.getAttribute('data-lang') === state.lang));
     });
     renderBanner();
     renderChips();
+    renderRecent();
     renderMain();
     if (state.sheet) renderSheet();
     if (state.view === 'checkout') updateCheckoutSum(); else if (state.view !== 'admin') renderPage();
@@ -481,6 +742,7 @@
     var parts = [];
     if (DEBUG) parts.push(t('debug'));
     if (!cfg.API_URL) parts.push(t('demo'));
+    if (state.offline && state.catalog) parts.push(t('offline'));
     el.banner.hidden = parts.length === 0;
     el.banner.textContent = parts.join(' · ');
     // Объявление магазина из настроек («Сьогодні не працюємо»).
@@ -506,16 +768,44 @@
         icon(c.icon) + esc(state.lang === 'ru' ? c.ru : c.ua) + '</button>';
     });
     el.chips.innerHTML = html;
+    var active = el.chips.querySelector('[aria-pressed="true"]');
+    if (active && active.scrollIntoView && state.cat) {
+      try { active.scrollIntoView({ block: 'nearest', inline: 'center' }); } catch (e) { /* старый браузер */ }
+    }
+    el.filterDot.hidden = !(flt.sort || flt.onlyStock || flt.onlySale);
+  }
+
+  function hasOld(p) { return p.o > (p.t === 'w' ? p.k : p.p); }
+
+  /** Главная: ни поиска, ни категории, ни фильтров — показываем подборки. */
+  function isHome() {
+    return !state.q.trim() && !state.cat && !flt.sort && !flt.onlyStock && !flt.onlySale;
   }
 
   function visibleProducts() {
-    var q = state.q.trim().toLowerCase();
+    var tokens = norm(state.q).split(' ').filter(Boolean);
+    var sx = state.catalog.sx || {}, sn = state.catalog.sn || {};
     var list = state.catalog.products.filter(function (p) {
       if (state.cat && p.c !== state.cat) return false;
-      if (!q) return true;
-      return (p.ua + ' ' + (p.ru || '') + ' ' + p.id).toLowerCase().indexOf(q) >= 0;
+      if (flt.onlyStock && !p.a) return false;
+      if (flt.onlySale && !(p.a && hasOld(p))) return false;
+      var text = sx[p.id] || '';
+      return tokens.every(function (tk) { return text.indexOf(tk) >= 0; });
     });
-    // Товары, которых нет, уходят в конец; порядок остальных — как в таблице.
+    if (tokens.length) { // совпадение в названии важнее совпадения в описании
+      var inName = function (p) { var text = sn[p.id] || ''; return tokens.every(function (tk) { return text.indexOf(tk) >= 0; }); };
+      list = list.filter(inName).concat(list.filter(function (p) { return !inName(p); }));
+    }
+    if (flt.sort === 'asc' || flt.sort === 'desc') {
+      var dir = flt.sort === 'asc' ? 1 : -1;
+      var val = function (p) { var cp = cardPrice(p); return cp ? cp.price : Infinity * dir; };
+      list = list.slice().sort(function (a, b) { return (val(a) - val(b)) * dir; });
+    } else if (flt.sort === 'pop') {
+      list = list.slice().sort(function (a, b) { return (b.n || 0) - (a.n || 0); });
+    } else if (flt.sort === 'az') {
+      list = list.slice().sort(function (a, b) { return name(a).localeCompare(name(b), state.lang === 'ru' ? 'ru' : 'uk'); });
+    }
+    // Товары, которых нет, уходят в конец; порядок остальных — как выбрано (по умолчанию как в таблице).
     return list.filter(function (p) { return p.a; }).concat(list.filter(function (p) { return !p.a; }));
   }
 
@@ -525,14 +815,19 @@
       : MARK;
   }
 
-  function badgeHtml(p) {
-    return p.a
-      ? '<span class="badge badge--stock">' + esc(t('badgeIn')) + '</span>'
-      : '<span class="badge badge--out">' + esc(t('badgeOut')) + '</span>';
+  function leftText(p) {
+    return p.q > 0 ? tf(p.t === 'w' ? 'leftKg' : 'leftPcs', { n: String(p.q).replace('.', ',') }) : '';
   }
 
-  var PROMO = { 'new': 'badgeNew', hit: 'badgeHit', sale: 'badgeSale' };
-  /** Бейдж «Новинка / Хіт / Знижка»; у товара, которого нет, не показываем. */
+  /** Бейдж наличия. На карточке — только когда это важно: товара нет или он заканчивается. */
+  function badgeHtml(p, always) {
+    if (!p.a) return '<span class="badge badge--out">' + esc(t('badgeOut')) + '</span>';
+    if (p.q > 0) return '<span class="badge badge--low">' + esc(leftText(p)) + '</span>';
+    return always ? '<span class="badge badge--stock">' + esc(t('badgeIn')) + '</span>' : '';
+  }
+
+  var PROMO = { 'new': 'badgeNew', hit: 'badgeHit', sale: 'badgeSale', set: 'badgeSet' };
+  /** Бейдж «Новинка / Хіт / Знижка / Набір»; у товара, которого нет, не показываем. */
   function promoHtml(p) {
     return p.a && PROMO[p.b] ? '<span class="badge promo promo--' + p.b + '">' + esc(t(PROMO[p.b])) + '</span>' : '';
   }
@@ -541,45 +836,126 @@
       (cp.old ? '<s class="price-old">' + money(cp.old) + '</s>' : '') + '<span class="unit">' + esc(cp.unit) + '</span>';
   }
 
-  /** Блок наверху каталога («Наша курага»): виден без поиска и фильтра, пока товар в наличии. */
+  /** Блок наверху каталога («Наша курага»): виден на главной, пока товар в наличии. */
   function featureHtml() {
     var f = shopInfo().feature;
-    if (!f || state.q.trim() || state.cat) return '';
+    if (!f) return '';
     var p = state.catalog.byId[f.id];
     if (!p || !p.a) return '';
     var ru = state.lang === 'ru';
     var title = (ru ? f.title.ru : f.title.ua) || name(p);
     var text = (ru ? f.text.ru : f.text.ua) || '';
     var cp = cardPrice(p);
-    return '<article class="feature card" data-id="' + esc(p.id) + '"><div class="feature__img card__img">' + photoHtml(p) + '</div>' +
+    return '<article class="feature" data-id="' + esc(p.id) + '"><div class="feature__img card__img">' + photoHtml(p) + '</div>' +
       '<div class="feature__body"><h2 class="feature__title">' + esc(title) + '</h2>' +
       (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') +
       '<div class="feature__foot"><div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
       '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
   }
 
-  function cardHtml(p) {
-    var cp = cardPrice(p);
-    var meta = cp ? priceHtml(cp) : '';
-    var inCart = p.a ? cartQty(p.id) : 0;
-    var btn = inCart
-      ? '<button type="button" class="btn btn--soft btn--block">' + esc(t('inCart')) + ' · ' + inCart + '</button>'
-      : p.a
-      ? '<button type="button" class="btn btn--primary btn--block"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>' + esc(t('toCart')) + '</button>'
-      : '<button type="button" class="btn btn--block" disabled>' + esc(t('out')) + '</button>';
-    return '<article class="card' + (p.a ? '' : ' card--out') + '" data-id="' + esc(p.id) + '">' +
-      '<div class="card__img">' + photoHtml(p) + badgeHtml(p) + promoHtml(p) + '</div>' +
-      '<h2 class="card__name">' + esc(name(p)) + '</h2>' +
-      '<div class="card__meta">' + meta + '</div>' + btn + '</article>';
+  /** Подарок от суммы и подарок постоянным клиентам — если они заданы в настройках магазина. */
+  function perksHtml() {
+    var s = shopInfo(), ru = state.lang === 'ru', out = '';
+    function perk(ico, text) { return '<p class="perk">' + icon(ico) + '<span>' + esc(text) + '</span></p>'; }
+    if (s.gift) out += perk('gift', tf('giftFrom', { n: money(s.gift.from), g: ru ? s.gift.ru : s.gift.ua }));
+    if (s.loyal) out += perk('users', tf('loyalText', { k: s.loyal.every, g: ru ? s.loyal.ru : s.loyal.ua }));
+    return out ? '<div class="perks">' + out + '</div>' : '';
   }
 
-  function renderMain() {
-    if (state.status === 'loading') {
-      var sk = '';
-      for (var i = 0; i < 6; i++) sk += '<div class="skeleton"></div>';
-      el.main.innerHTML = '<div class="grid" aria-hidden="true">' + sk + '</div>';
-      return;
+  /** Кнопка под карточкой. Штучный товар кладётся в корзину сразу; у весового сначала выбирают вес. */
+  function actHtml(p) {
+    if (!p.a) return '<button type="button" class="btn btn--block" disabled>' + esc(t('out')) + '</button>';
+    var n = cartQty(p.id);
+    if (p.t === 'w') {
+      return n
+        ? '<button type="button" class="btn btn--soft btn--block">' + esc(t('inCart')) + ' · ' + n + '</button>'
+        : '<button type="button" class="btn btn--primary btn--block"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>' + esc(t('toCart')) + '</button>';
     }
+    if (!n) {
+      return '<button type="button" class="btn btn--primary btn--block" data-quick="1"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>' + esc(t('toCart')) + '</button>';
+    }
+    return '<div class="step step--card" role="group" aria-label="' + esc(t('qty')) + '">' +
+      '<button type="button" data-quick="-1" aria-label="' + esc(t('less')) + '">' + icon('minus') + '</button>' +
+      '<output>' + n + '</output>' +
+      '<button type="button" data-quick="1" aria-label="' + esc(t('more')) + '"' + (n >= maxQty(p, 0) ? ' disabled' : '') + '>' + icon('plus') + '</button></div>';
+  }
+
+  function cardHtml(p) {
+    var cp = cardPrice(p);
+    return '<article class="card' + (p.a ? '' : ' card--out') + '" data-id="' + esc(p.id) + '">' +
+      '<div class="card__img">' + photoHtml(p) + badgeHtml(p) + promoHtml(p) + favBtn(p) + '</div>' +
+      '<h2 class="card__name">' + esc(name(p)) + '</h2>' +
+      '<div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
+      '<div class="card__act" data-act="' + esc(p.id) + '">' + actHtml(p) + '</div></article>';
+  }
+
+  /** Маленькая карточка для горизонтальных подборок. quick — с кнопкой «+» (в корзине). */
+  function miniHtml(p, quick) {
+    var cp = cardPrice(p);
+    return '<article class="mini" data-id="' + esc(p.id) + '"><div class="mini__img card__img">' + photoHtml(p) + promoHtml(p) +
+      (quick ? '<button type="button" class="mini__add" data-quick="1" aria-label="' + esc(t('addToCart')) + '">' + icon('plus') + '</button>' : '') + '</div>' +
+      '<h3 class="mini__name">' + esc(name(p)) + '</h3>' +
+      '<div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div></article>';
+  }
+
+  function railHtml(title, sub, list, quick) {
+    if (!list.length) return '';
+    return '<section class="rail"><div class="rail__head"><h2 class="rail__title">' + esc(title) + '</h2>' +
+      (sub ? '<span class="rail__sub">' + esc(sub) + '</span>' : '') + '</div><div class="rail__list">' +
+      list.map(function (p) { return miniHtml(p, quick); }).join('') + '</div></section>';
+  }
+
+  function inStockList(ids) {
+    return ids.map(product).filter(function (p) { return p && p.a; });
+  }
+
+  /** Популярное — по настоящим заказам за 30 дней; пока заказов мало, показываем товары с бейджем «Хіт». */
+  function popular(limit) {
+    var all = state.catalog.products;
+    var list = all.filter(function (p) { return p.a && p.n > 0; }).sort(function (a, b) { return b.n - a.n; });
+    if (list.length >= 3) return { list: list.slice(0, limit), real: true };
+    return { list: all.filter(function (p) { return p.a && p.b === 'hit'; }).slice(0, limit), real: false };
+  }
+
+  /** «Вам може сподобатися»: товары из тех же категорий, что человек смотрел и покупал, которых он ещё не видел. */
+  function forYou() {
+    var base = seen.concat(my.bought || []);
+    if (base.length < 2) return [];
+    var cats = {}, skip = {};
+    base.forEach(function (id) { var p = product(id); skip[id] = 1; if (p) cats[p.c] = (cats[p.c] || 0) + 1; });
+    state.cart.i.forEach(function (l) { skip[l.id] = 1; });
+    return state.catalog.products.filter(function (p) { return p.a && cats[p.c] && !skip[p.id]; })
+      .sort(function (a, b) { return (cats[b.c] - cats[a.c]) || ((b.n || 0) - (a.n || 0)); }).slice(0, 10);
+  }
+
+  function homeRails() {
+    var all = state.catalog.products, html = '';
+    function two(list) { return list.length >= 2 ? list.slice(0, 10) : []; }
+    html += railHtml(t('secAgain'), '', inStockList(my.bought || []).slice(0, 10));
+    if (all.length >= 8) { // в совсем маленьком каталоге подборки только повторяли бы список ниже
+      var pop = popular(10);
+      html += railHtml(t('secPop'), pop.real ? t('secPopSub') : '', two(pop.list));
+      html += railHtml(t('secSale'), '', two(all.filter(function (p) { return p.a && hasOld(p); })));
+      html += railHtml(t('secNew'), '', two(all.filter(function (p) { return p.a && p.b === 'new'; })));
+      html += railHtml(t('secSets'), '', two(all.filter(function (p) { return p.a && p.b === 'set'; })));
+      html += railHtml(t('secForYou'), '', two(forYou()));
+    }
+    html += railHtml(t('secSeen'), '', seen.map(product).filter(Boolean).slice(0, 10));
+    return html;
+  }
+
+  function skeletonHtml() {
+    var cards = '';
+    for (var i = 0; i < 6; i++) {
+      cards += '<div class="skel"><div class="skel__img"></div><div class="skel__line"></div><div class="skel__line skel__line--short"></div><div class="skel__btn"></div></div>';
+    }
+    return '<div class="grid" aria-hidden="true">' + cards + '</div>';
+  }
+
+  var moreObs = null;
+  function renderMain() {
+    if (moreObs) { moreObs.disconnect(); moreObs = null; }
+    if (state.status === 'loading') { el.main.innerHTML = skeletonHtml(); return; }
     if (state.status === 'error') {
       el.main.innerHTML = '<div class="state">' + MARK +
         '<p class="state__title">' + esc(t('errTitle')) + '</p>' +
@@ -588,28 +964,100 @@
       return;
     }
     var list = visibleProducts();
+    var home = isHome();
     if (!list.length) {
       el.main.innerHTML = '<div class="state">' + MARK +
         '<p class="state__title">' + esc(t('emptyTitle')) + '</p>' +
         '<p class="state__text">' + esc(t('emptyText')) + '</p>' +
-        '<button type="button" class="btn" data-action="reset">' + esc(t('reset')) + '</button></div>';
+        '<button type="button" class="btn" data-action="reset">' + esc(t('reset')) + '</button></div>' +
+        railHtml(t('secPop'), '', popular(10).list);
       return;
     }
-    el.main.innerHTML = featureHtml() + '<div class="grid">' + list.map(cardHtml).join('') + '</div>';
+    var html = home ? featureHtml() + perksHtml() + homeRails() : '';
+    html += '<div class="grid__head"><h2 class="rail__title">' + esc(home ? t('secAll') : tf('found', { n: list.length })) + '</h2></div>' +
+      '<div class="grid" id="grid">' + list.slice(0, flt.limit).map(cardHtml).join('') + '</div>';
+    if (list.length > flt.limit) {
+      html += '<div class="more" id="more"><button type="button" class="btn btn--block" data-action="more">' + esc(t('showMore')) + '</button></div>';
+    }
+    el.main.innerHTML = html;
+    // Длинный каталог рисуется порциями: следующая появляется, когда до неё доскроллили.
+    var more = document.getElementById('more');
+    if (more && window.IntersectionObserver) {
+      moreObs = new IntersectionObserver(function (entries) {
+        if (entries.some(function (x) { return x.isIntersecting; })) showMore();
+      }, { rootMargin: '600px 0px' });
+      moreObs.observe(more);
+    }
+  }
+
+  function showMore() {
+    var grid = document.getElementById('grid');
+    if (!grid || !state.catalog) return;
+    var list = visibleProducts();
+    grid.insertAdjacentHTML('beforeend', list.slice(flt.limit, flt.limit + PAGE_SIZE).map(cardHtml).join(''));
+    flt.limit += PAGE_SIZE;
+    if (flt.limit >= list.length) {
+      var more = document.getElementById('more');
+      if (more) more.parentNode.removeChild(more);
+      if (moreObs) { moreObs.disconnect(); moreObs = null; }
+    }
+  }
+
+  /** Обновляет только кнопки под карточками: фото не перерисовываются и не мигают. */
+  function refreshActs() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-act]'), function (box) {
+      var p = product(box.getAttribute('data-act'));
+      if (p) box.innerHTML = actHtml(p);
+    });
+  }
+
+  /** Новый поиск, категория или фильтр: список с начала. */
+  function resetList() {
+    flt.limit = PAGE_SIZE;
+    if (state.status === 'ready') renderMain();
   }
 
   /* ------------------------------ Шторка товара ------------------------------ */
+  /** Сколько штук этой фасовки можно положить в корзину (с учётом остатка, если он известен). */
+  function maxQty(p, g) {
+    if (!(p.q > 0)) return MAX_QTY;
+    var n = p.t === 'w' ? (g > 0 ? Math.floor(p.q * 1000 / g + 1e-9) : 0) : Math.floor(p.q);
+    return Math.max(0, Math.min(MAX_QTY, n));
+  }
+
   function openSheet(id) {
     var p = state.catalog && state.catalog.byId[id];
     if (!p) return;
-    state.sheet = { id: id, vi: 0, qty: 1 };
+    var vi = 0;
+    if (p.t === 'w') { // первая фасовка, которой хватает на складе
+      for (var i = 0; i < p.v.length; i++) if (maxQty(p, p.v[i][0]) >= 1) { vi = i; break; }
+    }
+    var wasOpen = !!state.sheet;
+    state.sheet = { id: id, vi: vi, qty: 1 };
     renderSheet();
+    showSheet(wasOpen);
+    if (wasOpen) el.sheet.querySelector('.sheet__body').scrollTop = 0;
+    markSeen(id);
+    track('view', id);
+  }
+
+  function openFilter() {
+    state.sheet = { kind: 'filter' };
+    renderSheet();
+    showSheet(false);
+  }
+
+  function showSheet(wasOpen) {
+    el.sheet.style.transform = '';
     el.sheet.hidden = false;
     el.backdrop.hidden = false;
     document.body.classList.add('is-locked');
     updateChrome();
-    var closeBtn = el.sheet.querySelector('.sheet__close');
-    if (closeBtn) closeBtn.focus({ preventScroll: true });
+    swipes(false);
+    if (!wasOpen) {
+      var closeBtn = el.sheet.querySelector('.sheet__close');
+      if (closeBtn) closeBtn.focus({ preventScroll: true });
+    }
   }
 
   function closeSheet() {
@@ -617,8 +1065,16 @@
     state.sheet = null;
     el.sheet.hidden = true;
     el.backdrop.hidden = true;
+    el.sheet.style.transform = '';
     document.body.classList.remove('is-locked');
     updateChrome();
+    swipes(state.view !== 'checkout');
+  }
+
+  /** Пока открыта шторка или форма заказа, жест «потянуть вниз» не должен сворачивать весь магазин. */
+  function swipes(on) {
+    if (!inTelegram) return;
+    try { if (on) tg.enableVerticalSwipes(); else tg.disableVerticalSwipes(); } catch (e) { /* старый клиент Telegram */ }
   }
 
   /** Сумма позиции. Та же формула, что на сервере: цена варианта × количество. */
@@ -629,25 +1085,68 @@
 
   /** Сумма позиции по старой цене (для зачёркивания); 0 — скидки нет. */
   function oldTotal(p, vi, qty) {
-    var base = p.t === 'w' ? p.k : p.p;
-    if (!(p.o > base)) return 0;
+    if (!hasOld(p)) return 0;
     var unit = p.t === 'w' ? (p.v[vi] ? Math.round(p.o * p.v[vi][0] / 1000) : 0) : Math.round(p.o);
     return unit * qty;
   }
 
+  /** Что показать под товаром: «разом купують» по настоящим заказам, а пока их мало — товары той же категории. */
+  function relatedFor(p) {
+    var real = (p.r || []).map(product).filter(function (x) { return x && x.a && x.id !== p.id; });
+    if (real.length) return { title: 'related', list: real.slice(0, 8) };
+    var same = state.catalog.products.filter(function (x) { return x.a && x.c === p.c && x.id !== p.id; })
+      .sort(function (a, b) { return (b.n || 0) - (a.n || 0); }).slice(0, 8);
+    return { title: 'similar', list: same };
+  }
+
+  var SORTS = [['', 'sortDef'], ['pop', 'sortPop'], ['asc', 'sortAsc'], ['desc', 'sortDesc'], ['az', 'sortAz']];
+
+  function filterSheetHtml() {
+    var hasPop = state.catalog && state.catalog.products.some(function (p) { return p.n > 0; });
+    var sorts = SORTS.filter(function (s) { return s[0] !== 'pop' || hasPop; }).map(function (s) {
+      return '<label class="opt"><input type="radio" name="sort" value="' + s[0] + '"' + (flt.sort === s[0] ? ' checked' : '') +
+        '><span class="opt__box"><span>' + esc(t(s[1])) + '</span></span></label>';
+    }).join('');
+    function check(key, label) {
+      return '<label class="check"><input type="checkbox" name="' + key + '"' + (flt[key] ? ' checked' : '') + '><span>' + esc(t(label)) + '</span></label>';
+    }
+    var n = state.catalog ? visibleProducts().length : 0;
+    return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
+      '<div class="sheet__grab" aria-hidden="true"></div>' +
+      '<div class="sheet__body"><h2 class="sheet__title sheet__title--pad" id="sheetTitle">' + esc(t('sortBtn')) + '</h2>' +
+      '<div><p class="label">' + esc(t('sortTitle')) + '</p><div class="opts opts--col">' + sorts + '</div></div>' +
+      '<div><p class="label">' + esc(t('filTitle')) + '</p>' + check('onlyStock', 'filStock') + check('onlySale', 'filSale') + '</div></div>' +
+      '<div class="sheet__foot sheet__foot--two"><button type="button" class="btn" data-action="fil-reset">' + esc(t('filReset')) + '</button>' +
+      '<button type="button" class="btn btn--primary" data-action="fil-apply">' + esc(t('filApply')) + ' · ' + n + '</button></div>';
+  }
+
   function renderSheet() {
     var s = state.sheet;
+    if (s.kind === 'filter') { el.sheet.innerHTML = filterSheetHtml(); return; }
     var p = state.catalog && state.catalog.byId[s.id];
     if (!p) { closeSheet(); return; }
     if (p.t === 'w' && s.vi >= p.v.length) s.vi = 0;
+    var grams = p.t === 'w' ? (p.v[s.vi] ? p.v[s.vi][0] : 0) : 0;
+    var max = maxQty(p, grams);
+    if (s.qty > max) s.qty = Math.max(1, max);
+    var total = lineTotal(p, s.vi, s.qty), old = oldTotal(p, s.vi, s.qty);
+    var canBuy = p.a && total > 0 && max >= 1;
 
-    var body = '<div class="sheet__img">' + photoHtml(p) + '</div>' +
-      '<div class="sheet__head"><div class="sheet__badges">' + badgeHtml(p) + promoHtml(p) + '</div>' +
+    var body = '<div class="sheet__img">' + photoHtml(p) + '<div class="sheet__acts">' +
+      '<button type="button" class="fav fav--share" data-action="share" aria-label="' + esc(t('share')) + '">' + icon('share') + '</button>' +
+      favBtn(p) + '</div></div>' +
+      '<div class="sheet__head"><div class="sheet__badges">' + badgeHtml(p, true) + promoHtml(p) + '</div>' +
       '<h2 class="sheet__title" id="sheetTitle">' + esc(name(p)) + '</h2>';
     if (p.t === 'w' && p.k > 0) {
       body += '<p class="sheet__perkg">' + money(p.k) + (p.o > p.k ? ' <s class="price-old">' + money(p.o) + '</s>' : '') + ' ' + esc(t('per')) + ' ' + weight(1000) + '</p>';
     }
     body += '</div>';
+
+    // Только факты: сколько раз заказывали, до какого числа скидка. Выдуманных счётчиков здесь нет.
+    var facts = '';
+    if (p.a && p.n >= 3) facts += '<li>' + icon('users') + '<span>' + esc(tf('bought', { n: p.n })) + '</span></li>';
+    if (p.a && p.e && hasOld(p)) facts += '<li>' + icon('clock') + '<span>' + esc(tf('saleTill', { d: p.e.split('-').reverse().slice(0, 2).join('.') })) + '</span></li>';
+    if (facts) body += '<ul class="facts">' + facts + '</ul>';
 
     var d = desc(p);
     if (d) body += '<p class="sheet__desc">' + esc(d) + '</p>';
@@ -656,21 +1155,25 @@
       if (p.t === 'w') {
         body += '<div><p class="label">' + esc(t('packing')) + '</p><div class="weights" role="group" aria-label="' + esc(t('packing')) + '">';
         p.v.forEach(function (v, i) {
-          body += '<button type="button" data-vi="' + i + '" aria-pressed="' + (i === s.vi) + '">' + weight(v[0]) + '</button>';
+          body += '<button type="button" data-vi="' + i + '" aria-pressed="' + (i === s.vi) + '"' + (maxQty(p, v[0]) < 1 ? ' disabled' : '') + '><b>' + weight(v[0]) + '</b><span>' + money(v[1]) + '</span></button>';
         });
         body += '</div></div>';
       } else if (p.pk) {
-        body += '<div><p class="label">' + esc(t('packing')) + '</p><div class="weights"><button type="button" aria-pressed="true" tabindex="-1">' +
-          esc(p.pk.replace(/ /g, NBSP)) + '</button></div></div>';
+        body += '<div><p class="label">' + esc(t('packing')) + '</p><div class="weights"><button type="button" aria-pressed="true" tabindex="-1"><b>' +
+          esc(p.pk.replace(/ /g, NBSP)) + '</b></button></div></div>';
       }
       body += '<div class="buy"><div class="step" role="group" aria-label="' + esc(t('qty')) + '">' +
         '<button type="button" data-step="-1" aria-label="' + esc(t('less')) + '"' + (s.qty <= 1 ? ' disabled' : '') + '>' + icon('minus') + '</button>' +
         '<output>' + s.qty + NBSP + esc(t('pcs')) + '</output>' +
-        '<button type="button" data-step="1" aria-label="' + esc(t('more')) + '"' + (s.qty >= 99 ? ' disabled' : '') + '>' + icon('plus') + '</button>' +
-        '</div><span class="total">' + (oldTotal(p, s.vi, s.qty) ? '<s class="price-old">' + money(oldTotal(p, s.vi, s.qty)) + '</s> ' : '') +
-        money(lineTotal(p, s.vi, s.qty)) + '</span></div>';
+        '<button type="button" data-step="1" aria-label="' + esc(t('more')) + '"' + (s.qty >= max ? ' disabled' : '') + '>' + icon('plus') + '</button>' +
+        '</div><span class="buy__sum">' + (old ? '<s class="price-old">' + money(old) + '</s>' : '') +
+        '<span class="total">' + money(total) + '</span>' +
+        (old > total ? '<span class="save">' + esc(tf('benefit', { n: money(old - total) })) + '</span>' : '') + '</span></div>';
     } else {
-      body += '<p class="note note--out">' + esc(t('outNote')) + '</p>';
+      var waiting = subs.indexOf(p.id) >= 0;
+      body += '<p class="note note--out">' + esc(t('outNote')) + '</p>' +
+        '<button type="button" class="btn btn--block" data-action="notify"' + (waiting ? ' disabled' : '') + '>' + icon('bell') +
+        esc(t(waiting ? 'notifyDup' : 'notifyBtn')) + '</button>';
     }
 
     if (p.w > 0) {
@@ -679,15 +1182,71 @@
         (p.wm ? ' · ' + esc(p.wm) : '') + '</p>';
     }
 
+    var rel = relatedFor(p);
+    body += railHtml(t(rel.title), '', rel.list);
+
     var scroll = el.sheet.querySelector('.sheet__body');
     var top = scroll ? scroll.scrollTop : 0;
-    var foot = p.a && lineTotal(p, s.vi, s.qty) > 0
-      ? '<div class="sheet__foot"><button type="button" class="btn btn--primary btn--block" data-action="add">' +
-        icon('shopping-cart') + esc(t('addToCart')) + '</button></div>'
+    var inCart = cartQty(p.id);
+    var foot = canBuy
+      ? '<div class="sheet__foot">' + (inCart ? '<p class="sheet__incart">' + esc(tf('inCartNow', { n: inCart })) + '</p>' : '') +
+        '<button type="button" class="btn btn--primary btn--block" data-action="add">' +
+        icon('shopping-cart') + esc(t('addToCart')) + ' · ' + money(total) + '</button></div>'
       : '';
     el.sheet.innerHTML = '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
+      '<div class="sheet__grab" aria-hidden="true"></div>' +
       '<div class="sheet__body">' + body + '</div>' + foot;
     el.sheet.querySelector('.sheet__body').scrollTop = top;
+  }
+
+  function shareProduct(p) {
+    var link = productLink(p.id);
+    track('share', p.id);
+    if (inTelegram) {
+      try {
+        tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(name(p)));
+        return;
+      } catch (e) { /* старый клиент Telegram — копируем ссылку */ }
+    }
+    var input = document.createElement('input');
+    input.value = link;
+    input.setAttribute('readonly', '');
+    input.style.cssText = 'position:fixed;opacity:0;left:0;top:0';
+    document.body.appendChild(input);
+    copyText(link, input).then(function (ok) {
+      document.body.removeChild(input);
+      if (ok) toast(t('shareCopied'));
+    });
+  }
+
+  /** «Повідомити, коли з'явиться»: бот напишет клиенту, когда админ вернёт товар в наличие. */
+  function notifyMe(id) {
+    if (!cfg.API_URL || !inTelegram) { toast(t('notifyTg')); return; }
+    askWriteAccess().then(function () { return postApi('notify', { id: id, lang: state.lang }); }).then(function (res) {
+      if (!res || !res.ok) throw new Error('fail');
+      if (res.instock) { loadCatalog(); return; } // товар уже вернулся — просто обновляем витрину
+      if (subs.indexOf(id) < 0) { subs.unshift(id); subs = subs.slice(0, 40); saveList(SUBS_KEY, '', subs); }
+      haptic('success');
+      track('notify', id);
+      toast(t(res.dup ? 'notifyDup' : 'notifyOk'));
+      if (state.sheet && state.sheet.id === id) renderSheet();
+    }).catch(function () { haptic('error'); toast(t('notifyFail')); });
+  }
+
+  /** Клик по карточке товара в любом месте: сердечко, быстрое «+/−» или открытие товара. */
+  function productClick(e) {
+    var fav = e.target.closest('[data-fav]');
+    if (fav) { toggleFav(fav.getAttribute('data-fav')); return true; }
+    var holder = e.target.closest('[data-id]');
+    if (!holder) return false;
+    var quick = e.target.closest('[data-quick]');
+    if (quick) {
+      if (!quick.disabled) quickAdd(holder.getAttribute('data-id'), Number(quick.getAttribute('data-quick')));
+      return true;
+    }
+    if (e.target.closest('.step--card')) return true; // промах между «−» и «+» товар не открывает
+    openSheet(holder.getAttribute('data-id'));
+    return true;
   }
 
   /* ------------------------------ Корзина ------------------------------ */
@@ -809,30 +1368,115 @@
     }
     saveCart();
     haptic('success');
+    track('add', p.id, price * s.qty);
+    var fromCart = state.view === 'cart';
     closeSheet();
-    renderMain();
-    toast(t('added'));
+    afterCartChange(true);
+    if (fromCart) toast(t('added')); else toast(t('added'), t('open'), function () { go('cart'); });
+  }
+
+  /** «+» и «−» прямо на карточке: для товара в упаковке или поштучно. Весовой товар открывает выбор веса. */
+  function quickAdd(id, delta) {
+    var p = product(id);
+    if (!p) return;
+    if (p.t === 'w') { openSheet(id); return; }
+    var price = unitPrice(p, 0);
+    if (!(price > 0)) return;
+    var line = null, idx = -1;
+    state.cart.i.forEach(function (l, i) { if (l.id === id && l.g === 0) { line = l; idx = i; } });
+    if (delta > 0) {
+      if (line) {
+        if (line.q >= maxQty(p, 0)) { haptic('error'); return; }
+        line.q++; line.pr = price;
+      } else {
+        state.cart.i.push({ id: id, g: 0, q: 1, pr: price });
+      }
+      track('add', id, price);
+    } else if (line) {
+      line.q--;
+      if (line.q <= 0) state.cart.i.splice(idx, 1);
+    } else {
+      return;
+    }
+    saveCart();
+    hapticLight();
+    afterCartChange(delta > 0);
+  }
+
+  /** Корзина изменилась: обновляем кнопки карточек, счётчик внизу и (если открыта) саму корзину. */
+  function afterCartChange(bump) {
+    refreshActs();
+    updateChrome();
+    if (state.view === 'cart') renderPage();
+    if (bump) {
+      var count = document.getElementById('cartCount');
+      if (count) { count.classList.remove('is-bump'); void count.offsetWidth; count.classList.add('is-bump'); }
+    }
   }
 
   function haptic(kind) {
     if (!inTelegram) return;
     try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) { /* нет вибрации */ }
   }
+  function hapticLight() {
+    if (!inTelegram) return;
+    try { tg.HapticFeedback.impactOccurred('light'); } catch (e) { /* нет вибрации */ }
+  }
+  function hapticSelect() {
+    if (!inTelegram) return;
+    try { tg.HapticFeedback.selectionChanged(); } catch (e) { /* нет вибрации */ }
+  }
 
-  var toastTimer;
-  function toast(text) {
+  /** Короткое сообщение внизу экрана. С action — кнопка справа («Відкрити», «Повернути»). */
+  var toastTimer, toastAction = null;
+  function toast(text, actionLabel, action) {
     clearTimeout(toastTimer);
-    el.toast.textContent = text;
+    el.toastText.textContent = text;
+    toastAction = action || null;
+    el.toastBtn.hidden = !action;
+    el.toastBtn.textContent = actionLabel || '';
     el.toast.hidden = false;
-    toastTimer = setTimeout(function () { el.toast.hidden = true; }, 1800);
+    el.toast.classList.remove('is-in'); void el.toast.offsetWidth; el.toast.classList.add('is-in');
+    toastTimer = setTimeout(function () { el.toast.hidden = true; toastAction = null; }, action ? 4200 : 1800);
   }
 
   /* --------------------- Экраны и нижняя кнопка --------------------- */
+  var TABS = [['catalog', 'home', 'navHome'], ['fav', 'heart', 'navFav'], ['cart', 'shopping-cart', 'navCart'], ['orders', 'user', 'navMe']];
+  var TAB_VIEWS = { catalog: 1, fav: 1, cart: 1, orders: 1 };
+  var typing = false; // открыта клавиатура: нижнюю навигацию прячем, чтобы она не закрывала поле
+
+  function renderTabbar() {
+    var n = cartCount(), total = cartTotal();
+    el.tabbar.innerHTML = TABS.map(function (tab) {
+      var badge = '';
+      if (tab[0] === 'cart' && n) badge = '<span class="tabbar__count" id="cartCount">' + (n > 99 ? '99+' : n) + '</span>';
+      if (tab[0] === 'fav' && favs.length) badge = '<span class="tabbar__dot"></span>';
+      var label = tab[0] === 'cart' && total > 0 ? money(total) : esc(t(tab[2]));
+      return '<button type="button" data-go="' + tab[0] + '"' + (state.view === tab[0] ? ' aria-current="page"' : '') +
+        (tab[0] === 'cart' ? ' aria-label="' + esc(t('cart') + (n ? ': ' + n : '')) + '"' : '') + '>' +
+        '<span class="tabbar__ico">' + icon(tab[1]) + badge + '</span><span class="tabbar__label">' + label + '</span></button>';
+    }).join('');
+  }
+
+  /** Плавное появление экрана при переходе. */
+  function animateView(node) {
+    node.classList.remove('is-in');
+    void node.offsetWidth;
+    node.classList.add('is-in');
+  }
+
+  /** В форме заказа Telegram переспрашивает перед закрытием: введённые данные жалко терять. */
+  function confirmClose(on) {
+    if (!inTelegram) return;
+    try { if (on) tg.enableClosingConfirmation(); else tg.disableClosingConfirmation(); } catch (e) { /* старый клиент Telegram */ }
+  }
+
   function go(view) {
     if (state.view === 'catalog') state.scrollY = window.scrollY || 0;
     if (state.view === 'cart' && view !== 'cart') { ackPriceChanges(); state.cartNotice = ''; state.cartNoticeInfo = false; }
     if (view === 'checkout' && !(cartTotal() > 0)) view = 'cart';
     if (state.sheet) closeSheet();
+    var changed = state.view !== view;
     state.view = view;
     document.body.setAttribute('data-view', view);
     if (view === 'catalog') renderMain();
@@ -840,6 +1484,13 @@
     updateChrome();
     if (view === 'admin') loadAdmin(false);
     if (view === 'orders') loadMyOrders();
+    if (changed) {
+      if (view === 'cart' && cartCount()) track('cart', '', cartTotal());
+      if (view === 'checkout') track('checkout', '', cartTotal());
+      animateView(view === 'catalog' ? el.main : el.page);
+    }
+    confirmClose(view === 'checkout');
+    swipes(view !== 'checkout');
     window.scrollTo(0, view === 'catalog' ? state.scrollY : 0);
   }
 
@@ -853,14 +1504,14 @@
   /** Что сейчас делает главная кнопка: null — кнопки нет. */
   function mainSpec() {
     var total = cartTotal();
-    if (state.sheet || state.view === 'done' || state.view === 'admin' || state.view === 'orders' || !(total > 0)) return null;
+    if (state.sheet || !(total > 0)) return null;
     if (state.view === 'checkout') return { text: t('confirmBtn') + ' · ' + money(total), run: submitOrder };
     if (state.view === 'cart') return { text: t('checkoutBtn') + ' · ' + money(total), run: function () {
       var min = Number(shopInfo().min) || 0;
       if (min > 0 && cartTotal() < min) { state.cartNoticeInfo = false; state.cartNotice = t('minOrder') + ' ' + money(min); renderPage(); window.scrollTo(0, 0); haptic('error'); return; }
       go('checkout');
     } };
-    return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('cart'); } };
+    return null; // в каталоге и избранном корзина всегда под рукой в нижней навигации
   }
 
   function mainAction() {
@@ -869,10 +1520,10 @@
   }
 
   function updateChrome() {
-    var n = cartCount();
-    el.cartCount.textContent = n > 99 ? '99+' : String(n);
-    el.cartCount.hidden = n === 0;
-    el.cartBtn.setAttribute('aria-label', t('cart') + (n ? ': ' + n : ''));
+    renderTabbar();
+    var tabs = !!TAB_VIEWS[state.view] && !typing;
+    el.tabbar.hidden = !tabs;
+    document.body.classList.toggle('has-tabbar', tabs);
 
     var spec = mainSpec();
     if (useNativeMain) {
@@ -896,7 +1547,9 @@
     }
   }
 
-  function pageHead(title) {
+  /** Заголовок экрана. plain — без стрелки «назад» (экраны из нижней навигации). */
+  function pageHead(title, plain) {
+    if (plain) return '<header class="page__head page__head--plain"><h2 class="page__title">' + esc(title) + '</h2></header>';
     return '<header class="page__head"><button type="button" class="iconbtn" data-nav="back" aria-label="' + esc(t('back')) + '">' +
       icon('arrow-left') + '</button><h2 class="page__title">' + esc(title) + '</h2></header>';
   }
@@ -906,7 +1559,8 @@
     else if (state.view === 'checkout') { el.page.innerHTML = checkoutHtml(); syncCheckout(); }
     else if (state.view === 'done') el.page.innerHTML = doneHtml();
     else if (state.view === 'admin') el.page.innerHTML = adminHtml();
-    else if (state.view === 'orders') el.page.innerHTML = myOrdersHtml();
+    else if (state.view === 'orders') el.page.innerHTML = profileHtml();
+    else if (state.view === 'fav') el.page.innerHTML = favHtml();
     else el.page.innerHTML = '';
   }
 
@@ -918,8 +1572,53 @@
     return '1' + NBSP + t('pcs');
   }
 
+  function favHtml() {
+    var html = pageHead(t('favTitle'), true);
+    if (!state.catalog) return html + skeletonHtml();
+    var list = favs.map(product).filter(Boolean);
+    if (!list.length) {
+      return html + '<div class="state"><span class="state__ico">' + icon('heart') + '</span>' +
+        '<p class="state__title">' + esc(t('favEmptyTitle')) + '</p><p class="state__text">' + esc(t('favEmpty')) + '</p>' +
+        '<button type="button" class="btn btn--primary" data-nav="catalog">' + esc(t('toCatalog')) + '</button></div>';
+    }
+    return html + '<div class="grid">' + list.map(cardHtml).join('') + '</div>';
+  }
+
+  function progressHtml(share, text, ico) {
+    return '<div class="prog"><p class="prog__text">' + icon(ico) + '<span>' + esc(text) + '</span></p>' +
+      '<div class="prog__bar"><span style="width:' + Math.max(4, Math.min(100, Math.round(share * 100))) + '%"></span></div></div>';
+  }
+
+  /** Сколько осталось до минимальной суммы и до подарка (если они заданы в настройках). */
+  function cartPerksHtml() {
+    var total = cartTotal(), s = shopInfo(), html = '';
+    var min = Number(s.min) || 0;
+    if (min > 0 && total > 0 && total < min) html += progressHtml(total / min, tf('minLeft', { n: money(min - total) }), 'box');
+    if (s.gift && total > 0) {
+      var g = state.lang === 'ru' ? s.gift.ru : s.gift.ua;
+      html += total >= s.gift.from
+        ? '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf('giftOk', { g: g })) + '</span></p>'
+        : progressHtml(total / s.gift.from, tf('giftLeft', { n: money(s.gift.from - total), g: g }), 'gift');
+    }
+    return html;
+  }
+
+  /** «Додайте до замовлення»: то, что брали вместе с товарами из корзины, затем популярное. */
+  function crossSell() {
+    if (!state.catalog) return [];
+    var inCart = {}, taken = {}, out = [];
+    state.cart.i.forEach(function (l) { inCart[l.id] = 1; });
+    function push(p) { if (p && p.a && !inCart[p.id] && !taken[p.id]) { taken[p.id] = 1; out.push(p); } }
+    state.cart.i.forEach(function (l) {
+      var p = product(l.id);
+      ((p && p.r) || []).forEach(function (id) { push(product(id)); });
+    });
+    if (out.length < 6) popular(12).list.forEach(push);
+    return out.slice(0, 8);
+  }
+
   function cartHtml() {
-    var html = pageHead(t('cart'));
+    var html = pageHead(t('cart'), true);
     if (state.cartNotice) html += state.cartNoticeInfo
       ? '<p class="note note--opt" role="status">' + esc(state.cartNotice) + '</p>'
       : '<p class="form__err" role="alert">' + esc(state.cartNotice) + '</p>';
@@ -954,7 +1653,10 @@
     });
     html += '</ul>';
     if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
+    html += cartPerksHtml();
     html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
+    html += railHtml(t('cartMore'), '', crossSell(), true);
+    html += '<button type="button" class="btn btn--ghost btn--block" data-action="clear-cart">' + icon('trash-2') + esc(t('clearCart')) + '</button>';
     return html;
   }
 
@@ -1027,7 +1729,12 @@
       ? '<button type="button" class="btn btn--block field__btn" data-action="share-phone">' + esc(t('sharePhone')) + '</button>'
       : '';
 
-    return pageHead(t('checkout')) + '<form class="form" id="form" novalidate>' +
+    var gift = shop.gift && cartTotal() >= shop.gift.from
+      ? '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf('giftOk', { g: shop.gift[L] || shop.gift.ua })) + '</span></p>' : '';
+    return pageHead(t('checkout')) +
+      '<div class="cosum"><div><p class="cosum__n">' + esc(tf('coItems', { n: cartCount() })) + '</p><p class="total js-sum">' + money(cartTotal()) + '</p></div>' +
+      '<button type="button" class="btn" data-nav="back">' + esc(t('edit')) + '</button></div>' + gift +
+      '<form class="form" id="form" novalidate>' +
       '<p class="form__err" id="formErr" role="alert" hidden></p>' +
       field('name', esc(t('fName')), 'type="text" autocomplete="name" maxlength="60" enterkeyhint="next"', f.name) +
       field('phone', esc(t('fPhone')), 'type="tel" inputmode="tel" autocomplete="tel" maxlength="20" enterkeyhint="next"', f.phone || '+380', share) +
@@ -1047,7 +1754,7 @@
       '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
       '<textarea class="input input--area" id="f-comment" name="comment" rows="3" maxlength="300" placeholder="' + esc(t('commentPh')) + '">' + esc(f.comment) + '</textarea></div>' +
 
-      '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total" id="coSum">' + money(cartTotal()) + '</span></div>' +
+      '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total js-sum">' + money(cartTotal()) + '</span></div>' +
       '</form>';
   }
 
@@ -1072,8 +1779,7 @@
   }
 
   function updateCheckoutSum() {
-    var sum = document.getElementById('coSum');
-    if (sum) sum.textContent = money(cartTotal());
+    Array.prototype.forEach.call(el.page.querySelectorAll('.js-sum'), function (sum) { sum.textContent = money(cartTotal()); });
     if (!(cartTotal() > 0)) go('cart');
   }
 
@@ -1205,7 +1911,11 @@
     setBusy(true);
     askWriteAccess().then(function () { return sendOrder(buildOrder()); }).then(function (res) {
       if (!res || !res.ok) { orderFailed(res && res.error); return; }
-      state.done = { number: res.number || '', stub: !!res.stub, test: DEBUG && !res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay };
+      state.done = { number: res.number || '', stub: !!res.stub, test: DEBUG && !res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay,
+        gifts: Array.isArray(res.gifts) ? res.gifts : [] };
+      if (!res.stub) { store.set(HASORD_KEY, '1'); my.list = null; }
+      track('order', res.number || '', total);
+      flushEvents(false);
       state.cart.i = [];
       state.form.comment = '';
       state.rid = '';
@@ -1239,6 +1949,9 @@
     var html = '<div class="done"><span class="done__ico">' + icon('check') + '</span>' +
       '<h2 class="page__title">' + esc(t('doneTitle')) + (d.number ? ' ' + esc(d.number) : '') + '</h2>' +
       '<p class="done__text">' + esc(t('doneText')) + '</p></div>';
+    (d.gifts || []).forEach(function (g) {
+      html += '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf('doneGift', { g: g })) + '</span></p>';
+    });
     if (d.stub) html += '<p class="note note--out">' + esc(t('doneStub')) + '</p>';
     else if (d.test) html += '<p class="note note--opt">' + esc(t('doneTest')) + '</p>';
     html += '<div class="recap"><p class="label">' + esc(t('order')) + '</p><ul class="recap__list">';
@@ -1248,12 +1961,13 @@
     html += '</ul><p class="recap__meta">' + esc(t('delivery')) + ': ' + esc(t(d.delivery === 'np' ? 'np' : 'pickup')) + '<br>' +
       esc(t('payment')) + ': ' + esc(t({ cash: 'payCash', card: 'payCard', cod: 'payCod' }[d.pay])) + '</p>' +
       '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(d.total) + '</span></div></div>' +
-      '<button type="button" class="btn btn--primary btn--block" data-nav="catalog">' + esc(t('doneBack')) + '</button>';
+      '<button type="button" class="btn btn--primary btn--block" data-nav="catalog">' + esc(t('doneBack')) + '</button>' +
+      (inTelegram && !d.stub ? '<button type="button" class="btn btn--block" data-go="orders">' + esc(t('myOrders')) + '</button>' : '');
     return html;
   }
 
   /* ------------------------------ Мои заказы (этап 6) ------------------------------ */
-  var my = { list: null, loading: false, error: '' };
+  var my = { list: null, loading: false, error: '', bought: [], done: null };
 
   function postApi(action, data) {
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
@@ -1262,32 +1976,84 @@
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
   }
 
-  function loadMyOrders() {
-    if (!cfg.API_URL || !inTelegram) { my.error = 'myTg'; renderPage(); return; }
+  /** quiet — фоновая загрузка при старте: нужна для подборки «Купити знову» и программы для постоянных клиентов. */
+  function loadMyOrders(quiet) {
+    if (!cfg.API_URL || !inTelegram) { my.error = 'myTg'; if (!quiet) renderPage(); return; }
     if (my.loading) return;
     my.loading = true; my.error = '';
-    renderPage();
+    if (!quiet) renderPage();
     postApi('orders.my').then(function (res) {
       my.loading = false;
       if (!res || !res.ok) throw new Error('fail');
       my.list = res.orders || [];
+      my.done = typeof res.done === 'number' ? res.done : null;
+      var bought = [];
+      my.list.forEach(function (o) {
+        (o.i || []).forEach(function (it) { var id = String(it[0]); if (bought.indexOf(id) < 0) bought.push(id); });
+      });
+      var had = my.bought.join();
+      my.bought = bought.slice(0, 12);
+      store.set(HASORD_KEY, my.list.length ? '1' : '0');
       if (state.view === 'orders') renderPage();
+      // Подборка «Купити знову» появляется на главной, если человек ещё не начал её листать.
+      else if (state.view === 'catalog' && !state.sheet && state.status === 'ready' && isHome() && my.bought.join() !== had && (window.scrollY || 0) < 200) renderMain();
     }).catch(function () {
       my.loading = false; my.error = 'myErr';
       if (state.view === 'orders') renderPage();
     });
   }
 
+  /** Программа для постоянных клиентов: подарок к каждому N-му выполненному заказу (если задана в настройках). */
+  function loyaltyHtml() {
+    var loyal = shopInfo().loyal;
+    if (!loyal) return '';
+    var g = state.lang === 'ru' ? loyal.ru : loyal.ua;
+    var html = '<div class="loyal"><p class="loyal__title">' + icon('gift') + '<span>' + esc(t('loyalTitle')) + '</span></p>' +
+      '<p class="loyal__text">' + esc(tf('loyalText', { k: loyal.every, g: g })) + '</p>';
+    if (typeof my.done === 'number') {
+      var pos = my.done % loyal.every;            // сколько выполнено в текущем круге
+      var left = loyal.every - 1 - pos;           // сколько ещё заказов до заказа с подарком
+      var dots = '';
+      for (var i = 0; i < loyal.every; i++) dots += '<span class="loyal__dot' + (i < pos ? ' is-on' : '') + (i === loyal.every - 1 ? ' is-gift' : '') + '"></span>';
+      html += '<div class="loyal__dots" aria-hidden="true">' + dots + '</div>' +
+        '<p class="loyal__left">' + esc(left === 0 ? t('loyalNext') : tf('loyalLeft', { a: my.done, b: left })) + '</p>';
+    }
+    return html + '</div>';
+  }
+
+  function canAddToHome() {
+    try { return inTelegram && typeof tg.addToHomeScreen === 'function' && tg.isVersionAtLeast('8.0'); } catch (e) { return false; }
+  }
+
+  function profileHtml() {
+    var shop = shopInfo();
+    var L = state.lang === 'ru' ? 'ru' : 'ua';
+    var html = pageHead(t('navMe'), true) + loyaltyHtml() +
+      '<h3 class="sec">' + esc(t('myOrders')) + '</h3>' + myOrdersHtml();
+    var addr = shop.address ? (shop.address[L] || shop.address.ua || '') : '';
+    var hours = shop.hours ? (shop.hours[L] || shop.hours.ua || '') : '';
+    if (addr || hours) {
+      html += '<h3 class="sec">' + esc(t('meShop')) + '</h3><div class="facts facts--card">' +
+        (addr ? '<p>' + icon('pin') + '<span>' + esc(addr) + '</span></p>' : '') +
+        (hours ? '<p>' + icon('clock') + '<span>' + esc(hours) + '</span></p>' : '') + '</div>';
+    }
+    html += '<div class="merow"><span class="label">' + esc(t('meLang')) + '</span><div class="lang" role="group">' +
+      '<button type="button" data-lang="ua" aria-pressed="' + (state.lang === 'ua') + '">UA</button>' +
+      '<button type="button" data-lang="ru" aria-pressed="' + (state.lang === 'ru') + '">RU</button></div></div>';
+    if (canAddToHome()) html += '<button type="button" class="btn btn--block" data-action="home-screen">' + icon('phone') + esc(t('meHome')) + '</button>';
+    return html;
+  }
+
   function myOrdersHtml() {
-    var html = pageHead(t('myOrders'));
+    var html = '';
     if (my.loading && !my.list) return html + '<div class="skeleton skeleton--row"></div><div class="skeleton skeleton--row"></div>';
     if (my.error && !my.list) {
       return html + '<p class="state__text adm__msg">' + esc(t(my.error)) + '</p>' +
         (my.error === 'myTg' ? '' : '<button type="button" class="btn btn--block" data-action="my-refresh">' + esc(t('myRefresh')) + '</button>');
     }
     if (!my.list || !my.list.length) {
-      return html + '<div class="state">' + MARK + '<p class="state__title">' + esc(t('myEmpty')) + '</p><p class="state__text">' + esc(t('myEmptyText')) + '</p>' +
-        '<button type="button" class="btn btn--primary" data-nav="catalog">' + esc(t('doneBack')) + '</button></div>';
+      return html + '<div class="state state--sm">' + MARK + '<p class="state__title">' + esc(t('myEmpty')) + '</p><p class="state__text">' + esc(t('myEmptyText')) + '</p>' +
+        '<button type="button" class="btn btn--primary" data-nav="catalog">' + esc(t('toCatalog')) + '</button></div>';
     }
     html += '<ul class="lines">' + my.list.map(function (o) {
       var items = String(o.items).split('; ').filter(Boolean).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
@@ -1321,6 +2087,7 @@
       added++;
     });
     if (!added) { toast(t('repeatNone')); haptic('error'); return; }
+    track('repeat', num, added);
     saveCart();
     haptic('success');
     state.cartNotice = added < order.i.length ? t('repeatPart').replace('{a}', added).replace('{b}', order.i.length) : t('repeatOk');
@@ -1427,6 +2194,7 @@
     }
     html += '<div class="stats"><div><span>' + esc(t('admStats30')) + '</span><b>' + s.m30.n + ' · ' + money(s.m30.sum) + '</b></div>' +
       '<div><span>' + esc(t('admStatsAll')) + '</span><b>' + s.all.n + ' · ' + money(s.all.sum) + '</b></div></div>';
+    html += behaviorHtml(s);
     if (!s.all.n) return html + '<p class="state__text adm__msg">' + esc(t('admStatsEmpty')) + '</p>';
     if (s.products.length) {
       html += '<p class="label">' + esc(t('admStatsTop')) + '</p><ul class="rows">' + s.products.map(function (p) {
@@ -1439,6 +2207,35 @@
     }).join('') + '</ul>';
     return html + '<p class="info info__muted">' + esc(t('admStatsSheet')) + '</p>' +
       '<button type="button" class="btn btn--block" data-action="adm-sales">' + esc(t('admRefresh')) + (adm.salesLoading ? '…' : '') + '</button>';
+  }
+
+  /** Средний чек, повторные покупки и воронка: что люди делают в магазине до заказа. */
+  function behaviorHtml(s) {
+    var html = '';
+    if (s.kpi) {
+      html += '<div class="stats"><div><span>' + esc(t('admKpi')) + ' · ' + esc(t('admStats30')) + '</span><b>' + money(s.kpi.aov30) + '</b></div>' +
+        '<div><span>' + esc(t('admRepeat')) + '</span><b>' + s.kpi.repeat + ' ' + esc(t('admOf')) + ' ' + s.kpi.buyers + ' · ' + s.kpi.repeatPct + '%</b></div></div>';
+    }
+    var f = s.funnel;
+    if (!f) return html + (s.kpi ? '<p class="info info__muted">' + esc(t('admNoEvents')) + '</p>' : '');
+    var steps = [['fOpen', f.open], ['fView', f.view], ['fAdd', f.add], ['fCheckout', f.checkout], ['fOrder', f.order]];
+    html += '<p class="label">' + esc(t('admFunnel')) + '</p><ul class="funnel">' + steps.map(function (st) {
+      var share = f.open ? Math.min(100, Math.round(st[1] * 100 / f.open)) : 0;
+      return '<li><span class="funnel__name">' + esc(t(st[0])) + '</span><b>' + st[1] + '</b><span class="funnel__pct">' + share + '%</span>' +
+        '<span class="funnel__bar"><span style="width:' + Math.max(2, share) + '%"></span></span></li>';
+    }).join('') + '</ul>' + (f.open >= f.order && f.open > 0 // пока событий меньше, чем заказов, процент был бы бессмысленным
+      ? '<p class="info info__muted">' + esc(t('admCr')) + ': ' + String(f.cr).replace('.', ',') + '%</p>' : '');
+    if (f.zero && f.zero.length) {
+      html += '<p class="label">' + esc(t('admZero')) + '</p><ul class="rows">' + f.zero.map(function (z) {
+        return '<li><span class="rows__name">' + esc(z.q) + '</span><span class="rows__sub"></span><b>' + z.n + '</b></li>';
+      }).join('') + '</ul>';
+    }
+    if (f.viewed && f.viewed.length) {
+      html += '<p class="label">' + esc(t('admViewed')) + '</p><ul class="rows">' + f.viewed.map(function (v) {
+        return '<li><span class="rows__name">' + esc(v.name) + '</span><span class="rows__sub"></span><b>' + v.n + '</b></li>';
+      }).join('') + '</ul>';
+    }
+    return html;
   }
 
   function renderAdminList() {
@@ -1544,7 +2341,7 @@
   function productFormHtml() {
     var isNew = adm.edit === '+';
     var p = isNew
-      ? { id: '', cat: adm.cats && adm.cats[0] ? adm.cats[0].ua : '', t: 'w', ua: '', ru: '', packs: '100 г / 250 г / 500 г / 1 кг', price: '', stock: 1, hidden: 0, img: '', dUa: '', dRu: '', wh: '', wm: '', badge: '', old: '' }
+      ? { id: '', cat: adm.cats && adm.cats[0] ? adm.cats[0].ua : '', t: 'w', ua: '', ru: '', packs: '100 г / 250 г / 500 г / 1 кг', price: '', stock: 1, hidden: 0, img: '', dUa: '', dRu: '', wh: '', wm: '', badge: '', old: '', qty: '', end: '' }
       : adminProduct(adm.edit);
     if (!p) return '';
     var cats = (adm.cats || []).map(function (c) { return [c.ua, c.ua]; });
@@ -1563,7 +2360,9 @@
       fRow('ru', t('admNameRu'), p.ru, 'type="text" maxlength="120"') +
       fRow('price', t('admPrice'), p.price || '', 'type="text" inputmode="decimal" maxlength="9"', t('admPriceHint')) +
       fRow('old', t('admOld'), p.old || '', 'type="text" inputmode="decimal" maxlength="9"', t('admOldHint')) +
-      fSelect('badge', t('admBadge'), p.badge || '', [['', t('admBadgeNone')], ['new', t('badgeNew')], ['hit', t('badgeHit')], ['sale', t('badgeSale')]]) +
+      fRow('end', t('admEnd'), p.end || '', 'type="date"', t('admEndHint')) +
+      fSelect('badge', t('admBadge'), p.badge || '', [['', t('admBadgeNone')], ['new', t('badgeNew')], ['hit', t('badgeHit')], ['sale', t('badgeSale')], ['set', t('badgeSet')]]) +
+      fRow('qty', t('admQty'), p.qty === undefined || p.qty === null ? '' : p.qty, 'type="text" inputmode="decimal" maxlength="8"', t('admQtyHint')) +
       fRow('packs', t('admPacks'), p.packs, 'type="text" maxlength="80"', t('admPacksHint')) +
       fArea('dUa', t('admDescUa'), p.dUa) + fArea('dRu', t('admDescRu'), p.dRu) +
       fRow('wh', t('admWh'), p.wh || '', 'type="text" inputmode="decimal" maxlength="9"') +
@@ -1594,7 +2393,9 @@
     var p = isNew ? null : adminProduct(adm.edit);
     if ((!isNew && !p) || adm.busy) return;
     var next = { cat: fVal('cat'), t: fVal('t'), ua: fVal('ua'), ru: fVal('ru'), packs: fVal('packs'), wm: fVal('wm'), dUa: fVal('dUa'), dRu: fVal('dRu'),
-      price: fNum('price'), wh: fNum('wh'), old: fNum('old'), badge: fVal('badge'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0 };
+      price: fNum('price'), wh: fNum('wh'), old: fNum('old'), badge: fVal('badge'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0,
+      qty: fVal('qty').replace(/\s/g, ''), end: fVal('end') };
+    if (next.qty && !/^\d+([.,]\d+)?$/.test(next.qty)) { fErr('admErrPrice'); return; }
     if (!next.ua) { fErr('admErrName'); return; }
     if (!(next.price >= 0) || !(next.wh >= 0) || !(next.old >= 0)) { fErr('admErrPrice'); return; }
     if (isNew) {
@@ -1612,7 +2413,10 @@
       return;
     }
     var patch = {};
-    Object.keys(next).forEach(function (k) { if (next[k] !== (p[k] || (typeof next[k] === 'number' ? 0 : ''))) patch[k] = next[k]; });
+    Object.keys(next).forEach(function (k) {
+      if ((k === 'qty' || k === 'end') && p[k] === undefined) return; // бэкенд ещё не обновлён и этих полей не знает
+      if (next[k] !== (p[k] || (typeof next[k] === 'number' ? 0 : ''))) patch[k] = next[k];
+    });
     if (patch.stock !== undefined) patch.stock = !!patch.stock;
     if (patch.hidden !== undefined) patch.hidden = !!patch.hidden;
     if (!Object.keys(patch).length) { adm.edit = ''; renderPage(); return; }
@@ -1727,7 +2531,8 @@
     if (!adm.settings) return '';
     return '<form class="form" id="admForm" novalidate>' + FORM_ERR + adm.settings.map(function (f) {
       if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
-      if (f.k === 'min_order') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+      if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+      if (/^(gift|loyal)_text_/.test(f.k)) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
       if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
       return fArea(f.k, f.label, f.v, 500);
     }).join('') + saveBtn() + '</form>';
@@ -1825,14 +2630,27 @@
         if (nav.getAttribute('data-nav') === 'back') goBack(); else go('catalog');
         return;
       }
+      var goBtn = e.target.closest('[data-go]');
+      if (goBtn) { go(goBtn.getAttribute('data-go')); return; }
+      var lg = e.target.closest('button[data-lang]');
+      if (lg) { setLang(lg.getAttribute('data-lang')); return; }
+      if ((state.view === 'fav' || state.view === 'cart') && productClick(e)) return;
       var rep = e.target.closest('[data-repeat]');
       if (rep) { repeatOrder(rep.getAttribute('data-repeat')); return; }
       var myr = e.target.closest('[data-action="my-refresh"]');
       if (myr) { loadMyOrders(); return; }
       var del = e.target.closest('[data-line-del]');
       if (del) {
-        state.cart.i.splice(Number(del.getAttribute('data-line-del')), 1);
-        saveCart(); renderPage(); updateChrome();
+        var at = Number(del.getAttribute('data-line-del'));
+        var gone = state.cart.i.splice(at, 1)[0];
+        saveCart(); renderPage(); updateChrome(); refreshActs();
+        if (gone) {
+          toast(t('removed'), t('undo'), function () { // случайное нажатие на корзину легко отменить
+            state.cart.i.splice(Math.min(at, state.cart.i.length), 0, gone);
+            saveCart(); refreshActs(); updateChrome();
+            if (state.view === 'cart') renderPage();
+          });
+        }
         return;
       }
       var st = e.target.closest('[data-line-step]');
@@ -1840,15 +2658,33 @@
         var line = state.cart.i[Number(st.getAttribute('data-i'))];
         if (line) {
           line.q = Math.min(MAX_QTY, Math.max(1, line.q + Number(st.getAttribute('data-line-step'))));
-          saveCart(); renderPage(); updateChrome();
+          saveCart(); renderPage(); updateChrome(); refreshActs(); hapticLight();
         }
         return;
       }
       var act = e.target.closest('[data-action]');
       if (!act) return;
+      if (act.getAttribute('data-action') === 'clear-cart') {
+        var clear = function (ok) {
+          if (!ok) return;
+          state.cart.i = [];
+          saveCart(); refreshActs(); updateChrome();
+          if (state.view === 'cart') renderPage();
+          toast(t('cleared'));
+        };
+        try {
+          if (inTelegram && typeof tg.showConfirm === 'function' && tg.isVersionAtLeast('6.2')) tg.showConfirm(t('clearAsk'), clear);
+          else clear(window.confirm(t('clearAsk')));
+        } catch (err) { clear(window.confirm(t('clearAsk'))); }
+        return;
+      }
+      if (act.getAttribute('data-action') === 'home-screen') {
+        try { tg.addToHomeScreen(); } catch (err) { /* старый клиент Telegram */ }
+        return;
+      }
       if (act.getAttribute('data-action') === 'clear-out') {
         state.cart.i = state.cart.i.filter(function (l) { return lineInfo(l).ok; });
-        saveCart(); renderPage(); updateChrome();
+        saveCart(); renderPage(); updateChrome(); refreshActs();
       }
       if (act.getAttribute('data-action') === 'share-phone') {
         try {
@@ -1895,44 +2731,119 @@
       if (b) setLang(b.getAttribute('data-lang'));
     });
 
-    var searchTimer;
+    var searchTimer, commitTimer;
     el.search.addEventListener('input', function () {
       clearTimeout(searchTimer);
+      clearTimeout(commitTimer);
+      el.searchClear.hidden = !el.search.value;
+      renderRecent();
       searchTimer = setTimeout(function () {
         state.q = el.search.value;
-        if (state.status === 'ready') renderMain();
+        resetList();
       }, 120);
+      commitTimer = setTimeout(commitSearch, 1500);
     });
     el.search.addEventListener('keydown', function (e) { if (e.key === 'Enter') el.search.blur(); });
+    el.search.addEventListener('focus', renderRecent);
+    el.search.addEventListener('blur', function () {
+      clearTimeout(commitTimer);
+      state.q = el.search.value;
+      commitSearch();
+      setTimeout(renderRecent, 0);
+    });
+    function setSearch(value) {
+      clearTimeout(searchTimer);
+      el.search.value = value;
+      state.q = value;
+      el.searchClear.hidden = !value;
+      renderRecent();
+      resetList();
+    }
+    el.searchClear.addEventListener('click', function (e) {
+      e.preventDefault();
+      setSearch('');
+      el.search.focus();
+    });
+    // mousedown/touch не должны уводить фокус из поля: иначе подсказки исчезнут раньше, чем по ним попадут.
+    el.recent.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    el.recent.addEventListener('click', function (e) {
+      if (e.target.closest('[data-recent-clear]')) { searches = []; saveList(SEARCH_KEY, '', searches); renderRecent(); return; }
+      var b = e.target.closest('[data-recent]');
+      if (!b) return;
+      setSearch(b.getAttribute('data-recent'));
+      el.search.blur();
+    });
+    el.filterBtn.addEventListener('click', openFilter);
 
     el.chips.addEventListener('click', function (e) {
       var b = e.target.closest('.chip');
       if (!b) return;
       state.cat = b.getAttribute('data-cat');
+      hapticSelect();
       renderChips();
-      if (state.status === 'ready') renderMain();
+      resetList();
       window.scrollTo(0, 0);
     });
 
     el.main.addEventListener('click', function (e) {
       var act = e.target.closest('[data-action]');
       if (act) {
-        if (act.getAttribute('data-action') === 'retry') loadCatalog();
-        if (act.getAttribute('data-action') === 'reset') {
-          state.q = ''; state.cat = ''; el.search.value = '';
-          renderChips(); renderMain();
+        var kind = act.getAttribute('data-action');
+        if (kind === 'retry') loadCatalog();
+        if (kind === 'more') showMore();
+        if (kind === 'reset') {
+          state.cat = ''; flt.sort = ''; flt.onlyStock = false; flt.onlySale = false;
+          setSearch('');
+          renderChips();
         }
         return;
       }
-      var card = e.target.closest('.card');
-      if (card) openSheet(card.getAttribute('data-id'));
+      productClick(e);
     });
+
+    el.tabbar.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-go]');
+      if (!b) return;
+      var view = b.getAttribute('data-go');
+      hapticSelect();
+      if (view === state.view) { // повторное нажатие на текущую вкладку поднимает наверх
+        try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (err) { window.scrollTo(0, 0); }
+        return;
+      }
+      go(view);
+    });
+
+    el.toastBtn.addEventListener('click', function () {
+      var run = toastAction;
+      clearTimeout(toastTimer);
+      el.toast.hidden = true;
+      toastAction = null;
+      if (run) run();
+    });
+
+    // Клавиатура открыта — нижняя навигация не должна прыгать над ней.
+    document.addEventListener('focusin', function (e) {
+      var tag = e.target && e.target.tagName;
+      if ((tag === 'INPUT' && !/^(radio|checkbox|file)$/.test(e.target.type)) || tag === 'TEXTAREA') { typing = true; updateChrome(); }
+    });
+    document.addEventListener('focusout', function () {
+      if (!typing) return;
+      setTimeout(function () {
+        var a = document.activeElement, tag = a && a.tagName;
+        if ((tag === 'INPUT' && !/^(radio|checkbox|file)$/.test(a.type)) || tag === 'TEXTAREA') return;
+        typing = false; updateChrome();
+      }, 80);
+    });
+
+    // События аналитики уходят, когда магазин сворачивают или закрывают.
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flushEvents(true); });
+    window.addEventListener('pagehide', function () { flushEvents(true); });
 
     // Битая ссылка на фото → заглушка со знаком гор.
     document.addEventListener('error', function (e) {
       var img = e.target;
       if (img && img.tagName === 'IMG' && img.parentNode &&
-          /(^| )(card|sheet|line)__img( |$)/.test(img.parentNode.className)) {
+          /(^| )(card|sheet|line|mini|feature)__img( |$)/.test(img.parentNode.className)) {
         var holder = document.createElement('span');
         holder.innerHTML = MARK;
         img.parentNode.replaceChild(holder.firstChild, img);
@@ -1941,21 +2852,74 @@
 
     el.sheet.addEventListener('click', function (e) {
       if (e.target.closest('.sheet__close')) { closeSheet(); return; }
-      if (e.target.closest('[data-action="add"]')) { addFromSheet(); return; }
-      var v = e.target.closest('[data-vi]');
-      if (v) { state.sheet.vi = Number(v.getAttribute('data-vi')); renderSheet(); return; }
-      var st = e.target.closest('[data-step]');
-      if (st && !st.disabled) {
-        state.sheet.qty = Math.min(99, Math.max(1, state.sheet.qty + Number(st.getAttribute('data-step'))));
-        renderSheet();
+      var act = e.target.closest('[data-action]');
+      var kind = act ? act.getAttribute('data-action') : '';
+      if (kind === 'add') { addFromSheet(); return; }
+      if (kind === 'share') { var sp = state.sheet && product(state.sheet.id); if (sp) shareProduct(sp); return; }
+      if (kind === 'notify') { if (!act.disabled && state.sheet) notifyMe(state.sheet.id); return; }
+      if (kind === 'fil-apply') { closeSheet(); return; }
+      if (kind === 'fil-reset') {
+        flt.sort = ''; flt.onlyStock = false; flt.onlySale = false;
+        renderChips(); resetList(); renderSheet();
+        return;
       }
+      var v = e.target.closest('[data-vi]');
+      if (v) { if (!v.disabled) { state.sheet.vi = Number(v.getAttribute('data-vi')); hapticSelect(); renderSheet(); } return; }
+      var st = e.target.closest('[data-step]');
+      if (st) {
+        if (!st.disabled) { state.sheet.qty = Math.min(MAX_QTY, Math.max(1, state.sheet.qty + Number(st.getAttribute('data-step')))); hapticLight(); renderSheet(); }
+        return;
+      }
+      productClick(e); // сердечко и товары из подборки под описанием
     });
+    el.sheet.addEventListener('change', function (e) {
+      if (!state.sheet || state.sheet.kind !== 'filter') return;
+      var input = e.target;
+      if (input.name === 'sort') flt.sort = input.value;
+      else if (input.name === 'onlyStock' || input.name === 'onlySale') flt[input.name] = !!input.checked;
+      else return;
+      hapticSelect();
+      renderChips();
+      resetList();
+      window.scrollTo(0, 0);
+      var apply = el.sheet.querySelector('[data-action="fil-apply"]');
+      if (apply && state.catalog) apply.textContent = t('filApply') + ' · ' + visibleProducts().length;
+    });
+
+    // Шторку можно смахнуть вниз, потянув за верхнюю часть (ручка, фото, заголовок).
+    var drag = null;
+    el.sheet.addEventListener('touchstart', function (e) {
+      drag = null;
+      if (e.touches.length !== 1 || !e.target.closest('.sheet__grab, .sheet__img, .sheet__head, .sheet__title--pad')) return;
+      if (e.target.closest('button')) return;
+      var body = el.sheet.querySelector('.sheet__body');
+      if (body && body.scrollTop > 0) return;
+      drag = { x: e.touches[0].clientX, y: e.touches[0].clientY, dy: 0, on: false };
+    }, { passive: true });
+    el.sheet.addEventListener('touchmove', function (e) {
+      if (!drag) return;
+      var dx = e.touches[0].clientX - drag.x;
+      drag.dy = e.touches[0].clientY - drag.y;
+      if (!drag.on) {
+        if (drag.dy < 8 || Math.abs(dx) > drag.dy) { if (drag.dy < -8 || Math.abs(dx) > 16) drag = null; return; }
+        drag.on = true;
+        el.sheet.style.transition = 'none';
+      }
+      el.sheet.style.transform = 'translateY(' + Math.max(0, drag.dy) + 'px)';
+    }, { passive: true });
+    function endDrag() {
+      if (!drag) return;
+      var close = drag.on && drag.dy > 110;
+      drag = null;
+      el.sheet.style.transition = '';
+      if (close) closeSheet(); else el.sheet.style.transform = '';
+    }
+    el.sheet.addEventListener('touchend', endDrag);
+    el.sheet.addEventListener('touchcancel', endDrag);
     el.backdrop.addEventListener('click', closeSheet);
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeSheet(); });
 
-    el.cartBtn.addEventListener('click', function () { go('cart'); });
     el.adminBtn.addEventListener('click', function () { go('admin'); });
-    el.ordersBtn.addEventListener('click', function () { go('orders'); });
     el.barBtn.addEventListener('click', mainAction);
     bindPage();
 
@@ -1971,6 +2935,8 @@
 
   /* ------------------------------ Старт ------------------------------ */
   document.getElementById('searchIcon').innerHTML = icon('search');
+  document.getElementById('filterIcon').innerHTML = icon('sliders');
+  el.searchClear.innerHTML = icon('x');
   if (tg) {
     try { tg.ready(); tg.expand(); } catch (e) { /* открыто не в Telegram */ }
   }
@@ -1978,9 +2944,15 @@
   initLang();
   loadForm();
   loadCart();
+  loadLists();
   bind();
   el.adminBtn.hidden = !adminHint;
-  el.ordersBtn.hidden = !(inTelegram || DEBUG);
+  track('open', deepId ? deepId.toUpperCase() : '', params.get('view') || '');
   loadCatalog();
   if (adminHint && params.get('admin') === '1') go('admin');
+  else if (params.get('view') === 'orders') go('orders'); // кнопка «Повторити замовлення» в сообщении бота
+  // Тем, кто уже заказывал, в фоне подтягиваем историю: для «Купити знову» и подарка постоянным клиентам.
+  if (inTelegram && cfg.API_URL && store.get(HASORD_KEY) === '1' && state.view === 'catalog') {
+    setTimeout(function () { if (!my.list && !my.loading) loadMyOrders(true); }, 1200);
+  }
 })();
