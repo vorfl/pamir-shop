@@ -112,7 +112,8 @@ function createGas(codePath, seed) {
         return Array.from(h.digest()).map(b => (b > 127 ? b - 256 : b));
       },
       formatDate,
-      base64Decode: s => Array.from(Buffer.from(s, 'base64'))
+      base64Decode: s => Array.from(Buffer.from(s, 'base64')),
+      getUuid: () => crypto.randomUUID()
     },
     UrlFetchApp: { fetch: (url, opts) => {
       const method = url.split('/').pop().split('?')[0];
@@ -125,14 +126,14 @@ function createGas(codePath, seed) {
     ScriptApp: {
       getProjectTriggers: () => triggers.map(t => ({ getHandlerFunction: () => t })),
       deleteTrigger: t => { const i = triggers.indexOf(t.getHandlerFunction()); if (i >= 0) triggers.splice(i, 1); },
-      newTrigger: fn => { const b = { timeBased: () => b, everyMinutes: () => b, everyDays: () => b, atHour: () => b, create: () => { triggers.push(fn); } }; return b; }
+      newTrigger: fn => { const b = { timeBased: () => b, everyMinutes: () => b, everyHours: () => b, everyDays: () => b, atHour: () => b, create: () => { triggers.push(fn); } }; return b; }
     },
     DriveApp: {}
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(codePath, 'utf8'), sandbox, { filename: 'Code.gs' });
 
-  function resetMemo() { vm.runInContext('settingsMemo_ = null;', sandbox); } // у каждого запроса Apps Script свой запуск
+  function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
 
   return {
     sandbox, sheets, props, cache, sent, triggers,
