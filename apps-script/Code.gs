@@ -11,7 +11,8 @@
  *   сообщение админам с кнопками. pollUpdates() раз в минуту забирает нажатия кнопок и сообщения боту.
  *
  * ЭТАП 4 (в конце файла): setup() — кнопка меню «Магазин», команды и описание бота.
- * ЭТАП 5 (в конце файла): админ-панель — admin.orders, admin.status, admin.products, admin.product.
+ * ЭТАП 5 (в конце файла): админ-панель — заказы, товары (правка, добавление, фото), категории,
+ *   настройки магазина (лист «Налаштування»).
  *
  * Секретов в этом файле нет. Токен бота хранится только в Script Properties.
  */
@@ -43,7 +44,8 @@ var PRODUCT_COLS = {
   descRu:  ['описание (ru)'],
   whPrice: ['опт: ціна', 'опт ціна'],
   whMin:   ['опт: мін', 'опт мін'],
-  p100:    ['ціна за 100 г']
+  p100:    ['ціна за 100 г'],
+  hidden:  ['приховати', 'прихован']
 };
 
 var CATEGORY_COLS = {
@@ -110,13 +112,17 @@ function buildCatalog_() {
   };
 }
 
+/** Настройки магазина для витрины: адрес, часы, способы оплаты, минимальная сумма, объявление. */
 function readShop_() {
-  var props = PropertiesService.getScriptProperties();
-  function get(key) { return props.getProperty(key) || SHOP_DEFAULTS[key]; }
-  return {
-    address: { ua: get('PICKUP_ADDRESS_UA'), ru: get('PICKUP_ADDRESS_RU') },
-    hours:   { ua: get('PICKUP_HOURS_UA'),   ru: get('PICKUP_HOURS_RU') }
+  var st = readSettings_();
+  var shop = {
+    address: { ua: st.address_ua, ru: st.address_ru },
+    hours:   { ua: st.hours_ua,   ru: st.hours_ru },
+    pay: ['cash', 'card', 'cod'].filter(function (k) { return isYes_(st['pay_' + k]); }),
+    min: Math.max(0, Math.round(toNum_(st.min_order)))
   };
+  if (st.notice_ua || st.notice_ru) shop.notice = { ua: st.notice_ua || st.notice_ru, ru: st.notice_ru || st.notice_ua };
+  return shop;
 }
 
 function readCategories_(ss) {
@@ -170,6 +176,7 @@ function readProducts_(ss, categories) {
     var nameUa = cell_(row, col.nameUa);
     if (!id || !nameUa || seen[id]) continue;
     seen[id] = true;
+    if (isYes_(cell_(row, col.hidden))) continue; // скрыт с витрины, строка остаётся в таблице
 
     // Категория: по названию, иначе по префиксу ID (NUT-001 → NUT), иначе создаём на лету.
     var catUa = cell_(row, col.catUa);
@@ -451,8 +458,9 @@ function doPost(e) {
   var out;
   try {
     var text = (e && e.postData && e.postData.contents) || '';
-    if (text.length > 20000) throw new Error('body too large');
+    if (text.length > 1500000) throw new Error('body too large');
     var body = JSON.parse(text || '{}');
+    if (body.action !== 'admin.photo' && text.length > 20000) throw new Error('body too large');
     if (body.action === 'order') out = handleOrder_(body);
     else if (String(body.action).indexOf('admin.') === 0) out = handleAdmin_(body);
     else out = { ok: false, error: 'unknown_action' };
@@ -499,6 +507,8 @@ function handleOrder_(body) {
     return { ok: false, error: 'bad_form' };
   }
   if (!Array.isArray(body.items) || !body.items.length || body.items.length > 50) return { ok: false, error: 'bad_form' };
+  var shop = readShop_();
+  if (shop.pay.indexOf(o.pay) < 0) return { ok: false, error: 'bad_form' };
 
   // 3. Повтор того же запроса (клиент не дождался ответа и нажал ещё раз) — отдаём тот же номер.
   var cache = CacheService.getScriptCache();
@@ -531,6 +541,7 @@ function handleOrder_(body) {
     total += price * q;
   });
   if (bad || Number(body.total) !== total) return { ok: false, error: 'changed' };
+  if (shop.min > 0 && total < shop.min) return { ok: false, error: 'min_order', min: shop.min };
 
   o.items = lines.join('; ');
   o.total = total;
@@ -729,9 +740,10 @@ function clientText_(kind, o) {
   var shop = readShop_();
   var n = o.num;
   if (kind === 'new') {
+    var st = readSettings_();
     return ru
-      ? '🧾 Заказ ' + n + ' принят. Сумма: ' + o.total + ' ₴.\nМы подтвердим наличие и напишем вам сюда.'
-      : '🧾 Замовлення ' + n + ' прийнято. Сума: ' + o.total + ' ₴.\nМи підтвердимо наявність і напишемо вам сюди.';
+      ? '🧾 Заказ ' + n + ' принят. Сумма: ' + o.total + ' ₴.\n' + st.confirm_ru
+      : '🧾 Замовлення ' + n + ' прийнято. Сума: ' + o.total + ' ₴.\n' + st.confirm_ua;
   }
   if (kind === 'c') {
     var t = ru ? '✅ Заказ ' + n + ' подтверждён.' : '✅ Замовлення ' + n + ' підтверджено.';
@@ -808,12 +820,8 @@ function handleMessage_(msg, token, props) {
     return;
   }
   var ru = String((msg.from && msg.from.language_code) || '').toLowerCase().indexOf('ru') === 0;
-  var payload = {
-    chat_id: msg.chat.id,
-    text: ru
-      ? 'Здравствуйте! Это PAMIR: орехи, сухофрукты и восточные сладости с Центрального рынка Харькова.\nОткройте магазин, соберите корзину, а мы подтвердим заказ здесь, в чате.'
-      : 'Вітаємо! Це PAMIR: горіхи, сухофрукти та східні солодощі з Центрального ринку Харкова.\nВідкрийте магазин, зберіть кошик, а ми підтвердимо замовлення тут, у чаті.'
-  };
+  var settings = readSettings_();
+  var payload = { chat_id: msg.chat.id, text: ru ? settings.greeting_ru : settings.greeting_ua };
   var webapp = props.getProperty('WEBAPP_URL');
   if (/^https:\/\//.test(webapp || '')) {
     payload.reply_markup = { inline_keyboard: [[{ text: ru ? '🛒 Открыть магазин' : '🛒 Відкрити магазин', web_app: { url: webapp } }]] };
@@ -1023,8 +1031,13 @@ function handleAdmin_(body) {
   if (body.action === 'admin.status') {
     return setOrderStatus_(String(body.num || ''), String(body.code || ''), user.first_name || '', token, null);
   }
-  if (body.action === 'admin.products') return { ok: true, products: listProductsAdmin_() };
-  if (body.action === 'admin.product') return updateProduct_(String(body.id || ''), body.patch || {});
+  if (body.action === 'admin.products') return { ok: true, products: listProductsAdmin_(), categories: listCategoriesAdmin_() };
+  if (body.action === 'admin.product') return updateProduct_(String(body.id || ''), body.patch || {}, false);
+  if (body.action === 'admin.productAdd') return updateProduct_('', body.patch || {}, true);
+  if (body.action === 'admin.photo') return savePhoto_(String(body.id || ''), String(body.data || ''));
+  if (body.action === 'admin.category') return saveCategory_(body.category || {});
+  if (body.action === 'admin.settings') return { ok: true, fields: settingsFields_() };
+  if (body.action === 'admin.settingsSave') return saveSettings_(body.values || {});
   return { ok: false, error: 'unknown_action' };
 }
 
@@ -1077,9 +1090,11 @@ function productCols_(sheet) {
 function adminProduct_(row, col) {
   var info = priceInfo_(cell_(row, col.type), cell_(row, col.packs), col.pKg >= 0 ? row[col.pKg] : '', col.pUnit >= 0 ? row[col.pUnit] : '');
   return {
-    id: cell_(row, col.id), ua: cell_(row, col.nameUa), ru: cell_(row, col.nameRu), t: info.t,
+    id: cell_(row, col.id), cat: cell_(row, col.catUa), ua: cell_(row, col.nameUa), ru: cell_(row, col.nameRu), t: info.t,
     packs: cell_(row, col.packs), price: info.t === 'w' ? toNum_(col.pKg >= 0 ? row[col.pKg] : 0) : toNum_(col.pUnit >= 0 ? row[col.pUnit] : 0),
-    stock: isInStock_(cell_(row, col.stock)) ? 1 : 0, dUa: cell_(row, col.descUa), dRu: cell_(row, col.descRu)
+    stock: isInStock_(cell_(row, col.stock)) ? 1 : 0, hidden: isYes_(cell_(row, col.hidden)) ? 1 : 0,
+    img: normalizePhoto_(cell_(row, col.photo)), dUa: cell_(row, col.descUa), dRu: cell_(row, col.descRu),
+    wh: toNum_(col.whPrice >= 0 ? row[col.whPrice] : 0), wm: cell_(row, col.whMin)
   };
 }
 
@@ -1096,43 +1111,87 @@ function listProductsAdmin_() {
   return list;
 }
 
-/** Правка одного товара. patch: { stock, price, ua, ru, packs, dUa, dRu } — любое подмножество. */
-function updateProduct_(id, patch) {
-  if (!id) return { ok: false, error: 'bad_form' };
+var TYPE_UA = { w: 'вагова', p: 'упаковка', u: 'шт' };
+
+function multiline_(v, max) {
+  return String(v === null || v === undefined ? '' : v).replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ').trim().slice(0, max);
+}
+
+/**
+ * Правка товара или (create = true) добавление нового.
+ * patch: { cat, t, ua, ru, packs, price, stock, hidden, img, dUa, dRu, wh, wm } — любое подмножество.
+ * Новый товар получает ID автоматически: код категории + следующий номер (DRY-088).
+ */
+function updateProduct_(id, patch, create) {
+  if (!create && !id) return { ok: false, error: 'bad_form' };
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(SHEET_PRODUCTS);
     var col = productCols_(sheet);
     var values = sheet.getDataRange().getValues();
-    var r = -1;
-    for (var i = 1; i < values.length; i++) if (cell_(values[i], col.id) === id) { r = i; break; }
-    if (r < 0) return { ok: false, error: 'not_found' };
-    var isWeight = priceInfo_(cell_(values[r], col.type), '', 0, 0).t === 'w';
-    function set(c, value) { if (c >= 0) sheet.getRange(r + 1, c + 1).setValue(value); }
-    function text(key, c, max, required) {
-      if (typeof patch[key] !== 'string') return true;
-      var v = clean_(patch[key], max);
-      if (required && !v) return false;
-      set(c, safeCell_(v));
-      return true;
+    var cats = listCategoriesAdmin_();
+    var cat = null;
+    if (patch.cat !== undefined) {
+      cats.forEach(function (c) { if (c.ua === patch.cat || c.code === patch.cat) cat = c; });
+      if (!cat) return { ok: false, error: 'bad_form' };
     }
-    if (!text('ua', col.nameUa, 120, true)) return { ok: false, error: 'bad_form' };
-    text('ru', col.nameRu, 120); text('packs', col.packs, 80);
-    if (typeof patch.dUa === 'string') set(col.descUa, safeCell_(String(patch.dUa).replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ').trim().slice(0, 600)));
-    if (typeof patch.dRu === 'string') set(col.descRu, safeCell_(String(patch.dRu).replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ').trim().slice(0, 600)));
-    if (patch.stock !== undefined) set(col.stock, patch.stock ? 'є' : 'немає');
-    if (patch.price !== undefined) {
-      var price = Number(patch.price);
-      if (!(price >= 0 && price < 1000000)) return { ok: false, error: 'bad_form' };
-      price = Math.round(price * 100) / 100;
-      if (isWeight) {
-        set(col.pKg, price || '');
-        // «Ціна за 100 г» обновляем, только если там число, а не формула.
-        if (col.p100 >= 0 && !sheet.getRange(r + 1, col.p100 + 1).getFormula()) set(col.p100, price ? Math.round(price) / 10 : '');
-      } else {
-        set(col.pUnit, price || '');
+    if (patch.t !== undefined && !TYPE_UA[patch.t]) return { ok: false, error: 'bad_form' };
+    if (patch.price !== undefined && !(Number(patch.price) >= 0 && Number(patch.price) < 1000000)) return { ok: false, error: 'bad_form' };
+    if (patch.wh !== undefined && !(Number(patch.wh) >= 0 && Number(patch.wh) < 1000000)) return { ok: false, error: 'bad_form' };
+    if (typeof patch.ua === 'string' && !clean_(patch.ua, 120)) return { ok: false, error: 'bad_form' };
+    if (typeof patch.img === 'string' && patch.img && !/^https:\/\//i.test(patch.img)) return { ok: false, error: 'bad_form' };
+
+    var r = -1;
+    if (create) {
+      if (!cat || !patch.t || typeof patch.ua !== 'string') return { ok: false, error: 'bad_form' };
+      var prefix = /^[A-Z0-9]{2,6}$/.test(cat.code) ? cat.code : 'PRD';
+      var max = 0;
+      for (var k = 1; k < values.length; k++) {
+        var m = cell_(values[k], col.id).match(/^([A-Z0-9]+)-(\d+)$/);
+        if (m && m[1] === prefix) max = Math.max(max, parseInt(m[2], 10));
       }
+      var n = String(max + 1);
+      while (n.length < 3) n = '0' + n;
+      id = prefix + '-' + n;
+      var blank = [];
+      for (var b = 0; b < sheet.getLastColumn(); b++) blank.push('');
+      blank[col.id] = id;
+      blank[col.stock] = patch.stock ? 'є' : 'немає';
+      sheet.appendRow(blank);
+      r = sheet.getLastRow() - 1;
+    } else {
+      for (var i = 1; i < values.length; i++) if (cell_(values[i], col.id) === id) { r = i; break; }
+      if (r < 0) return { ok: false, error: 'not_found' };
+    }
+
+    function set(c, value) { if (c >= 0) sheet.getRange(r + 1, c + 1).setValue(value); }
+    function text(key, c, max) { if (typeof patch[key] === 'string') set(c, safeCell_(clean_(patch[key], max))); }
+    if (cat) { set(col.catUa, cat.ua); set(col.catRu, cat.ru); }
+    if (patch.t !== undefined) set(col.type, TYPE_UA[patch.t]);
+    text('ua', col.nameUa, 120); text('ru', col.nameRu, 120); text('packs', col.packs, 80); text('wm', col.whMin, 40);
+    if (typeof patch.dUa === 'string') set(col.descUa, safeCell_(multiline_(patch.dUa, 600)));
+    if (typeof patch.dRu === 'string') set(col.descRu, safeCell_(multiline_(patch.dRu, 600)));
+    if (typeof patch.img === 'string') set(col.photo, patch.img);
+    if (patch.stock !== undefined) set(col.stock, patch.stock ? 'є' : 'немає');
+    if (patch.wh !== undefined) set(col.whPrice, Number(patch.wh) > 0 ? Math.round(Number(patch.wh) * 100) / 100 : '');
+    if (patch.hidden !== undefined) {
+      if (col.hidden < 0) { // колонки «Приховати» ещё нет — добавляем в конец
+        col.hidden = sheet.getLastColumn();
+        sheet.getRange(1, col.hidden + 1).setValue('Приховати з вітрини');
+      }
+      set(col.hidden, patch.hidden ? 'так' : '');
+    }
+    var isWeight = patch.t !== undefined ? patch.t === 'w'
+      : priceInfo_(create ? '' : cell_(values[r], col.type), '', 0, 0).t === 'w';
+    if (patch.price !== undefined || (patch.t !== undefined && !create)) {
+      var old = create ? 0 : (col.pKg >= 0 ? toNum_(values[r][col.pKg]) : 0) || (col.pUnit >= 0 ? toNum_(values[r][col.pUnit]) : 0);
+      var price = patch.price !== undefined ? Math.round(Number(patch.price) * 100) / 100 : old;
+      // Цена живёт в колонке своего типа; вторую очищаем, чтобы не осталось старого значения.
+      set(col.pKg, isWeight && price ? price : '');
+      set(col.pUnit, !isWeight && price ? price : '');
+      if (col.p100 >= 0 && !sheet.getRange(r + 1, col.p100 + 1).getFormula()) set(col.p100, isWeight && price ? Math.round(price) / 10 : '');
     }
     SpreadsheetApp.flush();
     clearCatalogCache_();
@@ -1141,4 +1200,203 @@ function updateProduct_(id, patch) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ------------------------------ Фото товаров ------------------------------ */
+
+var PHOTO_FOLDER_NAME = 'PAMIR — фото товарів';
+
+function photoFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('PHOTO_FOLDER_ID');
+  if (id) {
+    try { return DriveApp.getFolderById(id); } catch (err) { /* папку удалили — создадим новую */ }
+  }
+  var folder = DriveApp.createFolder(PHOTO_FOLDER_NAME);
+  props.setProperty('PHOTO_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+/** Фото приходит из админ-панели уже сжатым (JPEG, base64). Кладём в папку на Google Drive, ссылку — в таблицу. */
+function savePhoto_(id, data) {
+  if (!id) return { ok: false, error: 'bad_form' };
+  var bytes;
+  try { bytes = Utilities.base64Decode(data); } catch (err) { return { ok: false, error: 'bad_form' }; }
+  if (bytes.length < 500 || bytes.length > 1100000 || (bytes[0] & 255) !== 0xFF || (bytes[1] & 255) !== 0xD8) {
+    return { ok: false, error: 'bad_form' };
+  }
+  var file = photoFolder_().createFile(Utilities.newBlob(bytes, 'image/jpeg', id + '-' + Date.now() + '.jpg'));
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return updateProduct_(id, { img: 'https://drive.google.com/file/d/' + file.getId() + '/view' }, false);
+}
+
+/** Запустить один раз из редактора: выдаёт доступ к Google Drive и создаёт папку для фото. */
+function setupPhotos() {
+  var folder = photoFolder_();
+  console.log('Папка для фото готова: ' + folder.getUrl());
+}
+
+/* ------------------------------ Категории ------------------------------ */
+
+var CATEGORY_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
+
+function listCategoriesAdmin_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_CATEGORIES);
+  if (!sheet) return [];
+  var values = sheet.getDataRange().getValues();
+  if (values.length < 2) return [];
+  var col = mapHeaders_(values[0], CATEGORY_COLS);
+  var list = [];
+  for (var r = 1; r < values.length; r++) {
+    var code = cell_(values[r], col.code);
+    var ua = cell_(values[r], col.ua);
+    if (!code || !ua) continue;
+    list.push({ code: code, ua: ua, ru: cell_(values[r], col.ru) || ua, icon: cell_(values[r], col.icon).toLowerCase(),
+      order: toNum_(col.order >= 0 ? values[r][col.order] : 0) || 999 });
+  }
+  list.sort(function (a, b) { return a.order - b.order; });
+  return list;
+}
+
+/** Добавить (isNew) или изменить категорию. При переименовании названия меняются и в строках товаров. */
+function saveCategory_(c) {
+  var code = String(c.code || '').trim().toUpperCase();
+  var ua = clean_(c.ua, 40);
+  var ru = clean_(c.ru, 40) || ua;
+  var icon = CATEGORY_ICONS.indexOf(String(c.icon)) >= 0 ? String(c.icon) : '';
+  var order = Math.round(Number(c.order));
+  if (!ua || !(order >= 1 && order <= 999) || !/^[A-Z]{2,5}$/.test(code)) return { ok: false, error: 'bad_form' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(SHEET_CATEGORIES);
+    if (!sheet) return { ok: false, error: 'not_found' };
+    var values = sheet.getDataRange().getValues();
+    var col = mapHeaders_(values[0], CATEGORY_COLS);
+    if (col.code < 0 || col.ua < 0) return { ok: false, error: 'not_found' };
+    var r = -1;
+    for (var i = 1; i < values.length; i++) if (cell_(values[i], col.code).toUpperCase() === code) { r = i; break; }
+    if (c.isNew) {
+      if (r >= 0) return { ok: false, error: 'exists' };
+      var blank = [];
+      for (var b = 0; b < sheet.getLastColumn(); b++) blank.push('');
+      blank[col.code] = code;
+      sheet.appendRow(blank);
+      r = sheet.getLastRow() - 1;
+    } else if (r < 0) {
+      return { ok: false, error: 'not_found' };
+    }
+    var oldUa = c.isNew ? '' : cell_(values[r], col.ua);
+    function set(k, value) { if (col[k] >= 0) sheet.getRange(r + 1, col[k] + 1).setValue(value); }
+    set('ua', safeCell_(ua)); set('ru', safeCell_(ru)); set('icon', icon); set('order', order);
+
+    if (oldUa && oldUa !== ua) { // товары ссылаются на категорию по названию
+      var ps = ss.getSheetByName(SHEET_PRODUCTS);
+      var pc = productCols_(ps);
+      var pv = ps.getDataRange().getValues();
+      for (var k = 1; k < pv.length; k++) {
+        if (pc.catUa >= 0 && cell_(pv[k], pc.catUa) === oldUa) {
+          ps.getRange(k + 1, pc.catUa + 1).setValue(ua);
+          if (pc.catRu >= 0) ps.getRange(k + 1, pc.catRu + 1).setValue(ru);
+        }
+      }
+    } else if (!c.isNew && cell_(values[r], col.ru) !== ru) {
+      var ps2 = ss.getSheetByName(SHEET_PRODUCTS);
+      var pc2 = productCols_(ps2);
+      var pv2 = ps2.getDataRange().getValues();
+      for (var q = 1; q < pv2.length; q++) {
+        if (pc2.catUa >= 0 && pc2.catRu >= 0 && cell_(pv2[q], pc2.catUa) === ua) ps2.getRange(q + 1, pc2.catRu + 1).setValue(ru);
+      }
+    }
+    SpreadsheetApp.flush();
+    clearCatalogCache_();
+    return { ok: true, categories: listCategoriesAdmin_() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ------------------------------ Настройки магазина ------------------------------ */
+
+var SHEET_SETTINGS = 'Налаштування';
+/** [ключ, подпись для админа, значение по умолчанию]. Лист «Налаштування»: Ключ · Значення · Опис. */
+var SETTINGS_DEF = [
+  ['notice_ua', 'Оголошення у шапці вітрини (UA). Порожньо — без оголошення', ''],
+  ['notice_ru', 'Объявление в шапке витрины (RU)', ''],
+  ['address_ua', 'Адреса самовивозу (UA)', SHOP_DEFAULTS.PICKUP_ADDRESS_UA],
+  ['address_ru', 'Адрес самовывоза (RU)', SHOP_DEFAULTS.PICKUP_ADDRESS_RU],
+  ['hours_ua', 'Години роботи (UA)', SHOP_DEFAULTS.PICKUP_HOURS_UA],
+  ['hours_ru', 'Часы работы (RU)', SHOP_DEFAULTS.PICKUP_HOURS_RU],
+  ['pay_cash', 'Оплата при отриманні', 'так'],
+  ['pay_card', 'Оплата переказом на картку', 'так'],
+  ['pay_cod', 'Накладений платіж (Нова пошта)', 'так'],
+  ['min_order', 'Мінімальна сума замовлення, ₴ (0 — без обмеження)', '0'],
+  ['greeting_ua', 'Привітання бота (UA)', 'Вітаємо! Це PAMIR: горіхи, сухофрукти та східні солодощі з Центрального ринку Харкова.\nВідкрийте магазин, зберіть кошик, а ми підтвердимо замовлення тут, у чаті.'],
+  ['greeting_ru', 'Приветствие бота (RU)', 'Здравствуйте! Это PAMIR: орехи, сухофрукты и восточные сладости с Центрального рынка Харькова.\nОткройте магазин, соберите корзину, а мы подтвердим заказ здесь, в чате.'],
+  ['confirm_ua', 'Текст клієнту після прийняття замовлення (UA)', 'Ми підтвердимо наявність і напишемо вам сюди.'],
+  ['confirm_ru', 'Текст клиенту после принятия заказа (RU)', 'Мы подтвердим наличие и напишем вам сюда.']
+];
+var settingsMemo_ = null;
+
+function isYes_(v) {
+  return /^(так|да|yes|true|1|є|x|х|\+)$/i.test(String(v === null || v === undefined ? '' : v).trim());
+}
+
+/** Значения настроек: лист «Налаштування», а пока его нет — значения по умолчанию (и старые PICKUP_* из свойств). */
+function readSettings_() {
+  if (settingsMemo_) return settingsMemo_;
+  var out = {};
+  var props = PropertiesService.getScriptProperties();
+  SETTINGS_DEF.forEach(function (d) { out[d[0]] = d[2]; });
+  [['address_ua', 'PICKUP_ADDRESS_UA'], ['address_ru', 'PICKUP_ADDRESS_RU'], ['hours_ua', 'PICKUP_HOURS_UA'], ['hours_ru', 'PICKUP_HOURS_RU']]
+    .forEach(function (m) { var v = props.getProperty(m[1]); if (v) out[m[0]] = v; });
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETTINGS);
+  if (sheet && sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues().forEach(function (row) {
+      var key = String(row[0] || '').trim();
+      if (key in out) out[key] = String(row[1] === null || row[1] === undefined ? '' : row[1]).trim();
+    });
+  }
+  // Пустой обязательный текст заменяем значением по умолчанию: бот не должен слать пустое сообщение.
+  SETTINGS_DEF.forEach(function (d) { if (!out[d[0]] && d[0].indexOf('notice_') !== 0 && d[0] !== 'min_order') out[d[0]] = d[2]; });
+  settingsMemo_ = out;
+  return out;
+}
+
+function settingsFields_() {
+  var st = readSettings_();
+  return SETTINGS_DEF.map(function (d) { return { k: d[0], label: d[1], v: st[d[0]] }; });
+}
+
+function saveSettings_(values) {
+  var next = {};
+  var current = readSettings_();
+  SETTINGS_DEF.forEach(function (d) {
+    var k = d[0];
+    if (values[k] === undefined) { next[k] = current[k]; return; }
+    if (k.indexOf('pay_') === 0) next[k] = values[k] === true || isYes_(values[k]) ? 'так' : 'ні';
+    else if (k === 'min_order') next[k] = String(Math.max(0, Math.min(100000, Math.round(toNum_(values[k])))));
+    else next[k] = multiline_(values[k], 500);
+  });
+  if (!isYes_(next.pay_cash) && !isYes_(next.pay_card)) return { ok: false, error: 'no_payment' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(SHEET_SETTINGS);
+    if (!sheet) {
+      sheet = ss.insertSheet(SHEET_SETTINGS);
+      sheet.getRange(1, 1, 1, 3).setValues([['Ключ', 'Значення', 'Опис']]).setFontWeight('bold');
+      sheet.setFrozenRows(1);
+    }
+    var rows = SETTINGS_DEF.map(function (d) { return [d[0], safeCell_(next[d[0]]), d[1]]; });
+    sheet.getRange(2, 1, rows.length, 3).setValues(rows);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  settingsMemo_ = null;
+  clearCatalogCache_();
+  return { ok: true, fields: settingsFields_() };
 }

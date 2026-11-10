@@ -93,6 +93,20 @@
       admPacksHint: 'Через « / », наприклад: 100 г / 250 г / 1 кг', admDescUa: 'Опис (UA)', admDescRu: 'Описание (RU)',
       admSave: 'Зберегти', admMore: 'Показано перші 60. Уточніть пошук.', admTest: 'тест',
       admErrName: 'Назва (UA) не може бути порожньою', admErrPrice: 'Ціна має бути числом',
+      admCats: 'Категорії', admSettings: 'Налаштування', admAdd: 'Додати товар', admAddCat: 'Додати категорію',
+      admNew: 'Новий товар', admNewCat: 'Нова категорія', admCat: 'Категорія', admType: 'Тип',
+      admTypeW: 'ваговий (ціна за 1 кг)', admTypeP: 'упаковка', admTypeU: 'штука',
+      admPrice: 'Ціна, ₴', admPriceHint: 'Ваговий товар: за 1 кг. Упаковка і штука: за одиницю.',
+      admWh: 'Оптова ціна, ₴', admWm: 'Опт: мінімальний обсяг', admHidden: 'Приховати з вітрини',
+      admHiddenTag: 'приховано', admNoPhoto: 'без фото', admPhotoPick: 'Вибрати фото', admPhotoChange: 'Замінити фото',
+      admPhotoDel: 'Прибрати фото', admPhotoUp: 'Завантажуємо фото…', admPhotoFail: 'Не вдалося завантажити фото. Спробуйте ще раз.',
+      admPhotoLater: 'Фото можна додати одразу після збереження товару.',
+      admCatCode: 'Код', admCatCodeHint: '2–5 латинських літер, наприклад SPC. З нього починаються ID товарів. Змінити потім не можна.',
+      admCatUa: 'Назва (UA)', admCatRu: 'Название (RU)', admCatIcon: 'Іконка', admCatOrder: 'Порядок на вітрині',
+      admErrCode: 'Код: від 2 до 5 латинських літер', admErrExists: 'Категорія з таким кодом уже є',
+      admErrPay: 'Залиште хоча б один спосіб оплати: при отриманні або на картку',
+      ico_nut: 'Горіх', ico_cherry: 'Сухофрукти', ico_candy: 'Солодощі', ico_flame: 'Спеції', ico_leaf: 'Чай', ico_coffee: 'Кава',
+      minOrder: 'Мінімальна сума замовлення:',
       stC: 'Підтвердити', stN: 'Немає в наявності', stS: 'Відправлено', stD: 'Виконано'
     },
     ru: {
@@ -182,6 +196,20 @@
       admPacksHint: 'Через « / », например: 100 г / 250 г / 1 кг', admDescUa: 'Опис (UA)', admDescRu: 'Описание (RU)',
       admSave: 'Сохранить', admMore: 'Показаны первые 60. Уточните поиск.', admTest: 'тест',
       admErrName: 'Назва (UA) не может быть пустой', admErrPrice: 'Цена должна быть числом',
+      admCats: 'Категории', admSettings: 'Настройки', admAdd: 'Добавить товар', admAddCat: 'Добавить категорию',
+      admNew: 'Новый товар', admNewCat: 'Новая категория', admCat: 'Категория', admType: 'Тип',
+      admTypeW: 'весовой (цена за 1 кг)', admTypeP: 'упаковка', admTypeU: 'штука',
+      admPrice: 'Цена, ₴', admPriceHint: 'Весовой товар: за 1 кг. Упаковка и штука: за единицу.',
+      admWh: 'Оптовая цена, ₴', admWm: 'Опт: минимальный объём', admHidden: 'Скрыть с витрины',
+      admHiddenTag: 'скрыт', admNoPhoto: 'без фото', admPhotoPick: 'Выбрать фото', admPhotoChange: 'Заменить фото',
+      admPhotoDel: 'Убрать фото', admPhotoUp: 'Загружаем фото…', admPhotoFail: 'Не удалось загрузить фото. Попробуйте ещё раз.',
+      admPhotoLater: 'Фото можно добавить сразу после сохранения товара.',
+      admCatCode: 'Код', admCatCodeHint: '2–5 латинских букв, например SPC. С него начинаются ID товаров. Изменить потом нельзя.',
+      admCatUa: 'Назва (UA)', admCatRu: 'Название (RU)', admCatIcon: 'Иконка', admCatOrder: 'Порядок на витрине',
+      admErrCode: 'Код: от 2 до 5 латинских букв', admErrExists: 'Категория с таким кодом уже есть',
+      admErrPay: 'Оставьте хотя бы один способ оплаты: при получении или на карту',
+      ico_nut: 'Орех', ico_cherry: 'Сухофрукты', ico_candy: 'Сладости', ico_flame: 'Специи', ico_leaf: 'Чай', ico_coffee: 'Кофе',
+      minOrder: 'Минимальная сумма заказа:',
       stC: 'Подтвердить', stN: 'Нет в наличии', stS: 'Отправлено', stD: 'Выполнено'
     }
   };
@@ -256,6 +284,7 @@
     main: document.getElementById('main'),
     sheet: document.getElementById('sheet'),
     backdrop: document.getElementById('backdrop'),
+    notice: document.getElementById('notice'),
     page: document.getElementById('page'),
     bar: document.getElementById('bar'),
     barBtn: document.getElementById('barBtn'),
@@ -406,6 +435,19 @@
     if (!cfg.API_URL) parts.push(t('demo'));
     el.banner.hidden = parts.length === 0;
     el.banner.textContent = parts.join(' · ');
+    // Объявление магазина из настроек («Сьогодні не працюємо»).
+    var notice = shopInfo().notice;
+    var text = notice ? (state.lang === 'ru' ? notice.ru : notice.ua) || '' : '';
+    el.notice.textContent = text;
+    el.notice.hidden = !text;
+  }
+
+  function shopInfo() { return (state.catalog && state.catalog.shop) || {}; }
+
+  /** Способы оплаты, включённые в настройках магазина (старый бэкенд их не присылает — тогда все). */
+  function payMethods() {
+    var list = shopInfo().pay;
+    return Array.isArray(list) && list.length ? list : ['cash', 'card', 'cod'];
   }
 
   function renderChips() {
@@ -719,7 +761,7 @@
   function goBack() {
     if (state.sheet) { closeSheet(); return; }
     if (state.view === 'checkout') { readForm(); go('cart'); return; }
-    if (state.view === 'admin' && adm.edit) { adm.edit = ''; renderPage(); return; }
+    if (state.view === 'admin' && (adm.edit || adm.catEdit)) { adm.edit = ''; adm.catEdit = ''; renderPage(); return; }
     if (state.view !== 'catalog') go('catalog');
   }
 
@@ -728,7 +770,11 @@
     var total = cartTotal();
     if (state.sheet || state.view === 'done' || state.view === 'admin' || !(total > 0)) return null;
     if (state.view === 'checkout') return { text: t('confirmBtn') + ' · ' + money(total), run: submitOrder };
-    if (state.view === 'cart') return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('checkout'); } };
+    if (state.view === 'cart') return { text: t('checkoutBtn') + ' · ' + money(total), run: function () {
+      var min = Number(shopInfo().min) || 0;
+      if (min > 0 && cartTotal() < min) { state.cartNotice = t('minOrder') + ' ' + money(min); renderPage(); window.scrollTo(0, 0); haptic('error'); return; }
+      go('checkout');
+    } };
     return { text: t('checkoutBtn') + ' · ' + money(total), run: function () { go('cart'); } };
   }
 
@@ -907,7 +953,7 @@
       '</div></fieldset>' +
 
       '<fieldset class="group"><legend class="label">' + esc(t('payment')) + '</legend><div class="opts opts--col">' +
-      option('pay', 'cash', '', t('payCash')) + option('pay', 'card', '', t('payCard')) + option('pay', 'cod', '', t('payCod')) + '</div>' +
+      payMethods().map(function (k) { return option('pay', k, '', t({ cash: 'payCash', card: 'payCard', cod: 'payCod' }[k])); }).join('') + '</div>' +
       '<p class="info info__muted" id="cardNote">' + esc(t('payCardNote')) + '</p></fieldset>' +
 
       '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
@@ -927,10 +973,11 @@
     // Наложенный платёж бывает только у Новой почты.
     var cod = el.page.querySelector('[data-opt="pay-cod"]');
     if (cod) cod.hidden = !np;
-    if (!np && state.form.pay === 'cod') {
-      state.form.pay = 'cash';
-      var cash = el.page.querySelector('input[name="pay"][value="cash"]');
-      if (cash) cash.checked = true;
+    var allowed = payMethods().filter(function (k) { return np || k !== 'cod'; });
+    if (allowed.length && allowed.indexOf(state.form.pay) < 0) {
+      state.form.pay = allowed[0];
+      var first = el.page.querySelector('input[name="pay"][value="' + allowed[0] + '"]');
+      if (first) first.checked = true;
       saveForm();
     }
     document.getElementById('cardNote').hidden = state.form.pay !== 'card';
@@ -1094,6 +1141,7 @@
       return;
     }
     setBusy(false);
+    if (code === 'min_order') { showFormError(t('minOrder') + ' ' + money(Number(shopInfo().min) || 0)); return; }
     showFormError(t({ rate_limit: 'errRate', bad_auth: 'errAuth', test_off: 'errTestOff' }[code] || 'errSend'));
   }
 
@@ -1123,7 +1171,10 @@
   var ADMIN_STATUSES = ['новий', 'підтверджено', 'відправлено', 'виконано', 'немає в наявності'];
   var STATUS_BADGE = { 'новий': 'badge--opt', 'підтверджено': 'badge--stock', 'відправлено': 'badge--ship', 'немає в наявності': 'badge--out', 'скасовано': 'badge--out' };
   var STATUS_BTNS = [['c', 'stC', 'підтверджено'], ['n', 'stN', 'немає в наявності'], ['s', 'stS', 'відправлено'], ['d', 'stD', 'виконано']];
-  var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, pq: '', edit: '', loading: false, error: '', busy: false };
+  var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats'], ['settings', 'admSettings']];
+  var CAT_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
+  var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
+    edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false };
 
   function api(action, data) {
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
@@ -1137,18 +1188,21 @@
   }
 
   function loadAdmin(force) {
-    var isOrders = adm.tab === 'orders';
-    if (adm.loading || (!force && (isOrders ? adm.orders : adm.products))) return;
+    var kind = adm.tab === 'orders' ? 'orders' : adm.tab === 'settings' ? 'settings' : 'products';
+    var have = kind === 'orders' ? adm.orders : kind === 'settings' ? adm.settings : adm.products;
+    if (adm.loading || (!force && have)) return;
     adm.loading = true; adm.error = '';
     renderAdminList();
-    api(isOrders ? 'admin.orders' : 'admin.products').then(function (res) {
+    api('admin.' + kind).then(function (res) {
       adm.loading = false;
       if (!res || !res.ok) {
         adm.error = res && res.error === 'forbidden' ? 'admForbidden' : 'admError';
         if (res && res.error === 'forbidden') { store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true; }
       } else {
         store.set(ADMIN_KEY, '1');
-        if (isOrders) { adm.orders = res.orders || []; adm.stats = res.stats || null; } else adm.products = res.products || [];
+        if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; }
+        else if (kind === 'settings') adm.settings = res.fields || [];
+        else { adm.products = res.products || []; adm.cats = res.categories || []; }
       }
       if (state.view === 'admin') renderPage();
     }).catch(function () {
@@ -1160,23 +1214,27 @@
   function adminHtml() {
     var html = pageHead(t('admin'));
     if (adm.edit) return html + productFormHtml();
-    html += '<div class="tabs" role="group">' +
-      '<button type="button" data-tab="orders" aria-pressed="' + (adm.tab === 'orders') + '">' + esc(t('admOrders')) + '</button>' +
-      '<button type="button" data-tab="products" aria-pressed="' + (adm.tab === 'products') + '">' + esc(t('admProducts')) + '</button></div>';
+    if (adm.catEdit) return html + categoryFormHtml();
+    html += '<div class="tabs" role="group">' + ADMIN_TABS.map(function (tab) {
+      return '<button type="button" data-tab="' + tab[0] + '" aria-pressed="' + (adm.tab === tab[0]) + '">' + esc(t(tab[1])) + '</button>';
+    }).join('') + '</div>';
     if (adm.tab === 'orders') {
       if (adm.stats) {
         html += '<div class="stats"><div><span>' + esc(t('admToday')) + '</span><b>' + adm.stats.today.n + ' · ' + money(adm.stats.today.sum) + '</b></div>' +
           '<div><span>' + esc(t('admWeek')) + '</span><b>' + adm.stats.week.n + ' · ' + money(adm.stats.week.sum) + '</b></div></div>';
       }
       html += '<input class="input" id="admQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchO')) + '" value="' + esc(adm.q) + '">' +
-        '<div class="chips chips--flush" id="admFilter">' + ['' ].concat(ADMIN_STATUSES).map(function (s) {
+        '<div class="chips chips--flush" id="admFilter">' + [''].concat(ADMIN_STATUSES).map(function (s) {
           return '<button type="button" class="chip" data-filter="' + esc(s) + '" aria-pressed="' + (adm.filter === s) + '">' + esc(s || t('admAll')) + '</button>';
         }).join('') + '</div>';
-    } else {
-      html += '<input class="input" id="admPQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchP')) + '" value="' + esc(adm.pq) + '">';
+    } else if (adm.tab === 'products') {
+      html += '<button type="button" class="btn btn--primary btn--block" data-edit="+">' + icon('plus') + esc(t('admAdd')) + '</button>' +
+        '<input class="input" id="admPQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchP')) + '" value="' + esc(adm.pq) + '">';
+    } else if (adm.tab === 'cats') {
+      html += '<button type="button" class="btn btn--primary btn--block" data-cat="+">' + icon('plus') + esc(t('admAddCat')) + '</button>';
     }
     return html + '<div id="admList">' + adminListHtml() + '</div>' +
-      '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>';
+      (adm.tab === 'settings' ? '' : '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>');
   }
 
   function renderAdminList() {
@@ -1187,7 +1245,10 @@
   function adminListHtml() {
     if (adm.loading) return '<p class="state__text adm__msg">' + esc(t('admLoading')) + '</p>';
     if (adm.error) return '<p class="form__err">' + esc(t(adm.error)) + '</p>';
-    return adm.tab === 'orders' ? ordersHtml() : productsHtml();
+    if (adm.tab === 'orders') return ordersHtml();
+    if (adm.tab === 'products') return productsHtml();
+    if (adm.tab === 'cats') return catsHtml();
+    return settingsHtml();
   }
 
   function ordersHtml() {
@@ -1234,7 +1295,8 @@
     if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
     var html = '<ul class="lines">' + list.slice(0, 60).map(function (p) {
       return '<li class="prod"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
-        '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) + '</span></button>' +
+        '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) +
+        (p.hidden ? ' · ' + esc(t('admHiddenTag')) : '') + (p.img ? '' : ' · ' + esc(t('admNoPhoto'))) + '</span></button>' +
         '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"><span></span></button></li>';
     }).join('') + '</ul>';
     if (list.length > 60) html += '<p class="state__text adm__msg">' + esc(t('admMore')) + '</p>';
@@ -1247,48 +1309,91 @@
     return found;
   }
 
+  /* ---- Поля форм ---- */
+  function fRow(id, label, value, attrs, hint) {
+    return '<div class="field"><label class="label" for="a-' + id + '">' + esc(label) + '</label>' +
+      '<input class="input" id="a-' + id + '" ' + attrs + ' value="' + esc(value) + '">' + (hint ? '<p class="field__hint">' + esc(hint) + '</p>' : '') + '</div>';
+  }
+  function fArea(id, label, value, max) {
+    return '<div class="field"><label class="label" for="a-' + id + '">' + esc(label) + '</label>' +
+      '<textarea class="input input--area" id="a-' + id + '" rows="3" maxlength="' + (max || 600) + '">' + esc(value) + '</textarea></div>';
+  }
+  function fSelect(id, label, value, opts) {
+    return '<div class="field"><label class="label" for="a-' + id + '">' + esc(label) + '</label><select class="input" id="a-' + id + '">' +
+      opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (o[0] === value ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') +
+      '</select></div>';
+  }
+  function fCheck(id, label, on) {
+    return '<label class="check"><input type="checkbox" id="a-' + id + '"' + (on ? ' checked' : '') + '><span>' + esc(label) + '</span></label>';
+  }
+  function fVal(id) { var x = document.getElementById('a-' + id); return x ? x.value.trim() : ''; }
+  function fNum(id) { return Number(fVal(id).replace(/\s/g, '').replace(',', '.') || 0); }
+  function fOn(id) { var x = document.getElementById('a-' + id); return !!(x && x.checked); }
+  function fErr(key) {
+    var err = document.getElementById('admErr');
+    if (err) { err.textContent = t(key); err.hidden = false; err.scrollIntoView({ block: 'center' }); }
+  }
+  var FORM_ERR = '<p class="form__err" id="admErr" role="alert" hidden></p>';
+  function saveBtn() { return '<button type="button" class="btn btn--primary btn--block" data-action="adm-save">' + esc(t('admSave')) + '</button>'; }
+
+  /* ---- Товар: правка и добавление ---- */
   function productFormHtml() {
-    var p = adminProduct(adm.edit);
+    var isNew = adm.edit === '+';
+    var p = isNew
+      ? { id: '', cat: adm.cats && adm.cats[0] ? adm.cats[0].ua : '', t: 'w', ua: '', ru: '', packs: '100 г / 250 г / 500 г / 1 кг', price: '', stock: 1, hidden: 0, img: '', dUa: '', dRu: '', wh: '', wm: '' }
+      : adminProduct(adm.edit);
     if (!p) return '';
-    function row(id, label, value, attrs, hint) {
-      return '<div class="field"><label class="label" for="a-' + id + '">' + esc(label) + '</label>' +
-        '<input class="input" id="a-' + id + '" ' + attrs + ' value="' + esc(value) + '">' + (hint ? '<p class="field__hint">' + esc(hint) + '</p>' : '') + '</div>';
-    }
-    function area(id, label, value) {
-      return '<div class="field"><label class="label" for="a-' + id + '">' + esc(label) + '</label>' +
-        '<textarea class="input input--area" id="a-' + id + '" rows="3" maxlength="600">' + esc(value) + '</textarea></div>';
-    }
-    return '<form class="form" id="admForm" novalidate><p class="label">' + esc(p.id) + '</p>' +
-      '<p class="form__err" id="admErr" role="alert" hidden></p>' +
-      row('ua', t('admNameUa'), p.ua, 'type="text" maxlength="120"') +
-      row('ru', t('admNameRu'), p.ru, 'type="text" maxlength="120"') +
-      row('price', t(p.t === 'w' ? 'admPriceKg' : 'admPriceUnit'), p.price || '', 'type="text" inputmode="decimal" maxlength="9"') +
-      row('packs', t('admPacks'), p.packs, 'type="text" maxlength="80"', p.t === 'w' ? t('admPacksHint') : '') +
-      area('dUa', t('admDescUa'), p.dUa) + area('dRu', t('admDescRu'), p.dRu) +
-      '<label class="check"><input type="checkbox" id="a-stock"' + (p.stock ? ' checked' : '') + '><span>' + esc(t('admStock')) + '</span></label>' +
-      '<button type="button" class="btn btn--primary btn--block" data-action="adm-save">' + esc(t('admSave')) + '</button></form>';
+    var cats = (adm.cats || []).map(function (c) { return [c.ua, c.ua]; });
+    if (p.cat && !cats.some(function (c) { return c[0] === p.cat; })) cats.unshift([p.cat, p.cat]);
+    var photo = isNew
+      ? '<p class="info info__muted">' + esc(t('admPhotoLater')) + '</p>'
+      : '<div class="photo"><div class="photo__box">' + (p.img ? '<img src="' + esc(p.img) + '" alt="" referrerpolicy="no-referrer">' : MARK) + '</div>' +
+        '<div class="photo__acts"><label class="btn btn--block">' + esc(t(p.img ? 'admPhotoChange' : 'admPhotoPick')) +
+        '<input type="file" id="a-photo" accept="image/*" hidden></label>' +
+        (p.img ? '<button type="button" class="btn btn--block" data-action="adm-photo-del">' + esc(t('admPhotoDel')) + '</button>' : '') +
+        '<p class="field__hint" id="photoMsg"></p></div></div>';
+    return '<form class="form" id="admForm" novalidate><p class="label">' + esc(isNew ? t('admNew') : p.id) + '</p>' + FORM_ERR + photo +
+      fSelect('cat', t('admCat'), p.cat, cats) +
+      fSelect('t', t('admType'), p.t, [['w', t('admTypeW')], ['p', t('admTypeP')], ['u', t('admTypeU')]]) +
+      fRow('ua', t('admNameUa'), p.ua, 'type="text" maxlength="120"') +
+      fRow('ru', t('admNameRu'), p.ru, 'type="text" maxlength="120"') +
+      fRow('price', t('admPrice'), p.price || '', 'type="text" inputmode="decimal" maxlength="9"', t('admPriceHint')) +
+      fRow('packs', t('admPacks'), p.packs, 'type="text" maxlength="80"', t('admPacksHint')) +
+      fArea('dUa', t('admDescUa'), p.dUa) + fArea('dRu', t('admDescRu'), p.dRu) +
+      fRow('wh', t('admWh'), p.wh || '', 'type="text" inputmode="decimal" maxlength="9"') +
+      fRow('wm', t('admWm'), p.wm, 'type="text" maxlength="40"') +
+      fCheck('stock', t('admStock'), p.stock) + fCheck('hidden', t('admHidden'), p.hidden) + saveBtn() + '</form>';
   }
 
   function saveProductForm() {
-    var p = adminProduct(adm.edit);
-    if (!p || adm.busy) return;
-    function val(id) { return document.getElementById('a-' + id).value.trim(); }
-    var next = { ua: val('ua'), ru: val('ru'), packs: val('packs'), dUa: val('dUa'), dRu: val('dRu') };
-    var price = Number(val('price').replace(/\s/g, '').replace(',', '.') || 0);
-    var err = document.getElementById('admErr');
-    if (!next.ua || !(price >= 0)) {
-      err.textContent = t(!next.ua ? 'admErrName' : 'admErrPrice'); err.hidden = false;
+    var isNew = adm.edit === '+';
+    var p = isNew ? null : adminProduct(adm.edit);
+    if ((!isNew && !p) || adm.busy) return;
+    var next = { cat: fVal('cat'), t: fVal('t'), ua: fVal('ua'), ru: fVal('ru'), packs: fVal('packs'), wm: fVal('wm'), dUa: fVal('dUa'), dRu: fVal('dRu'),
+      price: fNum('price'), wh: fNum('wh'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0 };
+    if (!next.ua) { fErr('admErrName'); return; }
+    if (!(next.price >= 0) || !(next.wh >= 0)) { fErr('admErrPrice'); return; }
+    if (isNew) {
+      next.stock = !!next.stock; next.hidden = !!next.hidden;
+      adm.busy = true;
+      api('admin.productAdd', { patch: next }).then(function (res) {
+        adm.busy = false;
+        if (!res || !res.ok) throw new Error('fail');
+        adm.products.push(res.product);
+        adm.edit = res.product.id; // остаёмся в карточке: теперь можно добавить фото
+        toast(t('admSaved') + ': ' + res.product.id);
+        loadCatalog();
+        renderPage(); window.scrollTo(0, 0);
+      }).catch(function () { adm.busy = false; fErr('admFail'); });
       return;
     }
     var patch = {};
-    Object.keys(next).forEach(function (k) { if (next[k] !== p[k]) patch[k] = next[k]; });
-    if (price !== p.price) patch.price = price;
-    var stock = document.getElementById('a-stock').checked ? 1 : 0;
-    if (stock !== p.stock) patch.stock = !!stock;
+    Object.keys(next).forEach(function (k) { if (next[k] !== (p[k] || (typeof next[k] === 'number' ? 0 : ''))) patch[k] = next[k]; });
+    if (patch.stock !== undefined) patch.stock = !!patch.stock;
+    if (patch.hidden !== undefined) patch.hidden = !!patch.hidden;
     if (!Object.keys(patch).length) { adm.edit = ''; renderPage(); return; }
     patchProduct(p, patch, function (ok) {
-      if (ok) { adm.edit = ''; renderPage(); window.scrollTo(0, 0); }
-      else { err.textContent = t('admFail'); err.hidden = false; }
+      if (ok) { adm.edit = ''; renderPage(); window.scrollTo(0, 0); } else fErr('admFail');
     });
   }
 
@@ -1304,9 +1409,124 @@
     }).catch(function () { adm.busy = false; toast(t('admFail')); done(false); });
   }
 
+  /** Фото с телефона: уменьшаем до 1000 px по длинной стороне и сжимаем в JPEG. */
+  function compressPhoto(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var im = new Image();
+      im.onload = function () {
+        var k = Math.min(1, 1000 / Math.max(im.width, im.height));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(im.width * k)); c.height = Math.max(1, Math.round(im.height * k));
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(im, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL('image/jpeg', 0.82).split(',')[1]);
+      };
+      im.onerror = function () { URL.revokeObjectURL(url); reject(new Error('image')); };
+      im.src = url;
+    });
+  }
+
+  function uploadPhoto(file) {
+    var p = adminProduct(adm.edit);
+    var msg = document.getElementById('photoMsg');
+    if (!p || !file || adm.busy) return;
+    adm.busy = true;
+    if (msg) msg.textContent = t('admPhotoUp');
+    compressPhoto(file).then(function (data) {
+      return api('admin.photo', { id: p.id, data: data });
+    }).then(function (res) {
+      adm.busy = false;
+      if (!res || !res.ok) throw new Error('fail');
+      Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
+      toast(t('admSaved'));
+      loadCatalog();
+      if (state.view === 'admin' && adm.edit === p.id) renderPage();
+    }).catch(function () {
+      adm.busy = false;
+      if (msg) msg.textContent = t('admPhotoFail');
+    });
+  }
+
+  /* ---- Категории ---- */
+  function catsHtml() {
+    var list = adm.cats || [];
+    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    return '<ul class="lines">' + list.map(function (c) {
+      return '<li class="prod"><button type="button" class="prod__main" data-cat="' + esc(c.code) + '">' +
+        '<span class="prod__name prod__name--ico">' + icon(c.icon) + esc(c.ua) + '</span>' +
+        '<span class="prod__sub">' + esc(c.code) + ' · ' + esc(c.ru) + ' · №' + NBSP + (c.order === 999 ? '—' : c.order) + '</span></button></li>';
+    }).join('') + '</ul>';
+  }
+
+  function adminCat(code) {
+    var found = null;
+    (adm.cats || []).forEach(function (c) { if (c.code === code) found = c; });
+    return found;
+  }
+
+  function categoryFormHtml() {
+    var isNew = adm.catEdit === '+';
+    var c = isNew ? { code: '', ua: '', ru: '', icon: '', order: (adm.cats || []).length + 1 } : adminCat(adm.catEdit);
+    if (!c) return '';
+    return '<form class="form" id="admForm" novalidate><p class="label">' + esc(isNew ? t('admNewCat') : c.code) + '</p>' + FORM_ERR +
+      (isNew ? fRow('code', t('admCatCode'), '', 'type="text" maxlength="5" autocapitalize="characters" autocomplete="off"', t('admCatCodeHint')) : '') +
+      fRow('cua', t('admCatUa'), c.ua, 'type="text" maxlength="40"') +
+      fRow('cru', t('admCatRu'), c.ru, 'type="text" maxlength="40"') +
+      fSelect('icon', t('admCatIcon'), c.icon, [['', '—']].concat(CAT_ICONS.map(function (i) { return [i, t('ico_' + i)]; }))) +
+      fRow('order', t('admCatOrder'), c.order === 999 ? '' : c.order, 'type="text" inputmode="numeric" maxlength="3"') + saveBtn() + '</form>';
+  }
+
+  function saveCategoryForm() {
+    if (adm.busy) return;
+    var isNew = adm.catEdit === '+';
+    var c = { isNew: isNew, code: isNew ? fVal('code').toUpperCase() : adm.catEdit, ua: fVal('cua'), ru: fVal('cru'), icon: fVal('icon'), order: fNum('order') || (adm.cats || []).length + 1 };
+    if (isNew && !/^[A-Z]{2,5}$/.test(c.code)) { fErr('admErrCode'); return; }
+    if (!c.ua) { fErr('admErrName'); return; }
+    adm.busy = true;
+    api('admin.category', { category: c }).then(function (res) {
+      adm.busy = false;
+      if (!res || !res.ok) { fErr(res && res.error === 'exists' ? 'admErrExists' : 'admFail'); return; }
+      adm.cats = res.categories;
+      adm.products = null; // названия категорий в товарах могли измениться
+      adm.catEdit = '';
+      toast(t('admSaved'));
+      loadCatalog();
+      renderPage(); window.scrollTo(0, 0);
+    }).catch(function () { adm.busy = false; fErr('admFail'); });
+  }
+
+  /* ---- Настройки магазина ---- */
+  function settingsHtml() {
+    if (!adm.settings) return '';
+    return '<form class="form" id="admForm" novalidate>' + FORM_ERR + adm.settings.map(function (f) {
+      if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
+      if (f.k === 'min_order') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+      return fArea(f.k, f.label, f.v, 500);
+    }).join('') + saveBtn() + '</form>';
+  }
+
+  function saveSettingsForm() {
+    if (adm.busy || !adm.settings) return;
+    var values = {};
+    adm.settings.forEach(function (f) { values[f.k] = f.k.indexOf('pay_') === 0 ? fOn(f.k) : fVal(f.k); });
+    if (!values.pay_cash && !values.pay_card) { fErr('admErrPay'); return; }
+    adm.busy = true;
+    api('admin.settingsSave', { values: values }).then(function (res) {
+      adm.busy = false;
+      if (!res || !res.ok) { fErr(res && res.error === 'no_payment' ? 'admErrPay' : 'admFail'); return; }
+      adm.settings = res.fields;
+      toast(t('admSaved'));
+      loadCatalog();
+      renderAdminList();
+    }).catch(function () { adm.busy = false; fErr('admFail'); });
+  }
+
   function adminClick(e) {
     var tab = e.target.closest('[data-tab]');
-    if (tab) { adm.tab = tab.getAttribute('data-tab'); renderPage(); loadAdmin(false); return true; }
+    if (tab) { adm.tab = tab.getAttribute('data-tab'); adm.error = ''; renderPage(); loadAdmin(false); return true; }
     var f = e.target.closest('[data-filter]');
     if (f) {
       adm.filter = f.getAttribute('data-filter');
@@ -1349,9 +1569,20 @@
     }
     var ed = e.target.closest('[data-edit]');
     if (ed) { adm.edit = ed.getAttribute('data-edit'); renderPage(); window.scrollTo(0, 0); return true; }
+    var ct = e.target.closest('[data-cat]');
+    if (ct) { adm.catEdit = ct.getAttribute('data-cat'); renderPage(); window.scrollTo(0, 0); return true; }
     var act = e.target.closest('[data-action]');
-    if (act && act.getAttribute('data-action') === 'adm-refresh') { loadAdmin(true); return true; }
-    if (act && act.getAttribute('data-action') === 'adm-save') { saveProductForm(); return true; }
+    var name = act ? act.getAttribute('data-action') : '';
+    if (name === 'adm-refresh') { loadAdmin(true); return true; }
+    if (name === 'adm-save') {
+      if (adm.edit) saveProductForm(); else if (adm.catEdit) saveCategoryForm(); else saveSettingsForm();
+      return true;
+    }
+    if (name === 'adm-photo-del') {
+      var pp = adminProduct(adm.edit);
+      if (pp && !adm.busy) patchProduct(pp, { img: '' }, function () { renderPage(); });
+      return true;
+    }
     return false;
   }
 
@@ -1412,6 +1643,9 @@
     });
     el.page.addEventListener('focusin', function (e) {
       if (e.target.name === 'phone' && !e.target.value) e.target.value = '+380';
+    });
+    el.page.addEventListener('change', function (e) {
+      if (e.target.id === 'a-photo' && e.target.files && e.target.files[0]) uploadPhoto(e.target.files[0]);
     });
     el.page.addEventListener('submit', function (e) { e.preventDefault(); });
     el.page.addEventListener('keydown', function (e) {
