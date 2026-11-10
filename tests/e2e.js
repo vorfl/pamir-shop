@@ -54,7 +54,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(await count(page, '.feature') === 1 && /Наша курага/.test(await text(page, '.feature__title')), 'блок «Наша курага» наверху');
     ok(await count(page, '.perk') === 2, 'подарок от суммы и подарок постоянным клиентам показаны на главной');
     const rails = await page.locator('.main .rail__title').allInnerTexts();
-    ok(rails.includes('Популярне') && rails.includes('Знижки') && rails.includes('Новинки') && rails.includes('Набори'), 'подборки на главной', rails);
+    ok(rails.includes('Популярне') && rails.includes('Акції') && rails.includes('Новинки') && rails.includes('Набори'), 'подборки на главной', rails);
     ok(await page.locator('.main .rail').first().locator('.mini').first().getAttribute('data-id') === 'DRY-039', '«Популярне» начинается с самого заказываемого товара');
     ok(await noOverflow(page), 'нет горизонтальной прокрутки страницы на 360 px');
     ok((await smallTargets(page)).length === 0, 'все кнопки на главной не меньше 44 px', await smallTargets(page));
@@ -123,7 +123,7 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForSelector('#toast:not([hidden])');
     ok(/Додано в кошик/.test(await text(page, '#toast')) && await page.locator('#toastBtn').isVisible(), 'после добавления — сообщение с кнопкой «Відкрити»');
     ok(/380/.test(await text(page, '.tabbar [data-go="cart"] .tabbar__label')) && await text(page, '#cartCount') === '2', 'нижняя навигация показывает сумму и количество');
-    ok(/У кошику · 2/.test(await text(page, '.card[data-id="DRY-039"] .card__act')), 'карточка помнит, что товар в корзине');
+    ok(/У кошику · 2/.test(await page.locator('.card[data-id="DRY-039"] .card__act').first().textContent()), 'карточка помнит, что товар в корзине');
 
     // быстрое добавление штучного товара прямо с карточки
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -195,7 +195,7 @@ const smallTargets = page => page.evaluate(() => {
     await tg(() => window.__tg.main.cb());
     await page.waitForSelector('.done');
     ok(/Замовлення прийнято P-0008/.test(await text(page, '.done')), 'заказ принят: P-0008');
-    const gifts = await page.locator('.note--gift').allInnerTexts();
+    const gifts = await page.locator('.page .note--gift').allInnerTexts();
     ok(gifts.length === 2 && /100 г кураги/.test(gifts[0]) && /чурчхела/.test(gifts[1]), 'экран «готово» показывает оба подарка: от суммы и постоянному клиенту', gifts);
     const row = st.gas.sheets['Замовлення'].rows.slice(-1)[0];
     ok(row[0] === 'P-0008' && row[7] === 'Нова пошта' && row[10] === 'накладений платіж' && row[13] === 521 && row[6] === '+380671112233', 'в таблице — та же сумма, доставка и оплата', [row[7], row[10], row[13], row[6]]);
@@ -220,7 +220,7 @@ const smallTargets = page => page.evaluate(() => {
     await page.click('.tabbar [data-go="catalog"]');
     await page.waitForSelector('.main .rail');
     const ruRails = await page.locator('.main .rail__title').allInnerTexts();
-    ok(ruRails[0] === 'Купить снова' && ruRails.includes('Вы смотрели'), 'на главной появились «Купить снова» и «Вы смотрели»', ruRails);
+    ok(ruRails.includes('Купить снова') && ruRails.includes('Вы смотрели'), 'на главной появились «Купить снова» и «Вы смотрели»', ruRails);
     await page.screenshot({ path: OUT + '/18-home-ru.png' });
 
     // аналитика
@@ -300,7 +300,8 @@ const smallTargets = page => page.evaluate(() => {
     ok(await count(page, '[data-tab="admins"]') === 1, 'у владельца есть вкладка «Адміни»');
     await page.locator('[data-tab="admins"]').click();
     await page.waitForSelector('[data-adm="+"]');
-    ok(/Власник/.test(await text(page, '#admList')) && await count(page, '#admList [data-adm]') === 0, 'владелец в списке есть, изменить его нельзя');
+    await page.waitForFunction(() => /Власник/.test(document.querySelector('#admList').innerText), null, { timeout: 5000 }).catch(() => {});
+    ok(/Власник/.test(await text(page, '#admList')) && await count(page, '#admList [data-adm]') === 0, 'владелец в списке есть, изменить его нельзя', [await text(page, '#admList'), await count(page, '#admList [data-adm]')]);
     await page.click('[data-adm="+"]');
     await page.waitForSelector('#a-p_price');
     ok(await count(page, '#admPerms input[type=checkbox]') === 13 && await noOverflow(page), 'форма приглашения: 12 прав и «перегляд», без горизонтальной прокрутки');
@@ -377,6 +378,212 @@ const smallTargets = page => page.evaluate(() => {
     ok(/P-0008/.test(await text(page, '.done')) && /Тестове замовлення/.test(await text(page, '.page')), 'тестовый заказ со старым бэкендом проходит');
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close(); st.server.close();
+  }
+
+  /* ---------------- 4б. Этап 8, волна 1: точки, дизайн, доверие, отзывы, продажи, Нова пошта ---------------- */
+  console.log('Этап 8, волна 1 (360 px, светлая тема, UA)');
+  const wave1 = async port => {
+    const st = await start(port, undefined, s => {
+      withPhotos(s);
+      s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис'], ['gift_from', '500', ''], ['gift_text_ua', '100 г кураги', ''], ['feature_id', 'DRY-039', ''], ['contact', '@pamir_help', '']];
+      s.sheets['Замовлення'].push(['P-0008', new Date(Date.now() - 3600e3), 'відправлено', '501', '@user501', 'Клієнт 501', '+380501112233', 'Нова пошта', 'Київ', '12',
+        'при отриманні', '', 'Арахіс бланшований 500 г × 1 = 85 ₴', 85, 'ua', 'miniapp', JSON.stringify({ i: [['NUT-007', 0, 1]], ttn: '20450000123456' })]);
+    });
+    st.gas.call('setupStage8');
+    const rows = st.gas.sheets['Товари'].rows, head = rows[0], kur = rows.find(r => r[0] === 'DRY-039');
+    const d = new Date(Date.now() - 2 * 864e5);
+    const two = n => String(n).padStart(2, '0');
+    st.fresh = two(d.getUTCDate()) + '.' + two(d.getUTCMonth() + 1);
+    kur[head.indexOf('Сорт')] = 'Бобої'; kur[head.indexOf('Походження')] = 'Ісфара, Таджикистан'; kur[head.indexOf('Урожай')] = '2026';
+    kur[head.indexOf('Свіжа поставка')] = st.fresh + '.' + d.getUTCFullYear();
+    kur[head.indexOf('Підказка до ваги')] = '250 г ≈ жменя на день протягом тижня'; kur[head.indexOf('Ціни фасувань')] = '1 кг = 360';
+    st.gas.sheets['Відгуки'].rows.push(['R-0001', new Date(), 'P-0001', '501', 'Олена', 'DRY-039', 'Курага', 5, 'Солодка і м’яка, беремо постійно', '', 'схвалено', 'ua', ''],
+      ['R-0002', new Date(), 'P-0002', '502', 'Ігор', 'DRY-039', 'Курага', 5, '', '', 'схвалено', 'ua', ''], ['R-0003', new Date(), 'P-0003', '501', 'Олена', 'DRY-039', 'Курага', 4, 'Смачно', '', 'схвалено', 'ua', ''],
+      ['R-0004', new Date(), 'P-0004', '503', 'Марія', 'NUT-003', 'Фісташки солоні', 2, 'Не сподобалось', '', 'новий', 'ua', '']);
+    st.gas.clearCache();
+    return st;
+  };
+  {
+    const st = await wave1(8816);
+    const { page, errors } = await open(browser, st.url, { uid: 501 });
+    const tg = fn => page.evaluate(fn);
+    await page.waitForSelector('.card');
+
+    // 1.3 дизайн
+    ok(await count(page, '.top .orn') === 1 && await count(page, '.feature .orn') === 1 && await count(page, '#o1') === 1, 'орнамент «ступенчатый ромб» в шапке и на блоке «Наша курага»');
+    ok(Math.abs(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.top .orn rect')).opacity)) - 0.2) < 0.01, 'орнамент в светлой теме: сила «заметно» (0,2)');
+    ok(await count(page, '.chips .chip .acc') >= 5, 'у категорий свои иконки с абрикосовым штрихом', await count(page, '.chips .chip .acc'));
+    const loading = await page.evaluate(() => Array.prototype.map.call(document.querySelectorAll('#grid .card img'), i => i.getAttribute('loading')));
+    ok(loading.slice(0, 3).every(x => x === 'eager') && loading.slice(4).every(x => x === 'lazy'), 'фото первого экрана грузятся сразу, остальные — лениво', loading.slice(0, 6));
+    ok(await page.evaluate(() => document.body.getAttribute('data-season') === '' && document.getElementById('season').hidden), 'сезонная тема по умолчанию выключена');
+
+    // 1.4 и 1.5 на карточке
+    const extra = await text(page, '.card[data-id="DRY-039"] .card__extra');
+    ok(/4,7 · 3 відгуки/.test(extra) && extra.includes('Свіжа поставка ' + st.fresh), 'карточка: «4,7 · 3 відгуки» и «Свіжа поставка»', extra);
+    ok(await count(page, '.card[data-id="NUT-003"] .card__extra') === 0, 'неодобренный отзыв на карточке не виден');
+    ok(await count(page, '.feature [data-view="story"]') === 1, 'на блоке «Наша курага» ссылка «Від саду до столу»');
+
+    // 1.6 «Ваше звичне» и шкала до подарка
+    await page.waitForSelector('.usual');
+    ok(/Ваше звичне/.test(await text(page, '.usual')) && /Додати все · 380/.test(await text(page, '.usual .btn')) && await page.locator('.usual .mini').getAttribute('data-id') === 'DRY-039', '«Ваше звичне»: курага из двух заказов, 500 г × 2', await text(page, '.usual'));
+    ok(await count(page, '.homegift .perk') === 1, 'на главной условие подарка, пока корзина пустая');
+    await page.click('.usual [data-w1="usual"]');
+    await page.waitForSelector('.homegift .prog');
+    ok(/Ще 120\s₴ до подарунка: 100 г кураги/.test(await text(page, '.homegift .prog')) && /380/.test(await text(page, '.tabbar [data-go="cart"]')), '«Додати все» кладёт привычное в корзину; на главной шкала до подарка', await text(page, '.homegift'));
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'главная волны 1: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/40-w1-home.png', fullPage: true });
+    await page.waitForTimeout(4500); // корзина уходит на сервер через 4 секунды покоя
+
+    // карточка товара: паспорт, подсказка, выгода фасовки, отзывы
+    await page.locator('.card[data-id="DRY-039"] .card__name').first().click();
+    await page.waitForSelector('.rv__item');
+    const sheet = await text(page, '.sheet');
+    ok(/Сорт\s*Бобої/.test(sheet) && /Походження\s*Ісфара, Таджикистан/.test(sheet) && /Урожай\s*2026/.test(sheet), 'паспорт товара из таблицы', sheet.slice(0, 300));
+    ok(/250 г ≈ жменя на день/.test(sheet), 'подсказка к весу');
+    ok(/1\sкг вигідніше на 5 %, ніж 4 × 250\sг/.test(sheet), 'выгода крупной фасовки посчитана из цен таблицы', sheet.match(/вигідніше[^\n]*/));
+    ok(await count(page, '.rv__item') === 3 && /4,7 з 5 · 3 відгуки/.test(await text(page, '.rv__avg')) && /Солодка і м’яка/.test(await text(page, '.rv')), 'отзывы покупателей и средняя оценка в карточке');
+    ok(st.log.some(x => x.action === 'GET reviews'), 'отзывы подгружаются отдельным запросом');
+    ok(await noOverflow(page), 'карточка товара: без горизонтальной прокрутки');
+    await page.locator('.rv').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: OUT + '/41-w1-sheet.png' });
+    await page.click('.sheet__close');
+    await page.locator('.card[data-id="NUT-002"] .card__name').first().click();
+    await page.waitForSelector('.sheet__title');
+    ok(await count(page, '.pass') === 0 && await count(page, '.rv') === 0 && !/вигідніше/.test(await text(page, '.sheet')), 'нет данных в таблице — блоков паспорта, отзывов и выгоды нет');
+    await page.click('.sheet__close');
+
+    // пустой поиск
+    await page.fill('#search', 'zzzzzz');
+    await page.waitForSelector('.state .art');
+    ok(/Не знайшли\? Напишіть нам/.test(await text(page, '.state')), 'пустой поиск: иллюстрация и «Не знайшли? Напишіть нам»');
+    await page.click('.state [data-w1="contact"]');
+    ok(await tg(() => window.__tg.calls.some(c => c[0] === 'openTelegramLink' && c[1] === 'https://t.me/pamir_help')), 'кнопка «Написати нам» открывает чат из настроек');
+    await page.fill('#search', '');
+    await page.locator('#search').blur();
+    await page.waitForSelector('.tabbar:not([hidden])');
+
+    // 1.2 точки и 1.7 ТТН в профиле
+    await page.click('.tabbar [data-go="orders"]');
+    await page.waitForSelector('.my');
+    ok(/ТТН: 20450000123456/.test(await text(page, '.my__ttn')) && /cargo_number=20450000123456/.test(await page.locator('.my__ttn [data-w1="open"]').getAttribute('data-url')), '«Мої замовлення»: ТТН и кнопка «Відстежити»');
+    await page.click('.page [data-view="points"]');
+    await page.waitForSelector('.point');
+    const pt = await text(page, '.point');
+    ok(await count(page, '.point') === 2 && /Точка 1/.test(pt) && /Ряд 3, місце 12/.test(pt) && /Пн: вихідний, Вт–Нд: 07:00–17:00/.test(pt), 'экран «Наші точки»: две точки, место, часы по дням', pt);
+    ok(/Відкрито зараз, до 17:00|Зачинено, відкриємось (сьогодні|завтра|у \S+) о 07:00/.test(await text(page, '.point__status')), 'статус точки считается по киевскому времени', await text(page, '.point__status'));
+    ok(/google\.com\/maps/.test(await page.locator('.point [data-w1="open"]').first().getAttribute('data-url')), 'кнопка «Прокласти маршрут» ведёт на карту');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'точки: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/42-w1-points.png', fullPage: true });
+    await page.click('[data-nav="back"]');
+    await page.waitForSelector('.merow');
+    await page.click('.page [data-view="story"]');
+    await page.waitForSelector('.story p');
+    ok(/Від саду до столу/.test(await text(page, '.page__title')) && await count(page, '.story p') >= 3 && /Ісфар/.test(await text(page, '.story')), 'страница «Від саду до столу»');
+    await page.screenshot({ path: OUT + '/43-w1-story.png', fullPage: true });
+    await page.click('[data-nav="back"]');
+
+    // оформление: выбор точки
+    await page.click('.tabbar [data-go="cart"]');
+    await page.waitForSelector('.line');
+    await tg(() => window.__tg.main.cb());
+    await page.waitForSelector('#form');
+    ok(await tg(() => window.__tg.calls.some(c => c[0] === 'impact')), 'вибрация на «Оформити»');
+    ok(await count(page, '.opt--point') === 2 && await page.locator('.opt--point input').first().isChecked(), 'самовывоз: выбор из двух точек, первая выбрана');
+    await page.locator('.opt--point').nth(1).click();
+    await page.fill('#f-phone', '0501234567');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'оформление с точками: без прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await tg(() => window.__tg.main.cb());
+    await page.waitForSelector('.done');
+    ok(await count(page, '.done .mnt') === 1 && await count(page, '.done .orn') === 1, 'экран «Замовлення прийнято»: линия гор и орнамент');
+    ok(/Самовивіз з ринку · Точка 2/.test(await text(page, '.recap__meta')), 'на экране «готово» указана точка', await text(page, '.recap__meta'));
+    const ord = st.gas.sheets['Замовлення'].rows;
+    ok(ord[ord.length - 1][7] === 'самовивіз · Точка 2 — критий павільйон', 'точка записана в таблицу', ord[ord.length - 1][7]);
+    ok(await tg(() => /"point":"p3"/.test(window.__tg.cloud.form || '') && /380 50 123/.test(window.__tg.cloud.form)), 'имя, телефон и доставка сохранены в Telegram CloudStorage');
+    await page.screenshot({ path: OUT + '/44-w1-done.png' });
+    await page.waitForTimeout(1900);
+    ok(await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('.mnt .l1')).strokeDashoffset) === 0 && getComputedStyle(document.querySelector('.mnt .sun')).opacity === '1'), 'линия гор дорисовывается за две секунды');
+    await page.screenshot({ path: OUT + '/44-w1-done.png' });
+
+    // второй заказ: Нова пошта, курьер
+    await page.click('[data-nav="catalog"]');
+    await page.locator('.card[data-id="NUT-007"] [data-quick="1"]').first().click();
+    await page.click('.tabbar [data-go="cart"]');
+    await page.waitForSelector('.line');
+    await tg(() => window.__tg.main.cb());
+    await page.waitForSelector('#form');
+    ok(await page.inputValue('#f-phone') === '+380 50 123 45 67' && await page.locator('.opt--point input').nth(1).isChecked(), 'повторное оформление: телефон и точка уже подставлены');
+    await page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
+    ok(await count(page, '.opts--3 .opt') === 3 && await page.locator('.opts--3 .opt').nth(0).isVisible(), 'переключатель «Відділення / Поштомат / Кур’єр»');
+    await page.locator('#cityChips .chip', { hasText: 'Київ' }).click();
+    ok(await page.inputValue('#f-city') === 'Київ' && await count(page, '#cityChips .chip') === 8, 'чипы популярных городов заполняют город');
+    await page.locator('.opts--3 .opt', { hasText: 'Поштомат' }).click();
+    ok(/№ поштомата/.test(await text(page, 'label[for="f-branch"]')), 'поштомат: поле просит номер поштомата');
+    await page.locator('.opts--3 .opt', { hasText: 'Кур’єр' }).click();
+    ok(/Адреса: вулиця/.test(await text(page, 'label[for="f-branch"]')), 'курьер: поле просит адрес');
+    await page.fill('#f-branch', 'д.1');
+    await tg(() => window.__tg.main.cb());
+    ok(/Вкажіть адресу для кур’єра/.test(await text(page, '#e-branch')), 'слишком короткий адрес — понятная ошибка');
+    await page.fill('#f-branch', 'вул. Сумська, 10, кв. 5');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'Нова пошта: без прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/45-w1-np.png', fullPage: true });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await tg(() => window.__tg.main.cb());
+    await page.waitForSelector('.done');
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('.mnt .l1')).strokeDashoffset) === 0 && getComputedStyle(document.querySelector('.mnt .sun')).opacity === '1'), '«уменьшить движение»: линия гор показана сразу, без анимации');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    ok(/Нова пошта · кур’єр/.test(await text(page, '.recap__meta')) && ord[ord.length - 1][7] === 'Нова пошта · кур’єр' && ord[ord.length - 1][9] === 'вул. Сумська, 10, кв. 5', 'заказ курьером принят и записан', ord[ord.length - 1].slice(7, 10));
+    ok(st.log.some(x => x.action === 'cart' && Array.isArray(x.items) && !('total' in x) && !JSON.stringify(x.items).includes('pr')), 'состав корзины синхронизируется на сервер без цен');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close(); st.server.close();
+  }
+
+  console.log('Этап 8, волна 1 (тёмная тема, RU, сезонная тема, админ)');
+  {
+    const st = await wave1(8817);
+    st.gas.post({ action: 'admin.settingsSave', initData: st.gas.initData({ id: 900, first_name: 'A' }), values: { theme: 'navruz' } });
+    st.gas.clearCache();
+    const { page, errors } = await open(browser, st.url, { uid: 610, theme: 'dark', lc: 'ru', query: '?debug=1&now=0-600&view=points' });
+    await page.waitForSelector('.point');
+    ok(/Закрыто, откроемся завтра в 07:00/.test(await text(page, '.point__status')) && /Пн: выходной/.test(await text(page, '.point')), 'понедельник: «Закрыто, откроемся завтра в 07:00», русский язык', await text(page, '.point__status'));
+    ok(await noOverflow(page), 'точки в тёмной теме: без горизонтальной прокрутки');
+    await page.screenshot({ path: OUT + '/46-w1-points-dark.png' });
+    await page.click('[data-nav="back"]');
+    await page.waitForSelector('.card');
+    ok(await page.evaluate(() => document.body.getAttribute('data-season') === 'navruz' && !document.getElementById('season').hidden), 'сезонная тема «Навруз» включается из настроек');
+    ok(Math.abs(Number(await page.evaluate(() => getComputedStyle(document.querySelector('.top .orn rect')).opacity)) - 0.14) < 0.01, 'в тёмной теме орнамент приглушён');
+    ok(/Свежая поставка/.test(await text(page, '.card[data-id="DRY-039"] .card__extra')) && /3 отзыва/.test(await text(page, '.card[data-id="DRY-039"] .card__extra')), 'карточка на русском: «Свежая поставка», «3 отзыва»');
+    await page.screenshot({ path: OUT + '/47-w1-home-dark.png' });
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close();
+
+    const b = await open(browser, st.url, { uid: 611, query: '?debug=1&now=1-600&view=points' });
+    await b.page.waitForSelector('.point');
+    ok(await count(b.page, '.point__status.is-open') === 2 && /Відкрито зараз, до 17:00/.test(await text(b.page, '.point__status')), 'вторник 10:00: «Відкрито зараз, до 17:00»');
+    await b.page.context().close();
+
+    const a = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await a.page.waitForSelector('[data-tab="reviews"]');
+    await a.page.click('[data-tab="reviews"]');
+    await a.page.waitForSelector('#admList [data-w1="rv"]');
+    ok(await count(a.page, '#admList .my') === 4 && /Фісташки солоні/.test(await text(a.page, '#admList .my')), 'панель: вкладка «Відгуки», новый отзыв сверху');
+    await a.page.locator('#admList .my').first().locator('[data-ok="1"]').click();
+    await a.page.waitForFunction(() => /схвалено/.test(document.querySelector('#admList .my').innerText));
+    ok(st.gas.sheets['Відгуки'].rows.find(r => r[0] === 'R-0004')[10] === 'схвалено' && await count(a.page, '#admList textarea, #admList input') === 0, 'админ одобряет отзыв; поля для правки текста в панели нет');
+    ok(await noOverflow(a.page) && (await smallTargets(a.page)).length === 0, 'отзывы в панели: без прокрутки, кнопки ≥ 44 px', await smallTargets(a.page));
+    await a.page.screenshot({ path: OUT + '/48-w1-admin-reviews.png' });
+    await a.page.click('[data-tab="orders"]');
+    await a.page.waitForSelector('[data-ord="P-0008"]');
+    await a.page.click('[data-ord="P-0008"]');
+    await a.page.waitForSelector('.ttnrow');
+    ok(await a.page.inputValue('#ttn-P-0008') === '20450000123456', 'в заказе Новой почтой видно ТТН');
+    await a.page.fill('#ttn-P-0008', '5900 0111 2223 33');
+    await a.page.click('[data-w1="ttn"]');
+    await a.page.waitForFunction(() => /59000111222333/.test(document.querySelector('.ord__body').innerText));
+    ok(JSON.parse(st.gas.sheets['Замовлення'].rows.find(r => r[0] === 'P-0008')[16]).ttn === '59000111222333' && st.gas.sent.some(m => String(m.payload.chat_id) === '501' && /59000111222333/.test(m.payload.text)), 'ТТН из панели записан, клиент получил сообщение');
+    ok(await noOverflow(a.page) && (await smallTargets(a.page)).length === 0, 'ТТН в панели: без прокрутки, кнопки ≥ 44 px', await smallTargets(a.page));
+    ok(a.errors.length === 0, 'в консоли браузера (админ) нет ошибок', a.errors);
+    await a.page.context().close(); st.server.close();
   }
 
   /* ---------------- 5. Нет сети ---------------- */

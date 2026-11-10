@@ -382,5 +382,163 @@ console.log('Приветствие бота');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+console.log('Этап 8, волна 1: точки, паспорт товара, продажи');
+{
+  const g = fresh();
+  const before = g.get({ action: 'catalog' });
+  ok(!before.shop.points && !before.shop.np && !before.shop.theme && before.shop.story && /Ісфар/.test(before.shop.story.text.ua), 'до настройки: точек нет, страница «Від саду до столу» с текстом-заглушкой', before.shop);
+  const created = g.call('setupStage8');
+  ok(g.sheets['Точки'] && g.sheets['Точки'].rows.length === 3 && g.sheets['Відгуки'] && g.sheets['Кошики'], 'setupStage8 создаёт листы «Точки» (с примером), «Відгуки», «Кошики»', created);
+  const ph = g.sheets['Товари'].rows[0];
+  ok(['Сорт', 'Урожай', 'Походження', 'Свіжа поставка', 'Підказка до ваги', 'Ціни фасувань'].every(h => ph.includes(h)) && g.sheets['Замовлення'].rows[0].includes('ТТН'), 'setupStage8 добавляет необязательные колонки в «Товари» и «ТТН» в «Замовлення»');
+  ok(g.call('setupStage8').length === 0, 'повторный запуск setupStage8 ничего не меняет');
+  const row = id => g.sheets['Товари'].rows.find(r => r[0] === id);
+  const dmy = daysAgo => { const d = new Date(Date.now() - daysAgo * 864e5); return String(d.getUTCDate()).padStart(2, '0') + '.' + String(d.getUTCMonth() + 1).padStart(2, '0') + '.' + d.getUTCFullYear(); };
+  const set = (id, head, v) => { row(id)[ph.indexOf(head)] = v; };
+  set('DRY-039', 'Сорт', 'Бобої'); set('DRY-039', 'Урожай', 2026); set('DRY-039', 'Походження', 'Ісфара, Таджикистан');
+  set('DRY-039', 'Свіжа поставка', dmy(3)); set('DRY-039', 'Підказка до ваги', '250 г ≈ жменя на день протягом тижня'); set('DRY-039', 'Ціни фасувань', '1 кг = 360');
+  set('NUT-001', 'Свіжа поставка', dmy(40)); set('NUT-002', 'Свіжа поставка', dmy(-5));
+  g.clearCache();
+  const text = JSON.stringify(g.get({ action: 'catalog' }));
+  const cat = JSON.parse(text);
+  const by = {}; cat.products.forEach(p => { by[p.id] = p; });
+  const pts = cat.shop.points;
+  ok(pts.length === 2 && pts[0].h[0] === '' && pts[0].h[1] === '07:00-17:00' && pts[0].h[6] === '07:00-17:00' && /^https:\/\/www\.google\.com\/maps/.test(pts[0].map) && pts[0].pl.ua === 'Ряд 3, місце 12',
+    'точки в каталоге: понедельник выходной, вт–нд 07:00–17:00, ряд и место, ссылка на карту', pts[0]);
+  ok(!/СЕКРЕТ|do-smaku|33%/.test(text), 'служебные колонки R–X не уходят и после добавления новых колонок');
+  const k = by['DRY-039'];
+  ok(k.ps === 'Бобої' && k.ph === '2026' && k.po === 'Ісфара, Таджикистан' && k.f === 1 && /^\d{4}-\d\d-\d\d$/.test(k.pf) && /жменя/.test(k.h), 'паспорт товара и подсказка к весу — из таблицы', k);
+  ok(by['NUT-001'].pf && !by['NUT-001'].f && !by['NUT-002'].pf && !by['NUT-003'].ps && !by['NUT-003'].pf, 'бейдж «Свіжа поставка» только 14 дней; дата из будущего и пустые колонки не показываются');
+  ok(k.v[2][0] === 1000 && k.v[2][1] === 360 && k.v[0][1] === 95, '«Ціни фасувань»: 1 кг = 360 ₴, остальные фасовки по цене за кг', k.v);
+  ok(order(g, U(41), [{ id: 'DRY-039', g: 1000, q: 1 }], 380).error === 'changed' && order(g, U(41), [{ id: 'DRY-039', g: 1000, q: 1 }], 360).ok, 'сервер считает заказ по своей цене фасовки');
+  ok(by['SWT-004'].q === 3, '«Залишилось 3» при пороге по умолчанию 5');
+  settings(g, { low_stock: '2', fresh_days: '0', theme: 'newyear' });
+  const cat2 = g.get({ action: 'catalog' });
+  const by2 = {}; cat2.products.forEach(p => { by2[p.id] = p; });
+  ok(by2['SWT-004'].q === undefined && !by2['DRY-039'].f && by2['DRY-039'].pf && cat2.shop.theme === 'newyear', 'порог «Залишилось», срок бейджа свежести и сезонная тема берутся из настроек');
+  settings(g, { theme: 'halloween' });
+  ok(!g.get({ action: 'catalog' }).shop.theme, 'неизвестная сезонная тема не включается');
+
+  // Самовывоз с выбором точки
+  const r1 = order(g, U(42), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { point: pts[1].id });
+  const orders = g.sheets['Замовлення'].rows, oh = orders[0];
+  const last = () => orders[orders.length - 1];
+  ok(r1.ok && last()[oh.indexOf('Доставка')] === 'самовивіз · Точка 2 — критий павільйон', 'точка самовывоза записана в заказ', last()[oh.indexOf('Доставка')]);
+  ok(/Самовивіз: Точка 2/.test(lastTo(g, 900).payload.text), 'админ видит точку в уведомлении');
+  tgPress(g, 900, 'st:' + r1.number + ':c');
+  ok(/Точка 2/.test(lastTo(g, 42).payload.text) && /Ряд 5, місце 7/.test(lastTo(g, 42).payload.text) && /Пн: вихідний/.test(lastTo(g, 42).payload.text), 'клиенту при подтверждении приходит его точка, место и часы', lastTo(g, 42).payload.text);
+  tgPress(g, 900, 'st:' + r1.number + ':s');
+  ok(!/ТТН/.test(lastTo(g, 900).payload.text), 'для самовывоза бот не спрашивает ТТН');
+  const r0 = order(g, U(43), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+  ok(r0.ok && last()[oh.indexOf('Доставка')] === 'самовивіз · Точка 1 — критий павільйон', 'старая витрина точку не присылает — берётся первая');
+  tgPress(g, 800, 'm:pts');
+  ok(/Точка 1/.test(lastTo(g, 800).payload.text) && /Точка 2/.test(lastTo(g, 800).payload.text) && /Вт–Нд: 07:00–17:00/.test(lastTo(g, 800).payload.text), 'кнопка бота «Наші точки» показывает обе точки с часами', lastTo(g, 800).payload.text);
+
+  // Нова пошта: поштомат, курьер, ТТН
+  const np = { delivery: 'np', city: 'Київ', branch: '5123', npType: 'locker', pay: 'cod' };
+  const r2 = order(g, U(44), [{ id: 'NUT-007', g: 0, q: 2 }], 170, np);
+  ok(r2.ok && last()[oh.indexOf('Доставка')] === 'Нова пошта · поштомат' && /поштомат 5123/.test(lastTo(g, 900).payload.text), 'поштомат записан в заказ и виден админу', last()[oh.indexOf('Доставка')]);
+  ok(order(g, U(45), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { delivery: 'np', city: 'Київ', branch: 'д.5', npType: 'courier' }).error === 'bad_form', 'курьер без нормального адреса отклоняется');
+  const r3 = order(g, U(45), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { delivery: 'np', city: 'Київ', branch: 'вул. Хрещатик, буд. 1, кв. 15, під’їзд 2, код 15К', npType: 'courier' });
+  ok(r3.ok && last()[oh.indexOf('Доставка')] === 'Нова пошта · кур’єр' && /під’їзд 2/.test(last()[oh.indexOf('Відділення НП')]), 'курьер: адрес сохранён целиком');
+  tgPress(g, 900, 'st:' + r2.number + ':s');
+  ok(/ТТН для замовлення P-\d+/.test(lastTo(g, 900).payload.text) && lastTo(g, 900).payload.reply_markup.inline_keyboard[0][0].callback_data === 'tx:' + r2.number, 'после «Відправлено» бот спрашивает ТТН и даёт кнопку «Пропустити»');
+  tgMsg(g, 900, '2045 0000 1234 56');
+  const rowOf = num => orders.find(r => r[0] === num);
+  const track = lastTo(g, 44);
+  ok(JSON.parse(rowOf(r2.number)[oh.indexOf('Службове')]).ttn === '20450000123456' && rowOf(r2.number)[oh.indexOf('ТТН')] === '20450000123456', 'ТТН записан в заказ', rowOf(r2.number));
+  ok(/20450000123456/.test(track.payload.text) && track.payload.reply_markup.inline_keyboard[0][0].url === 'https://novaposhta.ua/tracking/?cargo_number=20450000123456', 'клиент получил ТТН и кнопку «Відстежити»', track.payload);
+  const mine = g.post({ action: 'orders.my', initData: g.initData(U(44)) });
+  ok(mine.ok && mine.orders[0].ttn === '20450000123456', 'ТТН виден в «Мої замовлення»', mine.orders && mine.orders[0]);
+  ok(adm(g, 900, 'admin.orders').orders.find(o => o.num === r2.number).ttn === '20450000123456', 'ТТН виден в панели');
+  ok(adm(g, 900, 'admin.ttn', { num: r3.number, ttn: '12ab' }).error === 'bad_ttn' && adm(g, 900, 'admin.ttn', { num: r3.number, ttn: '59000111222333' }).ok, 'ТТН из панели: проверка формата и запись');
+  addAdmin(g, 801, 'manager', ['stock']);
+  ok(adm(g, 801, 'admin.ttn', { num: r3.number, ttn: '59000111222334' }).error === 'no_perm' && adm(g, 801, 'admin.reviews').error === 'no_perm', 'менеджер без прав не может записать ТТН и открыть отзывы');
+  tgPress(g, 900, 'st:' + r3.number + ':s');
+  ok(!g.sent.some(m => m.method === 'sendMessage' && /ТТН для замовлення/.test(m.payload.text) && m.payload.text.includes(r3.number)), 'если ТТН уже записан, бот не спрашивает его повторно');
+  ok(g.get({ action: 'np.city', q: 'хар' }).error === 'off', 'подсказки Новой почты выключены без NP_API_KEY');
+  g.props.NP_API_KEY = 'test'; g.clearCache();
+  ok(g.get({ action: 'catalog' }).shop.np === 1 && g.get({ action: 'np.city', q: 'хар' }).ok === false && g.get({ action: 'np.wh', city: 'bad', q: '' }).error === 'bad_form', 'с NP_API_KEY витрина узнаёт о подсказках; сбой API не ломает сервер');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Этап 8, волна 1: хит недели, отзывы, брошенная корзина');
+{
+  const g = fresh();
+  ok(!g.get({ action: 'catalog' }).products.some(p => p.hw), '«Хіт тижня» не показывается, пока нет двух заказов за 7 дней');
+  const a = order(g, U(61), [{ id: 'SWT-006', g: 0, q: 1 }, { id: 'NUT-007', g: 0, q: 1 }], 155);
+  order(g, U(62), [{ id: 'SWT-006', g: 0, q: 3 }], 210);
+  g.clearCache();
+  const hits = g.get({ action: 'catalog' }).products.filter(p => p.hw).map(p => p.id);
+  ok(hits.length === 1 && hits[0] === 'SWT-006', '«Хіт тижня» считается по настоящим заказам за 7 дней', hits);
+
+  // Отзывы
+  const orders = g.sheets['Замовлення'].rows, oh = orders[0], svcAt = oh.indexOf('Службове');
+  const rowOf = num => orders.find(r => r[0] === num);
+  tgPress(g, 900, 'st:' + a.number + ':d');
+  const svc = JSON.parse(rowOf(a.number)[svcAt]);
+  ok(svc.dn > 0, 'время статуса «виконано» запомнено');
+  ok(g.call('askReviews_') === 0, 'через 0 дней отзыв ещё не просим');
+  svc.dn = Date.now() - 3 * 864e5; rowOf(a.number)[svcAt] = JSON.stringify(svc);
+  ok(g.call('askReviews_') === 1 && lastTo(g, 61).payload.reply_markup.inline_keyboard[0].length === 5 && lastTo(g, 61).payload.reply_markup.inline_keyboard[0][4].callback_data === 'rv:' + a.number + ':5', 'через 2+ дня бот просит оценку: кнопки 1–5', lastTo(g, 61).payload);
+  ok(g.call('askReviews_') === 0, 'второй раз о том же заказе не просим');
+  tgPress(g, 62, 'rv:' + a.number + ':1');
+  ok(!g.sheets['Відгуки'] || g.sheets['Відгуки'].rows.length <= 1, 'чужой заказ оценить нельзя');
+  tgPress(g, 61, 'rv:' + a.number + ':5');
+  const rv = g.sheets['Відгуки'].rows;
+  ok(rv.length === 3 && rv[1][5] === 'SWT-006' && rv[1][7] === 5 && rv[1][10] === 'новий' && rv[2][5] === 'NUT-007', 'оценка записана по каждому товару заказа со статусом «новий»', rv.slice(1));
+  ok(/Відгук на модерацію/.test(lastTo(g, 900).payload.text) && lastTo(g, 900).payload.reply_markup.inline_keyboard[0][0].callback_data === 'rm:' + a.number + ':y', 'админ с правом «Відгуки» получил отзыв на модерацию');
+  tgMsg(g, 61, 'Козинаки свіжі, дуже смачно');
+  ok(rv[1][8] === 'Козинаки свіжі, дуже смачно' && rv[2][8] === rv[1][8], 'текст отзыва от покупателя сохранён');
+  let cat = g.get({ action: 'catalog' });
+  ok(!cat.products.find(p => p.id === 'SWT-006').rc && g.get({ action: 'reviews', id: 'SWT-006' }).reviews.length === 0, 'до одобрения отзыв на витрине не виден');
+  addAdmin(g, 801, 'manager', ['stock']);
+  tgPress(g, 801, 'rm:' + a.number + ':y');
+  ok(rv[1][10] === 'новий', 'без права «Відгуки» одобрить отзыв кнопкой нельзя');
+  tgPress(g, 900, 'rm:' + a.number + ':y');
+  cat = g.get({ action: 'catalog' });
+  const shown = g.get({ action: 'reviews', id: 'SWT-006' }).reviews;
+  ok(rv[1][10] === 'схвалено' && cat.products.find(p => p.id === 'SWT-006').rc === 1 && cat.products.find(p => p.id === 'SWT-006').ra === undefined, 'после одобрения: 1 отзыв, средней оценки нет (меньше трёх)');
+  ok(shown.length === 1 && shown[0].r === 5 && /Козинаки/.test(shown[0].t) && shown[0].n === 'Гість61' && !/61\b.*@|380/.test(JSON.stringify(shown)), 'на витрине: только имя, дата, оценка и текст', shown);
+  rv.push(['R-0101', new Date(), 'P-0001', '501', 'Олена', 'SWT-006', 'Козинаки', 4, '', '', 'схвалено', 'ua', ''], ['R-0102', new Date(), 'P-0002', '502', 'Ігор', 'SWT-006', 'Козинаки', 4, 'Добре', '', 'схвалено', 'ua', ''],
+    ['R-0103', new Date(), 'P-0003', '503', 'Хтось', 'SWT-006', 'Козинаки', 1, 'погано', '', 'новий', 'ua', '']);
+  g.clearCache();
+  cat = g.get({ action: 'catalog' });
+  ok(cat.products.find(p => p.id === 'SWT-006').rc === 3 && cat.products.find(p => p.id === 'SWT-006').ra === 4.3, 'от трёх одобренных отзывов показывается средняя оценка 4,3', cat.products.find(p => p.id === 'SWT-006'));
+  const list = adm(g, 900, 'admin.reviews');
+  ok(list.ok && list.reviews.length === 5 && list.reviews[0].id === 'R-0103', 'панель: список отзывов, новые сверху');
+  const hid = adm(g, 900, 'admin.review', { id: 'R-0102', ok: false, text: 'подмена', rate: 5 });
+  ok(hid.ok && rv.find(r => r[0] === 'R-0102')[10] === 'приховано' && rv.find(r => r[0] === 'R-0102')[8] === 'Добре' && rv.find(r => r[0] === 'R-0102')[7] === 4, 'админ может скрыть отзыв, но не изменить текст и оценку');
+  ok(g.get({ action: 'reviews', id: 'SWT-006' }).reviews.length === 2 && g.sheets['Журнал'].rows.some(r => /Відгук/.test(r.join(' '))), 'скрытый отзыв пропал с витрины, действие записано в журнал');
+
+  // Брошенная корзина
+  ok(g.post({ action: 'cart', items: [['DRY-039', 500, 1]] }).error === 'bad_auth', 'корзина без подписи Telegram не принимается');
+  ok(g.post({ action: 'cart', initData: g.initData(U(70)), items: [['DRY-039', 500, 2], ['NUT-008', 250, 1], ['x', 0, 0]], lang: 'ua', total: 1 }).ok, 'состав корзины принят');
+  const carts = g.sheets['Кошики'].rows;
+  ok(carts.length === 2 && carts[1][0] === '70' && carts[1][2] === '[["DRY-039",500,2],["NUT-008",250,1]]', 'в листе «Кошики» только состав, без цен', carts[1]);
+  ok(g.call('remindCarts_') === 0, 'раньше 3 часов не напоминаем');
+  carts[1][1] = new Date(Date.now() - 4 * 3600e3);
+  ok(g.call('remindCarts_') === 1, 'через 3 часа — одно напоминание');
+  const rem = lastTo(g, 70).payload;
+  ok(/Ваш кошик чекає/.test(rem.text) && /Курага.*500 г × 2/.test(rem.text) && !/Пекан/.test(rem.text) && /view=cart/.test(rem.reply_markup.inline_keyboard[0][0].web_app.url) && rem.reply_markup.inline_keyboard[1][0].callback_data === 'nc', 'в напоминании товары в наличии, кнопки «Оформити» и «Не нагадувати»', rem);
+  ok(g.call('remindCarts_') === 0, 'второй раз о той же корзине не напоминаем');
+  g.post({ action: 'cart', initData: g.initData(U(70)), items: [['DRY-039', 500, 3]], lang: 'ua' });
+  carts[1][1] = new Date(Date.now() - 5 * 3600e3);
+  ok(g.call('remindCarts_') === 0, 'не чаще раза в 7 дней одному человеку');
+  g.post({ action: 'cart', initData: g.initData(U(71)), items: [['NUT-007', 0, 1]], lang: 'ru' });
+  carts[2][1] = new Date(Date.now() - 4 * 3600e3);
+  order(g, U(71), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+  ok(carts[2][2] === '' && g.call('remindCarts_') === 0, 'после заказа корзина не считается брошенной');
+  g.post({ action: 'cart', initData: g.initData(U(72)), items: [['NUT-007', 0, 1]], lang: 'ua' });
+  tgPress(g, 72, 'nc');
+  carts[3][1] = new Date(Date.now() - 4 * 3600e3);
+  ok(carts[3][5] === 'так' && g.call('remindCarts_') === 0, '«Не нагадувати» выключает напоминания навсегда');
+  g.post({ action: 'cart', initData: g.initData(U(73)), items: [['NUT-007', 0, 1]], lang: 'ua' });
+  carts[4][1] = new Date(Date.now() - 4 * 3600e3);
+  settings(g, { cart_remind_hours: '0' });
+  ok(g.call('remindCarts_') === 0, 'напоминания о корзине выключаются в настройках');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);
