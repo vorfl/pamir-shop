@@ -486,6 +486,8 @@ var MAX_TEST_ORDERS_PER_HOUR = 20;
 var INIT_DATA_MAX_AGE_SEC = 24 * 3600;
 
 function doPost(e) {
+  // Вебхук Telegram (через Cloudflare Worker): ?src=tg&key=<WEBHOOK_SECRET>
+  if (e && e.parameter && e.parameter.src === 'tg') return handleTelegramWebhook_(e);
   var out;
   try {
     var text = (e && e.postData && e.postData.contents) || '';
@@ -838,10 +840,11 @@ function clientText_(kind, o) {
 
 /**
  * Запускается триггером раз в минуту (см. startPolling). Забирает новые сообщения и нажатия кнопок.
- * Webhook не используем: Apps Script отвечает на POST редиректом, Telegram ему не следует.
+ * Если включён вебхук (Script Property USE_WEBHOOK = 'true'), функция сразу выходит: update приходят в doPost (?src=tg).
  */
 function pollUpdates() {
   var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('USE_WEBHOOK') === 'true') return; // обновления приходят через вебхук (doPost), опрос не нужен
   var token = props.getProperty('BOT_TOKEN');
   if (!token) return;
   var offset = parseInt(props.getProperty('TG_OFFSET'), 10) || 0;
@@ -860,20 +863,60 @@ function pollUpdates() {
     return;
   }
   if (!data.result.length) return;
-  var cache = CacheService.getScriptCache();
   var admins = adminIds_(props);
   data.result.forEach(function (u) {
     offset = u.update_id + 1;
-    if (cache.get('upd_' + u.update_id)) return; // защита от повторной обработки
-    cache.put('upd_' + u.update_id, '1', 3600);
-    try {
-      if (u.callback_query) handleCallback_(u.callback_query, token, admins);
-      else if (u.message) handleMessage_(u.message, token, props);
-    } catch (err) {
-      console.error('update ' + u.update_id + ': ' + (err && err.stack || err));
-    }
+    handleUpdate_(u, token, props, admins);
   });
   props.setProperty('TG_OFFSET', String(offset));
+}
+
+/** Общая обработка одного update (и для pollUpdates, и для вебхука): дедупликация + сообщения и кнопки. */
+function handleUpdate_(u, token, props, admins) {
+  if (!u || u.update_id === undefined || u.update_id === null) return;
+  if (isDuplicateUpdate_(u.update_id)) return; // защита от повторной обработки
+  try {
+    if (u.callback_query) handleCallback_(u.callback_query, token, admins);
+    else if (u.message) handleMessage_(u.message, token, props);
+  } catch (err) {
+    console.error('update ' + u.update_id + ': ' + (err && err.stack || err));
+  }
+}
+
+/** true, если update_id уже обрабатывался (CacheService, 6 ч). Блокировка — чтобы два параллельных запроса не прошли оба. */
+function isDuplicateUpdate_(updateId) {
+  var cache = CacheService.getScriptCache();
+  var key = 'upd_' + updateId;
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  try { lock.waitLock(5000); locked = true; } catch (err) { /* без блокировки — лучше, чем потерять update */ }
+  try {
+    if (cache.get(key)) return true;
+    cache.put(key, '1', 21600);
+    return false;
+  } finally {
+    if (locked) lock.releaseLock();
+  }
+}
+
+/** Приём update от Telegram через Cloudflare Worker. Всегда отвечает быстро и без исключений. */
+function handleTelegramWebhook_(e) {
+  var props = PropertiesService.getScriptProperties();
+  var secret = props.getProperty('WEBHOOK_SECRET');
+  var given = (e.parameter && e.parameter.key) || '';
+  if (!secret || given !== secret) return ContentService.createTextOutput('forbidden');
+  try {
+    var update = JSON.parse((e.postData && e.postData.contents) || '{}');
+    var token = props.getProperty('BOT_TOKEN');
+    if (!token) {
+      console.error('webhook: BOT_TOKEN не задан');
+    } else {
+      handleUpdate_(update, token, props, adminIds_(props));
+    }
+  } catch (err) {
+    console.error('webhook: ' + (err && err.stack || err));
+  }
+  return ContentService.createTextOutput('ok');
 }
 
 function handleMessage_(msg, token, props) {
