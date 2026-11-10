@@ -757,3 +757,12 @@ body.has-tabbar.has-bar .toast { bottom: calc(var(--tabbar-h) + 92px + env(safe-
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   .done__ico .ico path { stroke-dashoffset: 0; }
 }
+
+/* ================= Этап 8: админы с правами, журнал ================= */
+.sw:disabled { opacity: .45; }
+.input:disabled { opacity: .55; background: var(--surface-sunken); }
+.check input:disabled + span { color: var(--ink-muted); }
+.logrow { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); overflow-wrap: anywhere; }
+.logrow__meta { font-size: 13px; line-height: 18px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.logrow__act { font-weight: 600; }
+.logrow__diff { font-size: 13px; line-height: 18px; color: var(--ink-muted); }

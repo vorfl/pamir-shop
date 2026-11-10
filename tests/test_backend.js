@@ -200,5 +200,187 @@ console.log('Админ-панель и служебное');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+/* ============================ Этап 8, волна 1 ============================ */
+let updId = 1000;
+const tgPost = (g, update) => g.post(Object.assign({ update_id: ++updId }, update), { src: 'tg', key: 'whsec' });
+const tgMsg = (g, uid, text, extra) => tgPost(g, { message: Object.assign({ chat: { id: uid, type: 'private' }, from: { id: uid, first_name: 'Гість' + uid, username: 'guest' + uid, language_code: 'uk' }, text }, extra || {}) });
+const tgPress = (g, uid, data, chat) => tgPost(g, { callback_query: { id: 'cq' + updId, data, from: { id: uid, first_name: 'Гість' + uid, language_code: 'uk' }, message: { message_id: 77, chat: { id: chat || uid } } } });
+const adm = (g, uid, action, data) => g.post(Object.assign({ action, initData: g.initData(U(uid)) }, data || {}));
+const lastTo = (g, chat, method) => g.sent.filter(m => String(m.payload.chat_id) === String(chat) && (!method || m.method === method)).pop();
+/** Владелец 900 приглашает человека uid с ролью и правами и подтверждает запрос. */
+function addAdmin(g, uid, role, perms, by) {
+  const inv = adm(g, by || 900, 'admin.adminInvite', { role, perms });
+  tgMsg(g, uid, '/start ' + inv.code);
+  tgPress(g, by || 900, 'ai:' + inv.code.slice(4) + ':y');
+  return inv;
+}
+
+console.log('Админы: роли и приглашения');
+{
+  const g = fresh();
+  const me = adm(g, 900, 'admin.me');
+  ok(me.ok && me.me.role === 'owner' && me.me.perms.length === 12, 'без OWNER_CHAT_ID владелец — первый id из ADMIN_CHAT_IDS', me.me);
+  const inv = adm(g, 900, 'admin.adminInvite', { role: 'manager', perms: ['st', 'stock', 'nope'] });
+  ok(inv.ok && /^adm_[0-9a-f]{20}$/.test(inv.code), 'приглашение: одноразовый код', inv);
+  tgMsg(g, 700, '/start ' + inv.code);
+  const ask = lastTo(g, 900, 'sendMessage');
+  ok(ask && /Запит на доступ/.test(ask.payload.text) && /guest700/.test(ask.payload.text) && ask.payload.reply_markup.inline_keyboard[0].length === 2, 'пригласивший получил запрос с кнопками «Підтвердити / Відхилити»');
+  ok(/Запит на доступ надіслано/.test(lastTo(g, 700, 'sendMessage').payload.text), 'приглашённый получил «запит надіслано»');
+  ok(adm(g, 700, 'admin.orders').error === 'forbidden', 'до подтверждения прав нет');
+  tgMsg(g, 701, '/start ' + inv.code);
+  ok(/недійсне/.test(lastTo(g, 701, 'sendMessage').payload.text), 'вторым человеком ссылку использовать нельзя');
+  tgPress(g, 701, 'ai:' + inv.code.slice(4) + ':y');
+  ok(adm(g, 700, 'admin.orders').error === 'forbidden' && !g.sheets['Адміни'], 'посторонний не может подтвердить приглашение');
+  tgPress(g, 900, 'ai:' + inv.code.slice(4) + ':y');
+  const rows = g.sheets['Адміни'].rows, head = rows[0];
+  const row = rows[1];
+  ok(row[0] === '700' && row[head.indexOf('Роль')] === 'Менеджер' && row[head.indexOf('Замовлення: статуси')] === 'так' && row[head.indexOf('Наявність і залишки')] === 'так' &&
+    row[head.indexOf('Ціни та акції')] === '' && row[head.indexOf('Активний')] === 'так', 'после подтверждения — строка в листе «Адміни» с выбранными правами', row);
+  const o = adm(g, 700, 'admin.orders');
+  ok(o.ok && o.me.role === 'manager' && o.me.perms.sort().join() === 'st,stock' && o.orders.length > 0 && o.orders[0].phone && o.stats === null, 'менеджер видит заказы (с телефоном), но не итоги продаж', o.me);
+  ok(/Доступ до адмін-панелі PAMIR надано/.test(lastTo(g, 700, 'sendMessage').payload.text), 'новому админу пришло сообщение');
+  tgMsg(g, 702, '/start ' + inv.code);
+  ok(/недійсне/.test(lastTo(g, 702, 'sendMessage').payload.text), 'использованная ссылка больше не работает');
+  const inv2 = adm(g, 900, 'admin.adminInvite', { role: 'admin' });
+  tgMsg(g, 703, '/start ' + inv2.code);
+  tgPress(g, 900, 'ai:' + inv2.code.slice(4) + ':n');
+  ok(adm(g, 703, 'admin.orders').error === 'forbidden' && /відхилено/.test(lastTo(g, 703, 'sendMessage').payload.text), 'отклонённый запрос прав не даёт');
+  const g2 = fresh();
+  g2.props.OWNER_CHAT_ID = '901';
+  ok(adm(g2, 901, 'admin.me').me.role === 'owner' && adm(g2, 900, 'admin.me').me.role === 'admin', 'OWNER_CHAT_ID задаёт владельца; id из ADMIN_CHAT_IDS остаются полными админами');
+  const old = g2.post({ action: 'admin.orders', initData: g2.initData(U(900)) });
+  ok(old.ok && old.orders.length === 7 && old.stats.week.n >= 1, 'старая панель (без admin.me) продолжает работать');
+}
+
+console.log('Админы: права проверяет сервер');
+{
+  const g = fresh();
+  addAdmin(g, 700, 'manager', ['st', 'stock']);
+  addAdmin(g, 710, 'manager', ['text', 'photo']);
+  const sheet = g.sheets['Товари'].rows, kg = sheet[0].indexOf('Ціна за 1 кг');
+  const before = sheet.find(r => r[0] === 'NUT-002')[kg];
+  const deny = adm(g, 700, 'admin.product', { id: 'NUT-002', patch: { price: 1 } });
+  ok(deny.error === 'no_perm' && deny.need === 'price' && sheet.find(r => r[0] === 'NUT-002')[kg] === before, 'менеджер без права «Ціни» не может изменить цену прямым запросом', deny);
+  const mixed = adm(g, 700, 'admin.product', { id: 'NUT-002', patch: { stock: false, old: 999, end: '2099-01-01' } });
+  ok(mixed.error === 'no_perm' && g.get({ action: 'catalog' }).products.find(p => p.id === 'NUT-002').a === 1, 'запрос, где есть хоть одно запрещённое поле, отклоняется целиком');
+  ok(adm(g, 700, 'admin.product', { id: 'NUT-002', patch: { stock: false } }).ok, 'наличие менять можно — право есть');
+  ok(adm(g, 700, 'admin.product', { id: 'NUT-002', patch: { ua: 'Нова назва' } }).need === 'text', 'тексты без права «Тексти товарів» менять нельзя');
+  ok(adm(g, 710, 'admin.product', { id: 'NUT-002', patch: { ua: 'Кеш’ю смажений великий', dUa: 'Опис' } }).ok, 'а с правом — можно');
+  ok(adm(g, 710, 'admin.product', { id: 'NUT-002', patch: { stock: true } }).need === 'stock', 'наличие без права менять нельзя');
+  ok(adm(g, 700, 'admin.productAdd', { patch: { cat: 'Чай', t: 'p', ua: 'Тест', price: 5 } }).error === 'no_perm', 'добавить товар без прав на тексты и цены нельзя');
+  ok(adm(g, 700, 'admin.settingsSave', { values: { min_order: '5' } }).need === 'settings' && adm(g, 700, 'admin.settings').need === 'settings', 'настройки закрыты');
+  ok(adm(g, 700, 'admin.stats').need === 'stats' && adm(g, 700, 'admin.category', { category: { code: 'TEA', ua: 'Чай', order: 1 } }).need === 'cats', 'статистика и категории закрыты');
+  ok(adm(g, 700, 'admin.admins').need === 'admins' && adm(g, 700, 'admin.log').need === 'admins' && adm(g, 700, 'admin.adminInvite', { role: 'admin' }).need === 'admins', 'список админов, журнал и приглашения закрыты');
+  ok(adm(g, 700, 'admin.photo', { id: 'NUT-002', data: 'xx' }).need === 'photo', 'фото без права загрузить нельзя');
+  ok(adm(g, 700, 'admin.status', { num: 'P-0004', code: 's' }).ok && adm(g, 710, 'admin.status', { num: 'P-0004', code: 'd' }).need === 'st', 'статус меняет только тот, у кого есть право');
+  tgPress(g, 710, 'st:P-0004:d');
+  ok(g.sheets['Замовлення'].rows[4][2] === 'відправлено', 'кнопка под заказом в Telegram тоже проверяет право', g.sheets['Замовлення'].rows[4][2]);
+  tgPress(g, 700, 'st:P-0004:d');
+  ok(g.sheets['Замовлення'].rows[4][2] === 'виконано', 'а у менеджера с правом кнопка работает');
+  const text = JSON.stringify(adm(g, 700, 'admin.products')) + JSON.stringify(adm(g, 900, 'admin.products'));
+  ok(!/СЕКРЕТ|do-smaku|33%/.test(text), 'служебные колонки R–X не уходят и в админ-панель');
+  const before2 = g.sent.length;
+  order(g, U(42), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+  const to = g.sent.slice(before2).filter(m => m.method === 'sendMessage' && /Замовлення P-/.test(m.payload.text) && m.payload.reply_markup).map(m => String(m.payload.chat_id)).sort();
+  ok(to.join() === '700,710,900', 'новый заказ приходит всем, у кого включены уведомления', to);
+  adm(g, 900, 'admin.adminSave', { id: '710', notify: false });
+  const before3 = g.sent.length;
+  order(g, U(43), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+  ok(!g.sent.slice(before3).some(m => String(m.payload.chat_id) === '710'), 'выключил уведомления — заказы не приходят');
+}
+
+console.log('Админы: кто кого может менять');
+{
+  const g = fresh();
+  addAdmin(g, 720, 'manager', ['admins', 'stock']);
+  addAdmin(g, 730, 'admin');
+  addAdmin(g, 740, 'manager', ['st']);
+  ok(adm(g, 720, 'admin.adminInvite', { role: 'manager', perms: ['price'] }).need === 'grant', 'нельзя выдать право, которого нет у самого');
+  ok(adm(g, 720, 'admin.adminInvite', { role: 'admin' }).need === 'grant', 'менеджер не может пригласить полного админа');
+  ok(adm(g, 720, 'admin.adminInvite', { role: 'manager', perms: ['stock'] }).ok, 'своё право выдать можно');
+  ok(adm(g, 720, 'admin.adminSave', { id: '740', perms: ['st', 'price'] }).need === 'grant', 'добавить чужому менеджеру право, которого нет у самого, нельзя');
+  ok(adm(g, 720, 'admin.adminSave', { id: '740', perms: [] }).need === 'grant', 'и забрать право, которого нет у самого, тоже нельзя');
+  const up = adm(g, 720, 'admin.adminSave', { id: '740', perms: ['st', 'stock'] });
+  ok(up.ok && up.admins.find(a => a.id === '740').perms.sort().join() === 'st,stock', 'а своё право — можно', up.error);
+  const toOwner = lastTo(g, 900, 'sendMessage');
+  ok(toOwner && /змінив права/.test(toOwner.payload.text) && /Наявність і залишки/.test(toOwner.payload.text), 'владельцу приходит сообщение о каждом изменении админов', toOwner && toOwner.payload.text);
+  ok(adm(g, 720, 'admin.adminSave', { id: '730', role: 'manager', perms: [] }).error === 'owner_only' && adm(g, 730, 'admin.adminSave', { id: '730', active: false }).error === 'self', 'полного админа меняет только владелец; себя менять нельзя');
+  ok(adm(g, 730, 'admin.adminSave', { id: '900', active: false }).error === 'owner_locked' && adm(g, 900, 'admin.me').me.role === 'owner', 'владельца нельзя отключить или понизить');
+  g.sheets['Адміни'].rows.push(['900', 'Хтось', '', 'Менеджер'].concat(new Array(16).fill('')));
+  ok(adm(g, 900, 'admin.me').me.role === 'owner', 'строка в листе «Адміни» с id владельца ничего не меняет');
+  const down = adm(g, 900, 'admin.adminSave', { id: '730', role: 'manager', perms: ['st'] });
+  ok(down.ok && adm(g, 730, 'admin.settings').need === 'settings', 'владелец понизил админа до менеджера');
+  ok(adm(g, 900, 'admin.adminSave', { id: '740', active: false }).ok && adm(g, 740, 'admin.orders').error === 'forbidden', 'отключённый админ теряет доступ сразу');
+  const g2 = fresh();
+  g2.props.ADMIN_CHAT_IDS = '900, 905';
+  ok(adm(g2, 905, 'admin.me').me.role === 'admin', 'второй id из ADMIN_CHAT_IDS — полный админ');
+  ok(adm(g2, 900, 'admin.adminSave', { id: '905', active: false }).ok && adm(g2, 905, 'admin.orders').error === 'forbidden', 'владелец отключил его в панели — запасной список доступ не возвращает');
+  const list = adm(g, 900, 'admin.admins');
+  ok(list.ok && list.admins[0].role === 'owner' && list.permList.length === 12 && list.invites.length === 1, 'список админов и ожидающих приглашений', list.invites);
+}
+
+console.log('Журнал действий');
+{
+  const g = fresh();
+  adm(g, 900, 'admin.product', { id: 'NUT-002', patch: { price: 700, stock: false } });
+  adm(g, 900, 'admin.status', { num: 'P-0004', code: 's' });
+  adm(g, 900, 'admin.settingsSave', { values: { min_order: '150' } });
+  addAdmin(g, 700, 'manager', ['st']);
+  tgPress(g, 700, 'st:P-0004:d');
+  const log = adm(g, 900, 'admin.log');
+  const find = (act, obj) => log.rows.find(r => r.act === act && (!obj || r.obj.indexOf(obj) === 0));
+  ok(log.ok && find('Товар: ціна', 'NUT-002').was === '640' && find('Товар: ціна', 'NUT-002').now === '700', 'цена: было → стало', find('Товар: ціна'));
+  ok(find('Товар: наявність').was === 'є' && find('Товар: наявність').now === 'немає', 'наличие: было → стало');
+  ok(log.rows.some(r => r.act === 'Замовлення: статус' && r.obj === 'P-0004' && r.was === 'підтверджено' && r.now === 'відправлено' && /Тест900/.test(r.who)), 'статус из панели: кто и что');
+  ok(log.rows.some(r => r.act === 'Замовлення: статус' && r.now === 'виконано' && /Гість700/.test(r.who)), 'статус из кнопки в Telegram тоже в журнале');
+  ok(find('Налаштування', 'min_order').now === '150' && find('Адміни: додано') && find('Адміни: запрошення'), 'настройки и изменения админов в журнале');
+  ok(g.sheets['Журнал'].rows[0].join() === "Час,Хто,Chat id,Дія,Об'єкт,Було,Стало" && log.rows[0].act === 'Замовлення: статус', 'лист «Журнал», свежие записи сверху');
+}
+
+console.log('Приветствие бота');
+{
+  const g = fresh();
+  tgMsg(g, 800, '/start');
+  const w = lastTo(g, 800);
+  const kb = w.payload.reply_markup.inline_keyboard;
+  ok(w.method === 'sendPhoto' && w.payload.photo === 'https://example.test/webapp/welcome.jpg' && /^Вітаємо, Гість800!/.test(w.payload.caption) && /Ісфарі/.test(w.payload.caption), 'новичок: фото-заглушка и тёплый текст с именем', w.payload);
+  ok(kb[0][0].web_app.url === 'https://example.test/webapp/' && kb.length === 3 && kb[1][0].callback_data === 'm:pts' && kb[1][1].callback_data === 'm:apr' && kb[2][0].callback_data === 'm:biz' && kb[2].length === 1,
+    'кнопки: магазин, точки, курага, опт; «Написати нам» нет, пока контакт не задан', kb);
+  tgMsg(g, 501, '/start', { from: { id: 501, first_name: 'Олена', language_code: 'ru' } });
+  const b = lastTo(g, 501);
+  ok(/^С возвращением, Олена!/.test(b.payload.caption) && /repeat=last/.test(b.payload.reply_markup.inline_keyboard[1][0].web_app.url) && /Повторить/.test(b.payload.reply_markup.inline_keyboard[1][0].text), 'вернувшийся клиент: «З поверненням» на его языке и кнопка «Повторити звичне»', b.payload.caption);
+  tgMsg(g, 504, '/start');
+  ok(/^Вітаємо/.test(lastTo(g, 504).payload.caption), 'у кого только отменённый заказ — обычное приветствие');
+  settings(g, { welcome_video_note: 'VN_FILE_1', welcome_photo: 'PHOTO_FILE_1', contact: '@pamir_help', greeting_ua: 'Привіт, {ім’я}! Свій текст.' });
+  const n0 = g.sent.length;
+  tgMsg(g, 801, '/start', { from: { id: 801, language_code: 'uk' } });
+  const seq = g.sent.slice(n0);
+  ok(seq[0].method === 'sendVideoNote' && seq[0].payload.video_note === 'VN_FILE_1' && seq[1].method === 'sendPhoto' && seq[1].payload.photo === 'PHOTO_FILE_1', 'видеокружок идёт перед приветствием, фото — из настроек');
+  ok(seq[1].payload.caption === 'Привіт! Свій текст.' && seq[1].payload.reply_markup.inline_keyboard[2][1].url === 'https://t.me/pamir_help', 'свой текст; без имени обращение убирается; появилась кнопка «Написати нам»', seq[1].payload.caption);
+  tgMsg(g, 802, '/start DRY-039');
+  ok(/Курага/.test(lastTo(g, 802).payload.text) && /p=DRY-039/.test(lastTo(g, 802).payload.reply_markup.inline_keyboard[0][0].web_app.url), 'ссылка на товар работает как раньше');
+  tgMsg(g, 803, '/start ref_abc123');
+  ok(lastTo(g, 803).method === 'sendPhoto', 'start=ref_… пока даёт обычное приветствие');
+  g.setTelegramFail(true);
+  const n1 = g.sent.length;
+  tgMsg(g, 804, '/start');
+  ok(g.sent.slice(n1).map(m => m.method).join() === 'sendVideoNote,sendPhoto,sendMessage', 'если фото не отправилось — приветствие уходит обычным текстом');
+  g.setTelegramFail(false);
+  tgPost(g, { message: { chat: { id: 900, type: 'private' }, from: { id: 900 }, video_note: { file_id: 'VN_NEW' } } });
+  ok(/VN_NEW/.test(lastTo(g, 900).payload.text), 'админ прислал кружок — бот ответил его file_id');
+  const n2 = g.sent.length;
+  tgPost(g, { message: { chat: { id: 805, type: 'private' }, from: { id: 805 }, photo: [{ file_id: 'a' }, { file_id: 'b' }] } });
+  ok(g.sent.length === n2, 'фото от обычного клиента бот не комментирует');
+  settings(g, { feature_id: 'DRY-039' });
+  tgPress(g, 800, 'm:apr');
+  ok(/Наша курага/.test(lastTo(g, 800).payload.text) && /p=DRY-039/.test(lastTo(g, 800).payload.reply_markup.inline_keyboard[0][0].web_app.url), 'кнопка «Наша курага» открывает товар из настроек');
+  tgPress(g, 800, 'm:pts');
+  ok(/Центральний ринок/.test(lastTo(g, 800).payload.text), 'кнопка «Наші точки» присылает адрес и часы');
+  tgPress(g, 800, 'm:biz');
+  ok(/кафе/.test(lastTo(g, 800).payload.text) && lastTo(g, 800).payload.reply_markup.inline_keyboard[0][0].url === 'https://t.me/pamir_help', 'кнопка «Для бізнесу» — заглушка с контактом');
+  ok(!/сірк|серы/i.test(JSON.stringify(g.get({ action: 'catalog' }).shop) + JSON.stringify(adm(g, 900, 'admin.settings'))), 'в текстах по умолчанию нет утверждений про серу');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

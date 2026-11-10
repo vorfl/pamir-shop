@@ -296,8 +296,63 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForFunction(() => /Збережено/.test(document.getElementById('toast').textContent));
     ok(st.gas.get({ action: 'catalog' }).shop.gift.from === 700, 'подарок от суммы настраивается из панели');
     ok(st.log.filter(x => x.action === 'ev').length === 0 || st.gas.sheets['Події'].rows.length === 6, 'действия админа не попадают в аналитику');
+    // Этап 8: админы с правами и журнал
+    ok(await count(page, '[data-tab="admins"]') === 1, 'у владельца есть вкладка «Адміни»');
+    await page.locator('[data-tab="admins"]').click();
+    await page.waitForSelector('[data-adm="+"]');
+    ok(/Власник/.test(await text(page, '#admList')) && await count(page, '#admList [data-adm]') === 0, 'владелец в списке есть, изменить его нельзя');
+    await page.click('[data-adm="+"]');
+    await page.waitForSelector('#a-p_price');
+    ok(await count(page, '#admPerms input[type=checkbox]') === 13 && await noOverflow(page), 'форма приглашения: 12 прав и «перегляд», без горизонтальной прокрутки');
+    ok((await smallTargets(page)).length === 0, 'кнопки формы приглашения не меньше 44 px', await smallTargets(page));
+    await page.check('#a-p_st'); await page.check('#a-p_stock');
+    await page.screenshot({ path: OUT + '/31-admin-invite.png', fullPage: true });
+    await page.click('[data-action="adm-invite"]');
+    await page.waitForSelector('#a-link');
+    const link = await page.inputValue('#a-link');
+    ok(/^https:\/\/t\.me\/pamir_test_bot\?start=adm_[0-9a-f]{20}$/.test(link), 'создана одноразовая ссылка-приглашение', link);
+    const code = link.split('adm_')[1];
+    st.gas.post({ update_id: 5001, message: { chat: { id: 700, type: 'private' }, from: { id: 700, first_name: 'Марія', username: 'maria' }, text: '/start adm_' + code } }, { src: 'tg', key: 'whsec' });
+    st.gas.post({ update_id: 5002, callback_query: { id: 'x', data: 'ai:' + code + ':y', from: { id: 900, first_name: 'Власник' }, message: { message_id: 9, chat: { id: 900 } } } }, { src: 'tg', key: 'whsec' });
+    await page.click('[data-action="adm-invite-done"]');
+    await page.waitForSelector('[data-adm="700"]');
+    ok(/Марія/.test(await text(page, '[data-adm="700"]')) && /Замовлення: статуси, Наявність і залишки/.test(await text(page, '[data-adm="700"]')), 'новый менеджер появился в списке со своими правами');
+    await page.click('[data-adm="700"]');
+    await page.waitForSelector('#a-active');
+    await page.check('#a-p_photo');
+    await page.click('[data-action="adm-save"]');
+    await page.waitForSelector('[data-adm="700"]');
+    const ah = st.gas.sheets['Адміни'].rows[0], ar = st.gas.sheets['Адміни'].rows[1];
+    ok(ar[ah.indexOf('Фото')] === 'так' && ar[ah.indexOf('Ціни та акції')] === '', 'права из панели записаны в лист «Адміни»');
+    await page.click('[data-action="adm-log"]');
+    await page.waitForSelector('.logrow');
+    ok(/Адміни: зміна прав/.test(await text(page, '.page')) && /Товар: залишок/.test(await text(page, '.page')) && await noOverflow(page), 'журнал действий: права и правка товара');
+    await page.screenshot({ path: OUT + '/32-admin-log.png', fullPage: true });
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
-    await page.context().close(); st.server.close();
+    await page.context().close();
+
+    // Менеджер: видит только то, на что есть права
+    const m = await open(browser, st.url, { uid: 700, query: '?admin=1', theme: 'dark', lc: 'ru' });
+    await m.page.waitForSelector('.ord');
+    const tabs = await m.page.locator('.tabs button').evaluateAll(list => list.map(b => b.getAttribute('data-tab')));
+    ok(tabs.join() === 'orders,products', 'менеджеру видны только вкладки заказов и товаров', tabs);
+    ok(await count(m.page, '[data-action="adm-sales"]') === 0, 'итогов продаж и статистики нет');
+    await m.page.locator('.ord__head').first().click();
+    ok(await count(m.page, '.ord__acts [data-st]') === 4, 'кнопки статусов есть — право выдано');
+    await m.page.locator('[data-tab="products"]').click();
+    await m.page.waitForSelector('.prod');
+    ok(await count(m.page, '[data-edit="+"]') === 0, 'добавить товар менеджер не может');
+    await m.page.locator('[data-edit="NUT-002"]').click();
+    await m.page.waitForSelector('#a-qty');
+    ok(await m.page.isDisabled('#a-price') && await m.page.isDisabled('#a-ua') && !(await m.page.isDisabled('#a-qty')) && await count(m.page, '#a-photo') === 1,
+      'в карточке товара: цена и название закрыты, остаток и фото доступны');
+    await m.page.fill('#a-qty', '3');
+    await m.page.click('[data-action="adm-save"]');
+    await m.page.waitForSelector('.prod');
+    ok(st.gas.sheets['Товари'].rows.find(x => x[0] === 'NUT-002')[head.indexOf('Залишок')] === 3, 'остаток менеджер сохранил');
+    await m.page.screenshot({ path: OUT + '/33-manager.png', fullPage: true });
+    ok(m.errors.length === 0, 'в консоли браузера нет ошибок (менеджер)', m.errors);
+    await m.page.context().close(); st.server.close();
   }
 
   /* ---------------- 4. Обычный браузер (?debug=1) и старый бэкенд ---------------- */
