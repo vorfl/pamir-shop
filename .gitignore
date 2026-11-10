@@ -1,0 +1,33 @@
+# --- clasp (вход и привязка к проекту — только локально) ---
+.clasprc.json
+**/.clasprc.json
+.clasp.json
+**/.clasp.json
+
+# --- Переменные окружения / Cloudflare ---
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+
+# --- Ключи и файлы с секретами ---
+*.pem
+*.key
+*.p12
+*.pfx
+*secret*
+*Secret*
+*SECRET*
+*credentials*
+*Credentials*
+service-account*.json
+
+# --- Node ---
+node_modules/
+npm-debug.log*
+
+# --- Система / редакторы ---
+.DS_Store
+Thumbs.db
