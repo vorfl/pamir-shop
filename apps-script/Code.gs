@@ -410,6 +410,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('PAMIR')
     .addItem('Оновити каталог у магазині зараз', 'menuRefreshCatalog')
     .addItem('Перевірити каталог', 'menuCheckCatalog')
+    .addItem('Оновити статистику продажів', 'menuStats')
     .addToUi();
 }
 
@@ -1124,6 +1125,7 @@ function handleAdmin_(body) {
   if (body.action === 'admin.productAdd') return updateProduct_('', body.patch || {}, true);
   if (body.action === 'admin.photo') return savePhoto_(String(body.id || ''), String(body.data || ''));
   if (body.action === 'admin.category') return saveCategory_(body.category || {});
+  if (body.action === 'admin.stats') return salesStats_(true);
   if (body.action === 'admin.settings') return { ok: true, fields: settingsFields_() };
   if (body.action === 'admin.settingsSave') return saveSettings_(body.values || {});
   return { ok: false, error: 'unknown_action' };
@@ -1508,4 +1510,116 @@ function saveSettings_(values) {
   settingsMemo_ = null;
   clearCatalogCache_();
   return { ok: true, fields: settingsFields_() };
+}
+
+
+/* ============================ ЭТАП 6: статистика продаж ============================ */
+
+var SHEET_STATS = 'Статистика';
+
+/** Пункт меню PAMIR → «Оновити статистику продажів». */
+function menuStats() {
+  var res = salesStats_(true);
+  SpreadsheetApp.getUi().alert('Статистику оновлено. Замовлень враховано: ' + res.all.n + '. Дивіться аркуш «' + SHEET_STATS + '».');
+}
+
+/**
+ * Продажи по дням и по товарам. В расчёт не идут тестовые заказы, отменённые и «немає в наявності».
+ * write = true — заодно переписывает лист «Статистика» (его не правят руками: он каждый раз создаётся заново).
+ */
+function salesStats_(write) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_ORDERS);
+  var tz = 'Europe/Kiev';
+  var now = new Date();
+  var from30 = now.getTime() - 30 * 24 * 3600 * 1000;
+  var days = {}, dayKeys = [];
+  var prodAll = {}, prod30 = {};
+  var all = { n: 0, sum: 0 }, m30 = { n: 0, sum: 0 };
+
+  function addProduct(map, key, name, q, kg, sum) {
+    var x = map[key] || (map[key] = { name: name, q: 0, kg: 0, sum: 0, n: 0 });
+    x.q += q; x.kg += kg; x.sum += sum; x.n++;
+  }
+
+  if (sheet && sheet.getLastRow() > 1) {
+    var col = orderCols_(sheet);
+    var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+    values.forEach(function (row) {
+      if (!cell_(row, col.num)) return;
+      var status = cell_(row, col.status) || STATUS_NEW;
+      if (cell_(row, col.source).indexOf('test') >= 0 || status === 'немає в наявності' || status === 'скасовано') return;
+      var date = col.date >= 0 ? row[col.date] : '';
+      if (Object.prototype.toString.call(date) !== '[object Date]' || isNaN(date.getTime())) return;
+      var total = toNum_(col.total >= 0 ? row[col.total] : 0);
+      var key = Utilities.formatDate(date, tz, 'yyyy-MM-dd');
+      if (!days[key]) { days[key] = { d: key, n: 0, sum: 0 }; dayKeys.push(key); }
+      days[key].n++; days[key].sum += total;
+      all.n++; all.sum += total;
+      var recent = date.getTime() >= from30;
+      if (recent) { m30.n++; m30.sum += total; }
+
+      var compact = null;
+      try { compact = JSON.parse(cell_(row, col.svc) || '{}').i || null; } catch (err) { compact = null; }
+      var parts = cell_(row, col.items).split('; ');
+      parts.forEach(function (text, idx) {
+        var m = text.match(/^(.*) × (\d+) = (\d+) ₴$/);
+        if (!m) return;
+        var name = m[1], q = Number(m[2]), sum = Number(m[3]);
+        var pkey = name, kg = 0;
+        var c = compact && compact.length === parts.length ? compact[idx] : null;
+        if (c) {
+          var g = Number(c[1]) || 0;
+          pkey = String(c[0]);
+          if (g > 0) {
+            kg = g * q / 1000;
+            var tail = ' ' + weightLabel_(g);
+            if (name.slice(-tail.length) === tail) name = name.slice(0, -tail.length);
+          }
+        }
+        addProduct(prodAll, pkey, name, q, kg, sum);
+        if (recent) addProduct(prod30, pkey, name, q, kg, sum);
+      });
+    });
+  }
+
+  function top(map) {
+    return Object.keys(map).map(function (k) { var x = map[k]; x.kg = Math.round(x.kg * 1000) / 1000; return x; })
+      .sort(function (a, b) { return b.sum - a.sum; });
+  }
+  dayKeys.sort().reverse();
+  var dayList = dayKeys.map(function (k) { return days[k]; });
+  var p30 = top(prod30), pAll = top(prodAll);
+
+  if (write) {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(20000);
+    try {
+      var out = ss.getSheetByName(SHEET_STATS) || ss.insertSheet(SHEET_STATS);
+      out.clearContents();
+      var grid = [
+        ['Оновлено: ' + Utilities.formatDate(now, tz, 'dd.MM.yyyy HH:mm') + '. Аркуш створюється автоматично, руками не редагувати.', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+        ['За 30 днів: замовлень ' + m30.n + ', сума ' + m30.sum + ' ₴. За весь час: замовлень ' + all.n + ', сума ' + all.sum + ' ₴.', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+        ['ПО ДНЯХ', '', '', '', '', 'ТОВАРИ ЗА 30 ДНІВ', '', '', '', '', '', 'ТОВАРИ ЗА ВЕСЬ ЧАС', '', '', '', ''],
+        ['Дата', 'Замовлень', 'Сума, ₴', 'Середній чек, ₴', '', 'Товар', 'Штук/упаковок', 'Вага, кг', 'Сума, ₴', 'У замовленнях', '', 'Товар', 'Штук/упаковок', 'Вага, кг', 'Сума, ₴', 'У замовленнях']
+      ];
+      var n = Math.max(dayList.length, p30.length, pAll.length);
+      for (var i = 0; i < n; i++) {
+        var d = dayList[i], a = p30[i], b = pAll[i];
+        grid.push([
+          d ? d.d.split('-').reverse().join('.') : '', d ? d.n : '', d ? d.sum : '', d ? Math.round(d.sum / d.n) : '', '',
+          a ? safeCell_(a.name) : '', a ? a.q : '', a ? (a.kg || '') : '', a ? a.sum : '', a ? a.n : '', '',
+          b ? safeCell_(b.name) : '', b ? b.q : '', b ? (b.kg || '') : '', b ? b.sum : '', b ? b.n : ''
+        ]);
+      }
+      out.getRange(1, 1, grid.length, 16).setValues(grid);
+      out.getRange(4, 1, 2, 16).setFontWeight('bold');
+      out.setFrozenRows(5);
+      SpreadsheetApp.flush();
+    } finally {
+      lock.releaseLock();
+    }
+  }
+  return { ok: true, all: all, m30: m30, days: dayList.slice(0, 30), products: p30.slice(0, 20) };
 }

@@ -100,6 +100,9 @@
       admSearchO: 'Номер, телефон або ім\u2019я', admSearchP: 'Назва або ID', admAll: 'Усі', admEmpty: 'Нічого немає',
       admLoading: 'Завантаження…', admError: 'Не вдалося завантажити. Спробуйте ще раз.',
       admForbidden: 'Немає доступу. Адмін-панель відкривається лише з Telegram-акаунта адміністратора.',
+      admStats: 'Статистика продажів', admStats30: '30 днів', admStatsAll: 'Весь час', admStatsTop: 'Товари за 30 днів',
+      admStatsDays: 'По днях', admStatsEmpty: 'Продажів поки немає.', admStatsSheet: 'Повна таблиця — на аркуші «Статистика» у Google Таблиці.',
+      admStatsOrd: 'зам.',
       admRefresh: 'Оновити', admWrite: 'Написати клієнту', admSaved: 'Збережено', admNotTold: 'Клієнту написати не вдалося',
       admFail: 'Не вдалося зберегти. Спробуйте ще раз.', admStock: 'В наявності', admPriceKg: 'Ціна за 1 кг, ₴',
       admPriceUnit: 'Ціна за упаковку / шт, ₴', admNameUa: 'Назва (UA)', admNameRu: 'Название (RU)', admPacks: 'Фасування',
@@ -216,6 +219,9 @@
       admSearchO: 'Номер, телефон или имя', admSearchP: 'Название или ID', admAll: 'Все', admEmpty: 'Ничего нет',
       admLoading: 'Загрузка…', admError: 'Не удалось загрузить. Попробуйте ещё раз.',
       admForbidden: 'Нет доступа. Админ-панель открывается только с Telegram-аккаунта администратора.',
+      admStats: 'Статистика продаж', admStats30: '30 дней', admStatsAll: 'Всё время', admStatsTop: 'Товары за 30 дней',
+      admStatsDays: 'По дням', admStatsEmpty: 'Продаж пока нет.', admStatsSheet: 'Полная таблица — на листе «Статистика» в Google Таблице.',
+      admStatsOrd: 'зак.',
       admRefresh: 'Обновить', admWrite: 'Написать клиенту', admSaved: 'Сохранено', admNotTold: 'Клиенту написать не удалось',
       admFail: 'Не удалось сохранить. Попробуйте ещё раз.', admStock: 'В наличии', admPriceKg: 'Цена за 1 кг, ₴',
       admPriceUnit: 'Цена за упаковку / шт, ₴', admNameUa: 'Назва (UA)', admNameRu: 'Название (RU)', admPacks: 'Фасовка',
@@ -840,7 +846,7 @@
   function goBack() {
     if (state.sheet) { closeSheet(); return; }
     if (state.view === 'checkout') { readForm(); go('cart'); return; }
-    if (state.view === 'admin' && (adm.edit || adm.catEdit)) { adm.edit = ''; adm.catEdit = ''; renderPage(); return; }
+    if (state.view === 'admin' && (adm.edit || adm.catEdit || adm.salesOpen)) { adm.edit = ''; adm.catEdit = ''; adm.salesOpen = false; renderPage(); return; }
     if (state.view !== 'catalog') go('catalog');
   }
 
@@ -1334,7 +1340,7 @@
   var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats'], ['settings', 'admSettings']];
   var CAT_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
-    edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false };
+    edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false, sales: null, salesOpen: false };
 
   function api(action, data) {
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
@@ -1375,13 +1381,15 @@
     var html = pageHead(t('admin'));
     if (adm.edit) return html + productFormHtml();
     if (adm.catEdit) return html + categoryFormHtml();
+    if (adm.salesOpen) return html + salesHtml();
     html += '<div class="tabs" role="group">' + ADMIN_TABS.map(function (tab) {
       return '<button type="button" data-tab="' + tab[0] + '" aria-pressed="' + (adm.tab === tab[0]) + '">' + esc(t(tab[1])) + '</button>';
     }).join('') + '</div>';
     if (adm.tab === 'orders') {
       if (adm.stats) {
         html += '<div class="stats"><div><span>' + esc(t('admToday')) + '</span><b>' + adm.stats.today.n + ' · ' + money(adm.stats.today.sum) + '</b></div>' +
-          '<div><span>' + esc(t('admWeek')) + '</span><b>' + adm.stats.week.n + ' · ' + money(adm.stats.week.sum) + '</b></div></div>';
+          '<div><span>' + esc(t('admWeek')) + '</span><b>' + adm.stats.week.n + ' · ' + money(adm.stats.week.sum) + '</b></div></div>' +
+          '<button type="button" class="btn btn--block" data-action="adm-sales">' + esc(t('admStats')) + '</button>';
       }
       html += '<input class="input" id="admQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchO')) + '" value="' + esc(adm.q) + '">' +
         '<div class="chips chips--flush" id="admFilter">' + [''].concat(ADMIN_STATUSES).map(function (s) {
@@ -1395,6 +1403,42 @@
     }
     return html + '<div id="admList">' + adminListHtml() + '</div>' +
       (adm.tab === 'settings' ? '' : '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>');
+  }
+
+  /* ---- Статистика продаж ---- */
+  function loadSales() {
+    adm.salesOpen = true; adm.salesErr = false; adm.salesLoading = true;
+    renderPage(); window.scrollTo(0, 0);
+    api('admin.stats').then(function (res) {
+      adm.salesLoading = false;
+      if (!res || !res.ok) throw new Error('fail');
+      adm.sales = res;
+      if (adm.salesOpen) renderPage();
+    }).catch(function () { adm.salesLoading = false; adm.salesErr = true; if (adm.salesOpen) renderPage(); });
+  }
+
+  function salesHtml() {
+    var html = '<p class="label">' + esc(t('admStats')) + '</p>';
+    var s = adm.sales;
+    if (!s) {
+      return html + (adm.salesErr
+        ? '<p class="state__text adm__msg">' + esc(t('admError')) + '</p><button type="button" class="btn btn--block" data-action="adm-sales">' + esc(t('admRefresh')) + '</button>'
+        : '<div class="skeleton skeleton--row"></div>');
+    }
+    html += '<div class="stats"><div><span>' + esc(t('admStats30')) + '</span><b>' + s.m30.n + ' · ' + money(s.m30.sum) + '</b></div>' +
+      '<div><span>' + esc(t('admStatsAll')) + '</span><b>' + s.all.n + ' · ' + money(s.all.sum) + '</b></div></div>';
+    if (!s.all.n) return html + '<p class="state__text adm__msg">' + esc(t('admStatsEmpty')) + '</p>';
+    if (s.products.length) {
+      html += '<p class="label">' + esc(t('admStatsTop')) + '</p><ul class="rows">' + s.products.map(function (p) {
+        var amount = p.kg > 0 ? String(p.kg).replace('.', ',') + NBSP + 'кг' : p.q + NBSP + t('pcs');
+        return '<li><span class="rows__name">' + esc(p.name) + '</span><span class="rows__sub">' + amount + '</span><b>' + money(p.sum) + '</b></li>';
+      }).join('') + '</ul>';
+    }
+    html += '<p class="label">' + esc(t('admStatsDays')) + '</p><ul class="rows">' + s.days.map(function (d) {
+      return '<li><span class="rows__name">' + esc(d.d.split('-').reverse().join('.')) + '</span><span class="rows__sub">' + d.n + NBSP + esc(t('admStatsOrd')) + '</span><b>' + money(d.sum) + '</b></li>';
+    }).join('') + '</ul>';
+    return html + '<p class="info info__muted">' + esc(t('admStatsSheet')) + '</p>' +
+      '<button type="button" class="btn btn--block" data-action="adm-sales">' + esc(t('admRefresh')) + (adm.salesLoading ? '…' : '') + '</button>';
   }
 
   function renderAdminList() {
@@ -1755,6 +1799,7 @@
     var act = e.target.closest('[data-action]');
     var name = act ? act.getAttribute('data-action') : '';
     if (name === 'adm-refresh') { loadAdmin(true); return true; }
+    if (name === 'adm-sales') { if (!adm.salesLoading) loadSales(); return true; }
     if (name === 'adm-save') {
       if (adm.edit) saveProductForm(); else if (adm.catEdit) saveCategoryForm(); else saveSettingsForm();
       return true;
