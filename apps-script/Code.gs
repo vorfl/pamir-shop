@@ -47,16 +47,19 @@ var PRODUCT_COLS = {
   p100:    ['ціна за 100 г'],
   hidden:  ['приховати', 'прихован'],
   badge:   ['бейдж', 'мітка'],
-  oldPrice: ['стара ціна']
+  oldPrice: ['стара ціна'],
+  qty:     ['залишок'],
+  saleEnd: ['акція до', 'акция до']
 };
 
 /** Бейдж товара: в таблице пишется словом, витрина получает код. */
-var BADGE_UA = { 'new': 'новинка', hit: 'хіт', sale: 'знижка' };
+var BADGE_UA = { 'new': 'новинка', hit: 'хіт', sale: 'знижка', set: 'набір' };
 function badgeCode_(v) {
   var s = String(v === null || v === undefined ? '' : v).trim().toLowerCase();
   if (/^(нов|new)/.test(s)) return 'new';
   if (/^(хіт|хит|hit|топ|top)/.test(s)) return 'hit';
   if (/^(зниж|скид|акц|sale|%)/.test(s)) return 'sale';
+  if (/^(наб|комплект|set)/.test(s)) return 'set';
   return '';
 }
 
@@ -111,6 +114,17 @@ function buildCatalog_() {
   var categories = readCategories_(ss);
   var products = readProducts_(ss, categories);
 
+  // Популярность и «разом купують» — только из настоящих заказов за последние 30 дней.
+  try {
+    var sig = orderSignals_(ss);
+    products.forEach(function (p) {
+      if (sig.n[p.id]) p.n = sig.n[p.id];
+      if (sig.r[p.id]) p.r = sig.r[p.id];
+    });
+  } catch (err) {
+    console.warn('signals: ' + err);
+  }
+
   var used = {};
   products.forEach(function (p) { used[p.c] = true; });
   categories = categories.filter(function (c) { return used[c.code]; });
@@ -134,6 +148,15 @@ function readShop_() {
     min: Math.max(0, Math.round(toNum_(st.min_order)))
   };
   if (st.notice_ua || st.notice_ru) shop.notice = { ua: st.notice_ua || st.notice_ru, ru: st.notice_ru || st.notice_ua };
+  // Подарок от суммы заказа и подарок постоянному клиенту: работают, только если в настройках заданы и число, и текст.
+  var giftFrom = Math.round(toNum_(st.gift_from));
+  if (giftFrom > 0 && (st.gift_text_ua || st.gift_text_ru)) {
+    shop.gift = { from: giftFrom, ua: st.gift_text_ua || st.gift_text_ru, ru: st.gift_text_ru || st.gift_text_ua };
+  }
+  var loyalEvery = Math.round(toNum_(st.loyal_every));
+  if (loyalEvery >= 2 && (st.loyal_text_ua || st.loyal_text_ru)) {
+    shop.loyal = { every: loyalEvery, ua: st.loyal_text_ua || st.loyal_text_ru, ru: st.loyal_text_ru || st.loyal_text_ua };
+  }
   // Блок «Наша курага» наверху каталога: товар и текст задаются в настройках.
   var fid = String(st.feature_id || '').trim().toUpperCase();
   if (fid) {
@@ -191,6 +214,8 @@ function readProducts_(ss, categories) {
 
   var products = [];
   var seen = {};
+  var nowMs = Date.now();
+  var sheetTz = ss.getSpreadsheetTimeZone() || 'Europe/Kiev';
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
     var id = cell_(row, col.id);
@@ -222,12 +247,22 @@ function readProducts_(ss, categories) {
     if (nameRu && nameRu !== nameUa) p.ru = nameRu;
 
     var inStock = isInStock_(cell_(row, col.stock));
-    var price = priceInfo_(
-      cell_(row, col.type),
-      cell_(row, col.packs),
-      col.pKg >= 0 ? row[col.pKg] : '',
-      col.pUnit >= 0 ? row[col.pUnit] : ''
-    );
+    var typeRaw = cell_(row, col.type);
+    var packsRaw = cell_(row, col.packs);
+    var price = priceInfo_(typeRaw, packsRaw, col.pKg >= 0 ? row[col.pKg] : '', col.pUnit >= 0 ? row[col.pUnit] : '');
+    // Бейдж и старая цена (в тех же единицах, что и цена: за 1 кг или за упаковку).
+    var badge = badgeCode_(cell_(row, col.badge));
+    var base = price.t === 'w' ? price.k : price.p;
+    var oldP = toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : '');
+    // «Акція до»: скидка действует по эту дату включительно. После неё товар снова стоит по обычной (старой) цене.
+    var saleEnd = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], sheetTz) : null;
+    if (saleEnd && oldP > base && base > 0 && saleEnd.end <= nowMs) {
+      price = priceInfo_(typeRaw, packsRaw, oldP, oldP);
+      base = price.t === 'w' ? price.k : price.p;
+      if (badge === 'sale') badge = '';
+      oldP = 0;
+      saleEnd = null;
+    }
     p.t = price.t;
     if (price.t === 'w') {
       p.k = price.k;
@@ -251,18 +286,94 @@ function readProducts_(ss, categories) {
       var whMin = cell_(row, col.whMin);
       if (whMin) p.wm = whMin;
     }
-    // Бейдж и старая цена (в тех же единицах, что и цена: за 1 кг или за упаковку).
-    var badge = badgeCode_(cell_(row, col.badge));
-    var base = price.t === 'w' ? price.k : price.p;
-    var oldP = toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : '');
     if (oldP > base && base > 0) {
       p.o = Math.round(oldP * 100) / 100;
       if (!badge) badge = 'sale';
+      if (saleEnd) p.e = saleEnd.day;
     }
     if (badge) p.b = badge;
+    // «Залишок» (кг для весового товара, штуки для остального): 0 — товара нет; мало — витрина покажет «Залишилось N».
+    var left = col.qty >= 0 ? leftQty_(row[col.qty]) : null;
+    if (left !== null) {
+      if (left <= 0) p.a = 0;
+      else if (left <= (price.t === 'w' ? LOW_STOCK_KG : LOW_STOCK_PCS)) p.q = left;
+    }
     products.push(p);
   }
   return products;
+}
+
+var LOW_STOCK_PCS = 5;   // «Залишилось N шт» показываем, когда осталось не больше
+var LOW_STOCK_KG = 2;    // то же для весового товара, кг
+var SIGNAL_DAYS = 30;
+
+/** Значение колонки «Залишок»: число или null, если ячейка пустая. */
+function leftQty_(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  if (typeof v !== 'number' && !/\d/.test(String(v))) return null;
+  return Math.round(toNum_(v) * 1000) / 1000;
+}
+
+/** «Акція до»: дата из таблицы или текст 15.11.2026 / 2026-11-15 → { day: '2026-11-15', end: мс конца этого дня }. */
+function saleEnd_(v, tz) {
+  var y, m, d;
+  if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+    var parts = Utilities.formatDate(v, tz, 'yyyy-MM-dd').split('-');
+    y = +parts[0]; m = +parts[1]; d = +parts[2];
+  } else {
+    var s = String(v === null || v === undefined ? '' : v).trim();
+    var a = s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/);
+    var b = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (a) { d = +a[1]; m = +a[2]; y = +a[3]; }
+    else if (b) { y = +b[1]; m = +b[2]; d = +b[3]; }
+    else return null;
+  }
+  if (!(y > 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return null;
+  function two(n) { return (n < 10 ? '0' : '') + n; }
+  // Конец дня по Киеву (UTC+2/+3): 22:00 UTC — с запасом до часа в пользу покупателя.
+  return { day: y + '-' + two(m) + '-' + two(d), end: Date.UTC(y, m - 1, d, 22, 0, 0) };
+}
+
+/**
+ * Сигналы из листа «Замовлення» за SIGNAL_DAYS дней (без тестовых, отменённых и «немає в наявності»):
+ *   n[id] — в скольких заказах был товар; r[id] — с какими товарами его брали вместе (не меньше двух раз).
+ */
+function orderSignals_(ss) {
+  var out = { n: {}, r: {} };
+  var sheet = ss.getSheetByName(SHEET_ORDERS);
+  if (!sheet || sheet.getLastRow() < 2) return out;
+  var col = orderCols_(sheet);
+  if (col.svc < 0 || col.date < 0) return out;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  var from = Date.now() - SIGNAL_DAYS * 24 * 3600 * 1000;
+  var pairs = {};
+  values.forEach(function (row) {
+    var date = row[col.date];
+    if (Object.prototype.toString.call(date) !== '[object Date]' || isNaN(date.getTime()) || date.getTime() < from) return;
+    var status = cell_(row, col.status);
+    if (cell_(row, col.source).indexOf('test') >= 0 || status === 'немає в наявності' || status === 'скасовано') return;
+    var ids = [];
+    try {
+      (JSON.parse(cell_(row, col.svc) || '{}').i || []).forEach(function (it) {
+        var id = String(it[0]);
+        if (ids.indexOf(id) < 0) ids.push(id);
+      });
+    } catch (err) { ids = []; }
+    ids.forEach(function (a) {
+      out.n[a] = (out.n[a] || 0) + 1;
+      ids.forEach(function (b) {
+        if (a === b) return;
+        var m = pairs[a] || (pairs[a] = {});
+        m[b] = (m[b] || 0) + 1;
+      });
+    });
+  });
+  Object.keys(pairs).forEach(function (a) {
+    var list = Object.keys(pairs[a]).filter(function (b) { return pairs[a][b] >= 2; })
+      .sort(function (x, y) { return pairs[a][y] - pairs[a][x]; }).slice(0, 4);
+    if (list.length) out.r[a] = list;
+  });
+  return out;
 }
 
 /* ============================ Цены и фасовки ============================ */
@@ -411,6 +522,10 @@ function onOpen() {
     .addItem('Оновити каталог у магазині зараз', 'menuRefreshCatalog')
     .addItem('Перевірити каталог', 'menuCheckCatalog')
     .addItem('Оновити статистику продажів', 'menuStats')
+    .addSeparator()
+    .addItem('Повідомити клієнтів про появу товарів', 'menuNotifyStock')
+    .addItem('Увімкнути щоденні повідомлення клієнтам', 'menuDailyOn')
+    .addItem('Вимкнути щоденні повідомлення клієнтам', 'menuDailyOff')
     .addToUi();
 }
 
@@ -496,6 +611,8 @@ function doPost(e) {
     if (body.action !== 'admin.photo' && text.length > 20000) throw new Error('body too large');
     if (body.action === 'order') out = handleOrder_(body);
     else if (body.action === 'orders.my') out = handleMyOrders_(body);
+    else if (body.action === 'ev') out = handleEvents_(body);
+    else if (body.action === 'notify') out = handleNotify_(body);
     else if (String(body.action).indexOf('admin.') === 0) out = handleAdmin_(body);
     else out = { ok: false, error: 'unknown_action' };
   } catch (err) {
@@ -578,6 +695,9 @@ function handleOrder_(body) {
   });
   if (bad || Number(body.total) !== total) return { ok: false, error: 'changed' };
   if (shop.min > 0 && total < shop.min) return { ok: false, error: 'min_order', min: shop.min };
+  // Подарки: от суммы заказа (сразу) и постоянному клиенту (считаем ниже, под блокировкой).
+  var gifts = [];
+  if (shop.gift && total >= shop.gift.from) gifts.push(shop.gift);
 
   o.items = lines.join('; ');
   o.total = total;
@@ -598,6 +718,14 @@ function handleOrder_(body) {
 
     var sheet = ensureOrdersSheet_();
     var col = orderCols_(sheet);
+    if (shop.loyal && o.uid && !isTest) {
+      var doneBefore = completedOrders_(sheet, col, o.uid);
+      if ((doneBefore + 1) % shop.loyal.every === 0) gifts.push(shop.loyal);
+    }
+    o.gifts = gifts.map(function (x) { return x.ua; });
+    o.giftsClient = gifts.map(function (x) { return o.lang === 'ru' ? x.ru : x.ua; });
+    var svc = { i: compact };
+    if (o.gifts.length) svc.g = o.gifts;
     o.num = nextOrderNumber_(sheet, col);
     var row = [];
     for (var i = 0; i < sheet.getLastColumn(); i++) row.push('');
@@ -609,11 +737,15 @@ function handleOrder_(body) {
     put('city', safeCell_(o.city)); put('branch', safeCell_(o.branch));
     put('pay', PAY_UA[o.pay]); put('comment', safeCell_(o.comment));
     put('items', safeCell_(o.items)); put('total', o.total); put('lang', o.lang); put('source', o.source);
-    put('svc', JSON.stringify({ i: compact }));
+    put('svc', JSON.stringify(svc));
     sheet.appendRow(row);
     rowIndex = sheet.getLastRow();
     SpreadsheetApp.flush();
     if (rid) cache.put('rid_' + rid, o.num, 21600);
+    // Колонка «Залишок» (если она есть и заполнена) уменьшается сама. Сбой здесь заказ не отменяет.
+    if (!isTest) {
+      try { takeFromStock_(compact); } catch (err) { console.error('stock: ' + (err && err.stack || err)); }
+    }
   } finally {
     lock.releaseLock();
   }
@@ -631,14 +763,58 @@ function handleOrder_(body) {
     });
     var sheet2 = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
     var col2 = orderCols_(sheet2);
-    if (col2.svc >= 0 && sent.length) sheet2.getRange(rowIndex, col2.svc + 1).setValue(JSON.stringify({ i: compact, m: sent }));
+    if (col2.svc >= 0 && sent.length) {
+      svc.m = sent;
+      sheet2.getRange(rowIndex, col2.svc + 1).setValue(JSON.stringify(svc));
+    }
     if (o.uid && !isTest) {
       tg_(token, 'sendMessage', { chat_id: o.uid, text: clientText_('new', o) });
     }
   } catch (err) {
     console.error('notify: ' + (err && err.stack || err));
   }
-  return { ok: true, number: o.num };
+  return { ok: true, number: o.num, gifts: o.giftsClient };
+}
+
+/** Сколько заказов этого клиента уже выполнено (статус «виконано», без тестовых). */
+function completedOrders_(sheet, col, uid) {
+  if (col.uid < 0 || sheet.getLastRow() < 2) return 0;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  var n = 0;
+  values.forEach(function (row) {
+    if (String(row[col.uid]).trim() !== String(uid)) return;
+    if (cell_(row, col.source).indexOf('test') >= 0) return;
+    if (cell_(row, col.status) === 'виконано') n++;
+  });
+  return n;
+}
+
+/**
+ * Уменьшает «Залишок» у заказанных товаров: кг для весовых, штуки для остальных.
+ * Работает только там, где в ячейке уже стоит число. Дошло до нуля — «Наявність» становится «немає».
+ */
+function takeFromStock_(compact) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
+  if (!sheet) return;
+  var col = productCols_(sheet);
+  if (col.qty < 0) return;
+  var values = sheet.getDataRange().getValues();
+  var rowById = {};
+  for (var r = 1; r < values.length; r++) rowById[cell_(values[r], col.id)] = r;
+  var changed = false;
+  compact.forEach(function (it) {
+    var r = rowById[String(it[0])];
+    if (r === undefined) return;
+    var left = leftQty_(values[r][col.qty]);
+    if (left === null) return;
+    var g = Number(it[1]) || 0, q = Number(it[2]) || 0;
+    var next = Math.max(0, Math.round((left - (g > 0 ? g * q / 1000 : q)) * 1000) / 1000);
+    values[r][col.qty] = next;
+    sheet.getRange(r + 1, col.qty + 1).setValue(next);
+    if (next <= 0) sheet.getRange(r + 1, col.stock + 1).setValue('немає');
+    changed = true;
+  });
+  if (changed) { SpreadsheetApp.flush(); clearCatalogCache_(); }
 }
 
 /** «Мої замовлення»: последние заказы этого клиента. Кто спрашивает — определяется только по подписи Telegram. */
@@ -654,10 +830,13 @@ function handleMyOrders_(body) {
   if (col.uid < 0) return { ok: true, orders: [] };
   var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
   var orders = [];
-  for (var r = values.length - 1; r >= 0 && orders.length < 20; r--) {
+  var done = 0; // выполненные заказы за всё время — для программы «постійний клієнт»
+  for (var r = values.length - 1; r >= 0; r--) {
     var row = values[r];
     if (String(row[col.uid]).trim() !== uid || !cell_(row, col.num)) continue;
     if (cell_(row, col.source).indexOf('test') >= 0) continue;
+    if (cell_(row, col.status) === 'виконано') done++;
+    if (orders.length >= 20) continue;
     var date = col.date >= 0 ? row[col.date] : '';
     var isDate = Object.prototype.toString.call(date) === '[object Date]' && !isNaN(date.getTime());
     var again = null;
@@ -676,7 +855,7 @@ function handleMyOrders_(body) {
       i: again
     });
   }
-  return { ok: true, orders: orders };
+  return { ok: true, orders: orders, done: done };
 }
 
 /**
@@ -796,6 +975,9 @@ function adminText_(o, statusNote) {
   String(o.items).split('; ').forEach(function (s) { if (s) lines.push('• ' + escHtml_(s)); });
   lines.push('');
   lines.push('<b>Разом: ' + o.total + ' ₴</b>');
+  var gifts = o.gifts;
+  if (!gifts) { try { gifts = JSON.parse(o.svc || '{}').g || []; } catch (err) { gifts = []; } }
+  gifts.forEach(function (g) { lines.push('🎁 Подарунок до замовлення: ' + escHtml_(g)); });
   if (o.comment) lines.push('💬 ' + escHtml_(o.comment));
   return lines.join('\n').slice(0, 4000);
 }
@@ -816,9 +998,12 @@ function clientText_(kind, o) {
   var n = o.num;
   if (kind === 'new') {
     var st = readSettings_();
+    var giftLine = o.giftsClient && o.giftsClient.length
+      ? '\n🎁 ' + (ru ? 'Подарок к заказу: ' : 'Подарунок до замовлення: ') + o.giftsClient.join('; ')
+      : '';
     return ru
-      ? '🧾 Заказ ' + n + ' принят. Сумма: ' + o.total + ' ₴.\n' + st.confirm_ru
-      : '🧾 Замовлення ' + n + ' прийнято. Сума: ' + o.total + ' ₴.\n' + st.confirm_ua;
+      ? '🧾 Заказ ' + n + ' принят. Сумма: ' + o.total + ' ₴.\n' + st.confirm_ru + giftLine
+      : '🧾 Замовлення ' + n + ' прийнято. Сума: ' + o.total + ' ₴.\n' + st.confirm_ua + giftLine;
   }
   if (kind === 'c') {
     var t = ru ? '✅ Заказ ' + n + ' подтверждён.' : '✅ Замовлення ' + n + ' підтверджено.';
@@ -966,6 +1151,13 @@ function handleCallback_(cq, token, admins) {
   function answer(text) { tg_(token, 'answerCallbackQuery', { callback_query_id: cq.id, text: text || '' }); }
   var fromId = String(cq.from && cq.from.id);
   var chatId = cq.message && cq.message.chat ? String(cq.message.chat.id) : '';
+  if (cq.data === 'nr') { // клиент отказался от напоминаний
+    stopReminders_(fromId);
+    var ruUser = String((cq.from && cq.from.language_code) || '').toLowerCase().indexOf('ru') === 0;
+    answer(ruUser ? 'Больше не напоминаем' : 'Більше не нагадуємо');
+    if (cq.message) tg_(token, 'editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
+    return;
+  }
   if (admins.indexOf(fromId) < 0 && admins.indexOf(chatId) < 0) { answer('Немає доступу'); return; }
   var m = String(cq.data || '').match(/^st:(P-\d+):([cnsd])$/);
   if (!m) { answer(''); return; }
@@ -1012,7 +1204,13 @@ function setOrderStatus_(num, code, actor, token, extraTarget) {
   });
   var told = null;
   if (o.uid && String(o.source).indexOf('test') < 0) {
-    told = !!tg_(token, 'sendMessage', { chat_id: o.uid, text: clientText_(code, o) }).ok;
+    var msg = { chat_id: o.uid, text: clientText_(code, o) };
+    var webapp = PropertiesService.getScriptProperties().getProperty('WEBAPP_URL');
+    if (code === 'd' && /^https:\/\//.test(webapp || '')) {
+      msg.reply_markup = { inline_keyboard: [[{ text: o.lang === 'ru' ? '🔁 Повторить заказ' : '🔁 Повторити замовлення',
+        web_app: { url: webapp + (webapp.indexOf('?') < 0 ? '?' : '&') + 'view=orders' } }]] };
+    }
+    told = !!tg_(token, 'sendMessage', msg).ok;
   }
   return { ok: true, status: status, told: told };
 }
@@ -1058,6 +1256,9 @@ function weightLabel_(g) {
 function startPolling() {
   var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
   if (!token) throw new Error('Сначала добавьте BOT_TOKEN в Свойства скрипта (Настройки проекта).');
+  if (PropertiesService.getScriptProperties().getProperty('USE_WEBHOOK') === 'true') {
+    throw new Error('Включён webhook (USE_WEBHOOK = true). startPolling удалил бы его, и бот замолчал бы. Если опрос действительно нужен, сначала удалите свойство USE_WEBHOOK.');
+  }
   var me = tg_(token, 'getMe', {});
   if (!me.ok) throw new Error('Telegram не принял токен: ' + me.description);
   tg_(token, 'deleteWebhook', {});
@@ -1108,7 +1309,13 @@ function setup() {
   if (!token) throw new Error('Нет BOT_TOKEN в Свойствах скрипта.');
   if (!/^https:\/\//.test(webapp || '')) throw new Error('Нет WEBAPP_URL в Свойствах скрипта (должен начинаться с https://).');
 
-  startPolling();
+  // Если события идут через webhook (Cloudflare Worker), опрос включать нельзя: он удалит webhook и бот замолчит.
+  if (props.getProperty('USE_WEBHOOK') === 'true') {
+    ensureOrdersSheet_();
+    console.log('Webhook включён (USE_WEBHOOK = true): опрос не трогаем.');
+  } else {
+    startPolling();
+  }
 
   var steps = [
     ['Кнопка меню «Магазин»', 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Магазин', web_app: { url: webapp } } }],
@@ -1228,7 +1435,9 @@ function adminProduct_(row, col) {
     stock: isInStock_(cell_(row, col.stock)) ? 1 : 0, hidden: isYes_(cell_(row, col.hidden)) ? 1 : 0,
     img: normalizePhoto_(cell_(row, col.photo)), dUa: cell_(row, col.descUa), dRu: cell_(row, col.descRu),
     wh: toNum_(col.whPrice >= 0 ? row[col.whPrice] : 0), wm: cell_(row, col.whMin),
-    badge: badgeCode_(cell_(row, col.badge)), old: toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : 0)
+    badge: badgeCode_(cell_(row, col.badge)), old: toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : 0),
+    qty: (function () { var q = col.qty >= 0 ? leftQty_(row[col.qty]) : null; return q === null ? '' : String(q).replace('.', ','); })(),
+    end: (function () { var e = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], 'Europe/Kiev') : null; return e ? e.day : ''; })()
   };
 }
 
@@ -1276,6 +1485,8 @@ function updateProduct_(id, patch, create) {
     if (patch.wh !== undefined && !(Number(patch.wh) >= 0 && Number(patch.wh) < 1000000)) return { ok: false, error: 'bad_form' };
     if (patch.old !== undefined && !(Number(patch.old) >= 0 && Number(patch.old) < 1000000)) return { ok: false, error: 'bad_form' };
     if (patch.badge !== undefined && patch.badge !== '' && !BADGE_UA[patch.badge]) return { ok: false, error: 'bad_form' };
+    if (patch.qty !== undefined && patch.qty !== '' && !(toNum_(patch.qty) >= 0 && toNum_(patch.qty) < 100000)) return { ok: false, error: 'bad_form' };
+    if (patch.end !== undefined && patch.end !== '' && !saleEnd_(patch.end, 'Europe/Kiev')) return { ok: false, error: 'bad_form' };
     if (typeof patch.ua === 'string' && !clean_(patch.ua, 120)) return { ok: false, error: 'bad_form' };
     if (typeof patch.img === 'string' && patch.img && !/^https:\/\//i.test(patch.img)) return { ok: false, error: 'bad_form' };
 
@@ -1331,6 +1542,15 @@ function updateProduct_(id, patch, create) {
       ensureCol('oldPrice', 'Стара ціна');
       set(col.oldPrice, Number(patch.old) > 0 ? Math.round(Number(patch.old) * 100) / 100 : '');
     }
+    if (patch.qty !== undefined && (patch.qty !== '' || col.qty >= 0)) {
+      ensureCol('qty', 'Залишок');
+      set(col.qty, patch.qty === '' ? '' : Math.round(toNum_(patch.qty) * 1000) / 1000);
+    }
+    if (patch.end !== undefined && (patch.end !== '' || col.saleEnd >= 0)) {
+      ensureCol('saleEnd', 'Акція до');
+      // Текстом ДД.ММ.РРРР: так дата не зависит от часового пояса таблицы.
+      set(col.saleEnd, patch.end === '' ? '' : '\'' + saleEnd_(patch.end, 'Europe/Kiev').day.split('-').reverse().join('.'));
+    }
     var isWeight = patch.t !== undefined ? patch.t === 'w'
       : priceInfo_(create ? '' : cell_(values[r], col.type), '', 0, 0).t === 'w';
     if (patch.price !== undefined || (patch.t !== undefined && !create)) {
@@ -1344,10 +1564,15 @@ function updateProduct_(id, patch, create) {
     SpreadsheetApp.flush();
     clearCatalogCache_();
     var fresh = sheet.getRange(r + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    return { ok: true, product: adminProduct_(fresh, col) };
+    var result = { ok: true, product: adminProduct_(fresh, col) };
   } finally {
     lock.releaseLock();
   }
+  // Товар снова в наличии — пишем тем, кто просил сообщить. Сбой рассылки правку не отменяет.
+  if (patch.stock === true || patch.stock === 1) {
+    try { notifyBackInStock_(); } catch (err) { console.error('back in stock: ' + (err && err.stack || err)); }
+  }
+  return result;
 }
 
 /* ------------------------------ Фото товаров ------------------------------ */
@@ -1488,8 +1713,19 @@ var SETTINGS_DEF = [
   ['greeting_ua', 'Привітання бота (UA)', 'Вітаємо! Це PAMIR: горіхи, сухофрукти та східні солодощі з Центрального ринку Харкова.\nВідкрийте магазин, зберіть кошик, а ми підтвердимо замовлення тут, у чаті.'],
   ['greeting_ru', 'Приветствие бота (RU)', 'Здравствуйте! Это PAMIR: орехи, сухофрукты и восточные сладости с Центрального рынка Харькова.\nОткройте магазин, соберите корзину, а мы подтвердим заказ здесь, в чате.'],
   ['confirm_ua', 'Текст клієнту після прийняття замовлення (UA)', 'Ми підтвердимо наявність і напишемо вам сюди.'],
-  ['confirm_ru', 'Текст клиенту после принятия заказа (RU)', 'Мы подтвердим наличие и напишем вам сюда.']
+  ['confirm_ru', 'Текст клиенту после принятия заказа (RU)', 'Мы подтвердим наличие и напишем вам сюда.'],
+  ['gift_from', 'Подарунок від суми замовлення, ₴ (0 — вимкнено)', '0'],
+  ['gift_text_ua', 'Подарунок від суми: що саме даруємо (UA), наприклад «100 г кураги»', ''],
+  ['gift_text_ru', 'Подарок от суммы: что именно дарим (RU)', ''],
+  ['loyal_every', 'Постійний клієнт: подарунок до кожного N-го замовлення (0 — вимкнено, мінімум 2)', '0'],
+  ['loyal_text_ua', 'Постійний клієнт: що даруємо (UA)', ''],
+  ['loyal_text_ru', 'Постоянный клиент: что дарим (RU)', ''],
+  ['remind_days', 'Нагадати про повторне замовлення через N днів після виконаного (0 — вимкнено, мінімум 7)', '0'],
+  ['remind_text_ua', 'Текст нагадування (UA)', 'Вітаємо! Запаси горіхів і сухофруктів, мабуть, закінчуються. Попереднє замовлення можна повторити в один дотик.'],
+  ['remind_text_ru', 'Текст напоминания (RU)', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.']
 ];
+var SETTINGS_NUM = { min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365 };
+var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'feature_id', 'gift_text_ua', 'gift_text_ru', 'loyal_text_ua', 'loyal_text_ru'];
 var settingsMemo_ = null;
 
 function isYes_(v) {
@@ -1512,7 +1748,7 @@ function readSettings_() {
     });
   }
   // Пустой обязательный текст заменяем значением по умолчанию: бот не должен слать пустое сообщение.
-  SETTINGS_DEF.forEach(function (d) { if (!out[d[0]] && d[0].indexOf('notice_') !== 0 && d[0] !== 'min_order' && d[0] !== 'feature_id') out[d[0]] = d[2]; });
+  SETTINGS_DEF.forEach(function (d) { if (!out[d[0]] && SETTINGS_MAY_BE_EMPTY.indexOf(d[0]) < 0) out[d[0]] = d[2]; });
   settingsMemo_ = out;
   return out;
 }
@@ -1529,7 +1765,7 @@ function saveSettings_(values) {
     var k = d[0];
     if (values[k] === undefined) { next[k] = current[k]; return; }
     if (k.indexOf('pay_') === 0) next[k] = values[k] === true || isYes_(values[k]) ? 'так' : 'ні';
-    else if (k === 'min_order') next[k] = String(Math.max(0, Math.min(100000, Math.round(toNum_(values[k])))));
+    else if (SETTINGS_NUM[k]) next[k] = String(Math.max(0, Math.min(SETTINGS_NUM[k], Math.round(toNum_(values[k])))));
     else if (k === 'feature_id') next[k] = clean_(values[k], 20).toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9-]/g, '');
     else next[k] = multiline_(values[k], 500);
   });
@@ -1579,6 +1815,7 @@ function salesStats_(write) {
   var days = {}, dayKeys = [];
   var prodAll = {}, prod30 = {};
   var all = { n: 0, sum: 0 }, m30 = { n: 0, sum: 0 };
+  var buyers = {}; // uid → число заказов: для доли повторных покупок
 
   function addProduct(map, key, name, q, kg, sum) {
     var x = map[key] || (map[key] = { name: name, q: 0, kg: 0, sum: 0, n: 0 });
@@ -1599,6 +1836,8 @@ function salesStats_(write) {
       if (!days[key]) { days[key] = { d: key, n: 0, sum: 0 }; dayKeys.push(key); }
       days[key].n++; days[key].sum += total;
       all.n++; all.sum += total;
+      var buyer = col.uid >= 0 ? cell_(row, col.uid) : '';
+      if (buyer) buyers[buyer] = (buyers[buyer] || 0) + 1;
       var recent = date.getTime() >= from30;
       if (recent) { m30.n++; m30.sum += total; }
 
@@ -1634,6 +1873,19 @@ function salesStats_(write) {
   var dayList = dayKeys.map(function (k) { return days[k]; });
   var p30 = top(prod30), pAll = top(prodAll);
 
+  // Средний чек, повторные покупки и воронка (лист «Події»).
+  var buyerIds = Object.keys(buyers);
+  var repeatBuyers = buyerIds.filter(function (k) { return buyers[k] >= 2; }).length;
+  var kpi = {
+    aov30: m30.n ? Math.round(m30.sum / m30.n) : 0,
+    aovAll: all.n ? Math.round(all.sum / all.n) : 0,
+    buyers: buyerIds.length,
+    repeat: repeatBuyers,
+    repeatPct: buyerIds.length ? Math.round(repeatBuyers * 100 / buyerIds.length) : 0
+  };
+  var funnel = null;
+  try { funnel = eventsFunnel_(ss, from30, m30.n); } catch (err) { console.warn('funnel: ' + err); }
+
   if (write) {
     var lock = LockService.getScriptLock();
     lock.waitLock(20000);
@@ -1643,7 +1895,9 @@ function salesStats_(write) {
       var grid = [
         ['Оновлено: ' + Utilities.formatDate(now, tz, 'dd.MM.yyyy HH:mm') + '. Аркуш створюється автоматично, руками не редагувати.', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
         ['За 30 днів: замовлень ' + m30.n + ', сума ' + m30.sum + ' ₴. За весь час: замовлень ' + all.n + ', сума ' + all.sum + ' ₴.', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
-        ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+        ['Середній чек: ' + kpi.aov30 + ' ₴ за 30 днів, ' + kpi.aovAll + ' ₴ за весь час. Покупців: ' + kpi.buyers + ', з повторними замовленнями: ' + kpi.repeat + ' (' + kpi.repeatPct + '%).' +
+          (funnel ? ' Воронка за 30 днів (сесії): відкрили ' + funnel.open + ' → дивилися товар ' + funnel.view + ' → додали в кошик ' + funnel.add + ' → почали оформлення ' + funnel.checkout + ' → замовлень ' + funnel.order + '.' : ''),
+          '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
         ['ПО ДНЯХ', '', '', '', '', 'ТОВАРИ ЗА 30 ДНІВ', '', '', '', '', '', 'ТОВАРИ ЗА ВЕСЬ ЧАС', '', '', '', ''],
         ['Дата', 'Замовлень', 'Сума, ₴', 'Середній чек, ₴', '', 'Товар', 'Штук/упаковок', 'Вага, кг', 'Сума, ₴', 'У замовленнях', '', 'Товар', 'Штук/упаковок', 'Вага, кг', 'Сума, ₴', 'У замовленнях']
       ];
@@ -1664,5 +1918,300 @@ function salesStats_(write) {
       lock.releaseLock();
     }
   }
-  return { ok: true, all: all, m30: m30, days: dayList.slice(0, 30), products: p30.slice(0, 20) };
+  return { ok: true, all: all, m30: m30, days: dayList.slice(0, 30), products: p30.slice(0, 20), kpi: kpi, funnel: funnel };
+}
+
+
+/* ======================================================================== */
+/* ЭТАП 7: аналитика, «сообщить о появлении», напоминания                     */
+/* ======================================================================== */
+
+/* ------------------------------ Аналитика поведения ------------------------------ */
+/*
+ * Витрина присылает пачку событий (action: 'ev'): что открыли, что смотрели, что положили в корзину.
+ * Пишем в лист «Події». Считаем только подписанные Telegram сессии; действия админов не учитываются.
+ * Из этого листа статистика строит воронку: відкрили → дивилися товар → додали в кошик → оформлення → замовлення.
+ */
+var SHEET_EVENTS = 'Події';
+var EVENT_HEADERS = ['Час', 'Користувач', 'Сесія', 'Подія', 'Товар', 'Значення'];
+var EVENT_NAMES = ['open', 'view', 'add', 'cart', 'checkout', 'order', 'search', 'search0', 'fav', 'repeat', 'share', 'notify'];
+var MAX_EVENTS_PER_HOUR = 400;
+var EVENTS_KEEP_ROWS = 20000;
+
+function handleEvents_(body) {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty('BOT_TOKEN');
+  if (!token) return { ok: false, error: 'not_configured' };
+  var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
+  if (!user) return { ok: false, error: 'bad_auth' };
+  var uid = String(user.id);
+  if (adminIds_(props).indexOf(uid) >= 0) return { ok: true, n: 0 };
+  var list = Array.isArray(body.events) ? body.events.slice(0, 40) : [];
+  if (!list.length) return { ok: true, n: 0 };
+
+  var cache = CacheService.getScriptCache();
+  var used = parseInt(cache.get('ev_' + uid), 10) || 0;
+  if (used >= MAX_EVENTS_PER_HOUR) return { ok: true, n: 0 };
+  cache.put('ev_' + uid, String(used + list.length), 3600);
+
+  var sid = String(body.sid || '').replace(/[^\w-]/g, '').slice(0, 24);
+  var now = Date.now();
+  var rows = [];
+  list.forEach(function (ev) {
+    var name = String((ev && ev.e) || '');
+    if (EVENT_NAMES.indexOf(name) < 0) return;
+    var t = Number(ev.t);
+    var when = t > now - 24 * 3600 * 1000 && t <= now + 60000 ? new Date(t) : new Date(now);
+    rows.push([when, uid, sid, name, safeCell_(clean_(ev.id, 32)), safeCell_(clean_(ev.v, 60))]);
+  });
+  if (!rows.length) return { ok: true, n: 0 };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = ensureEventsSheet_();
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, EVENT_HEADERS.length).setValues(rows);
+    // Лист не растёт бесконечно: самые старые строки удаляются.
+    if (sheet.getLastRow() > EVENTS_KEEP_ROWS + 5000) sheet.deleteRows(2, 5000);
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: true, n: rows.length };
+}
+
+function ensureEventsSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_EVENTS);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_EVENTS);
+    sheet.getRange(1, 1, 1, EVENT_HEADERS.length).setValues([EVENT_HEADERS]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.getRange('A:A').setNumberFormat('dd.MM.yyyy HH:mm');
+  }
+  return sheet;
+}
+
+/**
+ * Воронка за период: в скольких сессиях было каждое действие. Плюс поисковые запросы без результата
+ * и самые просматриваемые товары — подсказка, чего не хватает в ассортименте и что стоит показать выше.
+ */
+function eventsFunnel_(ss, fromMs, orders) {
+  var sheet = ss.getSheetByName(SHEET_EVENTS);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, EVENT_HEADERS.length).getValues();
+  var steps = { open: {}, view: {}, add: {}, checkout: {} };
+  var users = {}, zero = {}, viewed = {};
+  values.forEach(function (row) {
+    var when = row[0];
+    if (Object.prototype.toString.call(when) !== '[object Date]' || when.getTime() < fromMs) return;
+    var uid = String(row[1]), session = uid + '|' + String(row[2]), name = String(row[3]);
+    users[uid] = true;
+    steps.open[session] = true; // любое событие означает, что магазин открывали
+    if (steps[name]) steps[name][session] = true;
+    if (name === 'add') steps.view[session] = true;
+    if (name === 'checkout') steps.add[session] = true;
+    if (name === 'search0') { var q = String(row[5]).toLowerCase(); if (q) zero[q] = (zero[q] || 0) + 1; }
+    if (name === 'view') { var id = String(row[4]); if (id) viewed[id] = (viewed[id] || 0) + 1; }
+  });
+  function size(o) { return Object.keys(o).length; }
+  function topList(map, n) {
+    return Object.keys(map).map(function (k) { return { k: k, n: map[k] }; })
+      .sort(function (a, b) { return b.n - a.n; }).slice(0, n);
+  }
+  var names = {};
+  try { JSON.parse(getCatalogJson_()).products.forEach(function (p) { names[p.id] = p.ua; }); } catch (err) { /* без названий */ }
+  var open = size(steps.open);
+  return {
+    users: size(users), open: open, view: size(steps.view), add: size(steps.add), checkout: size(steps.checkout),
+    order: orders, cr: open ? Math.round(orders * 1000 / open) / 10 : 0,
+    zero: topList(zero, 10).map(function (x) { return { q: x.k, n: x.n }; }),
+    viewed: topList(viewed, 10).map(function (x) { return { id: x.k, name: names[x.k] || x.k, n: x.n }; })
+  };
+}
+
+/* ------------------------------ «Повідомити, коли з'явиться» ------------------------------ */
+
+var SHEET_SUBS = 'Підписки';
+var SUB_HEADERS = ['Дата', 'Telegram user id', 'Товар', 'Мова', 'Статус'];
+var SUB_WAIT = 'чекає';
+var SUB_REMIND = 'REMIND'; // строка-отказ от напоминаний: Товар = REMIND, Статус = стоп
+var MAX_SUBS_PER_USER = 20;
+
+function ensureSubsSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_SUBS);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_SUBS);
+    sheet.getRange(1, 1, 1, SUB_HEADERS.length).setValues([SUB_HEADERS]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.getRange('A:A').setNumberFormat('dd.MM.yyyy HH:mm');
+  }
+  return sheet;
+}
+
+/** Клиент нажал «Повідомити, коли з'явиться» у товара, которого нет. */
+function handleNotify_(body) {
+  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  if (!token) return { ok: false, error: 'not_configured' };
+  var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
+  if (!user) return { ok: false, error: 'bad_auth' };
+  var uid = String(user.id);
+  var id = clean_(body.id, 32);
+  var product = null;
+  JSON.parse(getCatalogJson_()).products.forEach(function (p) { if (p.id === id) product = p; });
+  if (!product) return { ok: false, error: 'bad_form' };
+  if (product.a) return { ok: true, instock: true };
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = ensureSubsSheet_();
+    var mine = 0, dup = false;
+    if (sheet.getLastRow() > 1) {
+      sheet.getRange(2, 1, sheet.getLastRow() - 1, SUB_HEADERS.length).getValues().forEach(function (row) {
+        if (String(row[1]).trim() !== uid || String(row[4]).trim() !== SUB_WAIT) return;
+        mine++;
+        if (String(row[2]).trim() === id) dup = true;
+      });
+    }
+    if (dup) return { ok: true, dup: true };
+    if (mine >= MAX_SUBS_PER_USER) return { ok: false, error: 'rate_limit' };
+    sheet.appendRow([new Date(), uid, id, body.lang === 'ru' ? 'ru' : 'ua', SUB_WAIT]);
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: true };
+}
+
+/** Пишет всем, кто ждал товар, который снова в наличии. Возвращает число отправленных сообщений. */
+function notifyBackInStock_() {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty('BOT_TOKEN');
+  var webapp = props.getProperty('WEBAPP_URL');
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SUBS);
+  if (!token || !sheet || sheet.getLastRow() < 2) return 0;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, SUB_HEADERS.length).getValues();
+  var waiting = values.some(function (row) { return String(row[4]).trim() === SUB_WAIT; });
+  if (!waiting) return 0;
+  var byId = {};
+  buildCatalog_().products.forEach(function (p) { byId[p.id] = p; });
+  var sent = 0;
+  for (var r = 0; r < values.length && sent < 60; r++) {
+    var row = values[r];
+    if (String(row[4]).trim() !== SUB_WAIT) continue;
+    var p = byId[String(row[2]).trim()];
+    if (!p || !p.a) continue;
+    var ru = String(row[3]).trim() === 'ru';
+    var msg = { chat_id: String(row[1]).trim(), text: (ru ? '✅ Снова в наличии: ' : '✅ Знову в наявності: ') + ((ru && p.ru) || p.ua) };
+    if (/^https:\/\//.test(webapp || '')) {
+      msg.reply_markup = { inline_keyboard: [[{ text: ru ? '🛒 Открыть товар' : '🛒 Відкрити товар',
+        web_app: { url: webapp + (webapp.indexOf('?') < 0 ? '?' : '&') + 'p=' + encodeURIComponent(p.id) } }]] };
+    }
+    var res = tg_(token, 'sendMessage', msg);
+    sheet.getRange(r + 2, 5).setValue(res.ok ? 'надіслано' : 'не доставлено');
+    sent++;
+  }
+  return sent;
+}
+
+function menuNotifyStock() {
+  var n = notifyBackInStock_();
+  SpreadsheetApp.getUi().alert('Надіслано повідомлень: ' + n + '.');
+}
+
+/* ------------------------------ Напоминание о повторном заказе ------------------------------ */
+
+/** Клиенты, которые нажали «Більше не нагадувати». */
+function reminderStops_() {
+  var stops = {};
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SUBS);
+  if (!sheet || sheet.getLastRow() < 2) return stops;
+  sheet.getRange(2, 1, sheet.getLastRow() - 1, SUB_HEADERS.length).getValues().forEach(function (row) {
+    if (String(row[2]).trim() === SUB_REMIND) stops[String(row[1]).trim()] = true;
+  });
+  return stops;
+}
+
+function stopReminders_(uid) {
+  if (!/^\d+$/.test(String(uid))) return;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    if (reminderStops_()[String(uid)]) return;
+    ensureSubsSheet_().appendRow([new Date(), String(uid), SUB_REMIND, '', 'стоп']);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Одно напоминание на один выполненный заказ: через remind_days дней, если после него клиент ничего не заказывал.
+ * Выключено, пока в настройках remind_days = 0. В сообщении есть кнопка «Більше не нагадувати».
+ */
+function remindRepeat_() {
+  var st = readSettings_();
+  var days = Math.round(toNum_(st.remind_days));
+  if (!(days >= 7)) return 0;
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty('BOT_TOKEN');
+  var webapp = props.getProperty('WEBAPP_URL');
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
+  if (!token || !/^https:\/\//.test(webapp || '') || !sheet || sheet.getLastRow() < 2) return 0;
+  var col = orderCols_(sheet);
+  if (col.uid < 0 || col.date < 0 || col.svc < 0) return 0;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  var last = {}; // uid → последняя по времени строка заказа
+  values.forEach(function (row, r) {
+    var uid = cell_(row, col.uid);
+    var date = row[col.date];
+    if (!uid || cell_(row, col.source).indexOf('test') >= 0) return;
+    if (Object.prototype.toString.call(date) !== '[object Date]' || isNaN(date.getTime())) return;
+    if (!last[uid] || date.getTime() > last[uid].time) last[uid] = { r: r, time: date.getTime(), row: row };
+  });
+  var stops = reminderStops_();
+  var now = Date.now(), day = 24 * 3600 * 1000, sent = 0;
+  Object.keys(last).forEach(function (uid) {
+    if (sent >= 30 || stops[uid]) return;
+    var x = last[uid];
+    var age = (now - x.time) / day;
+    if (cell_(x.row, col.status) !== 'виконано' || age < days || age >= days + 7) return;
+    var svc = {};
+    try { svc = JSON.parse(cell_(x.row, col.svc) || '{}') || {}; } catch (err) { svc = {}; }
+    if (svc.rm) return;
+    var ru = cell_(x.row, col.lang) === 'ru';
+    var res = tg_(token, 'sendMessage', {
+      chat_id: uid, text: ru ? st.remind_text_ru : st.remind_text_ua,
+      reply_markup: { inline_keyboard: [
+        [{ text: ru ? '🔁 Повторить заказ' : '🔁 Повторити замовлення', web_app: { url: webapp + (webapp.indexOf('?') < 0 ? '?' : '&') + 'view=orders' } }],
+        [{ text: ru ? 'Больше не напоминать' : 'Більше не нагадувати', callback_data: 'nr' }]
+      ] }
+    });
+    svc.rm = 1; // отмечаем в любом случае: второй попытки не будет
+    sheet.getRange(x.r + 2, col.svc + 1).setValue(JSON.stringify(svc));
+    if (res.ok) sent++;
+  });
+  return sent;
+}
+
+/** Раз в день (триггер из меню PAMIR): сообщения о появлении товаров и напоминания о повторном заказе. */
+function dailyJob() {
+  try { notifyBackInStock_(); } catch (err) { console.error('daily stock: ' + (err && err.stack || err)); }
+  try { remindRepeat_(); } catch (err) { console.error('daily remind: ' + (err && err.stack || err)); }
+}
+
+function menuDailyOff() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'dailyJob') ScriptApp.deleteTrigger(t);
+  });
+  try { SpreadsheetApp.getUi().alert('Щоденні повідомлення вимкнено.'); } catch (err) { /* запуск из редактора */ }
+}
+
+function menuDailyOn() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'dailyJob') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(11).create();
+  try {
+    SpreadsheetApp.getUi().alert('Готово. Щодня близько 11:00: повідомлення про появу товарів і (якщо в налаштуваннях задано remind_days) нагадування про повторне замовлення.');
+  } catch (err) { /* запуск из редактора */ }
 }
