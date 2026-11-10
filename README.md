@@ -335,3 +335,44 @@ BotFather ответит ссылкой `https://t.me/pamir_spices_bot/shop`. Э
 
 - `/admin` → «Замовлення» → «Статистика продажів»: цифры совпадают с листом «Замовлення».
 - В таблице появился лист «Статистика».
+
+
+## Этап 6: мгновенные кнопки через Cloudflare Worker
+
+С 10.11.2026 бот получает события (нажатия кнопок админа, сообщения) не опросом раз в минуту, а через webhook. Кнопки срабатывают за 1–3 секунды.
+
+```
+Telegram → Cloudflare Worker (pamir-bot.pochoev2306.workers.dev) → Apps Script → таблица
+```
+
+Напрямую к Apps Script webhook не работает: Apps Script отвечает редиректом 302, Telegram за ним не идёт и шлёт событие повторно. Worker сразу отвечает Telegram «ок» и пересылает событие в Apps Script.
+
+### Что где лежит
+
+| Что | Где |
+|---|---|
+| Код Worker | `worker/worker.js` (копия того, что в Cloudflare → Workers & Pages → pamir-bot → Edit code) |
+| `GAS_URL`, `WEBHOOK_SECRET` | Cloudflare → pamir-bot → Settings → Variables and secrets (тип Secret) |
+| `WEBHOOK_SECRET` | также Script Properties в Apps Script и параметр `secret_token` в ссылке `setWebhook` |
+
+Секретов в репозитории нет и быть не должно.
+
+### Правила
+
+- **Не запускайте `startPolling()`.** Она удаляет webhook, и бот замолчит. Если это случилось, заново откройте ссылку `setWebhook` (хранится в менеджере паролей).
+- После любой правки `Code.gs`: Управление развертываниями → карандаш → Новая версия. URL не меняется, Worker трогать не нужно.
+- `WEBHOOK_SECRET` меняется сразу в трёх местах: Cloudflare, Script Properties, ссылка `setWebhook`. Если значения разойдутся, бот молчит без видимой ошибки.
+
+### Если бот молчит
+
+Проверять по порядку:
+
+1. `https://api.telegram.org/bot<ТОКЕН>/getWebhookInfo`: адрес должен быть адресом Worker, смотрите поле `last_error_message`.
+2. Apps Script → Выполнения: есть ли вызовы `doPost` и ошибки в них.
+3. Cloudflare → pamir-bot → Logs: доходят ли запросы от Telegram (403 значит не совпал секрет).
+
+## Резервные копии
+
+- Код: этот репозиторий. Снимки рабочих версий — во вкладке Releases (`v1.0` — 10.11.2026).
+- Таблица: раз в неделю Файл → Создать копию (вместе с таблицей копируется и скрипт).
+- Секреты (`BOT_TOKEN`, `WEBHOOK_SECRET`, ссылка `setWebhook`, свойства скрипта): только в менеджере паролей.
