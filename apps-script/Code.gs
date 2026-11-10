@@ -45,8 +45,20 @@ var PRODUCT_COLS = {
   whPrice: ['опт: ціна', 'опт ціна'],
   whMin:   ['опт: мін', 'опт мін'],
   p100:    ['ціна за 100 г'],
-  hidden:  ['приховати', 'прихован']
+  hidden:  ['приховати', 'прихован'],
+  badge:   ['бейдж', 'мітка'],
+  oldPrice: ['стара ціна']
 };
+
+/** Бейдж товара: в таблице пишется словом, витрина получает код. */
+var BADGE_UA = { 'new': 'новинка', hit: 'хіт', sale: 'знижка' };
+function badgeCode_(v) {
+  var s = String(v === null || v === undefined ? '' : v).trim().toLowerCase();
+  if (/^(нов|new)/.test(s)) return 'new';
+  if (/^(хіт|хит|hit|топ|top)/.test(s)) return 'hit';
+  if (/^(зниж|скид|акц|sale|%)/.test(s)) return 'sale';
+  return '';
+}
 
 var CATEGORY_COLS = {
   code:  ['код'],
@@ -122,6 +134,15 @@ function readShop_() {
     min: Math.max(0, Math.round(toNum_(st.min_order)))
   };
   if (st.notice_ua || st.notice_ru) shop.notice = { ua: st.notice_ua || st.notice_ru, ru: st.notice_ru || st.notice_ua };
+  // Блок «Наша курага» наверху каталога: товар и текст задаются в настройках.
+  var fid = String(st.feature_id || '').trim().toUpperCase();
+  if (fid) {
+    shop.feature = {
+      id: fid,
+      title: { ua: st.feature_title_ua || st.feature_title_ru, ru: st.feature_title_ru || st.feature_title_ua },
+      text:  { ua: st.feature_text_ua || st.feature_text_ru,   ru: st.feature_text_ru || st.feature_text_ua }
+    };
+  }
   return shop;
 }
 
@@ -230,6 +251,15 @@ function readProducts_(ss, categories) {
       var whMin = cell_(row, col.whMin);
       if (whMin) p.wm = whMin;
     }
+    // Бейдж и старая цена (в тех же единицах, что и цена: за 1 кг или за упаковку).
+    var badge = badgeCode_(cell_(row, col.badge));
+    var base = price.t === 'w' ? price.k : price.p;
+    var oldP = toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : '');
+    if (oldP > base && base > 0) {
+      p.o = Math.round(oldP * 100) / 100;
+      if (!badge) badge = 'sale';
+    }
+    if (badge) p.b = badge;
     products.push(p);
   }
   return products;
@@ -820,6 +850,22 @@ function handleMessage_(msg, token, props) {
     return;
   }
   var ru = String((msg.from && msg.from.language_code) || '').toLowerCase().indexOf('ru') === 0;
+  // Ссылка на товар: t.me/<бот>?start=DRY-039 → кнопка, которая открывает магазин сразу на этом товаре.
+  var deep = text.match(/^\/start(?:@\w+)?\s+([A-Za-zА-Яа-яІЇЄҐіїєґ0-9_-]{1,32})$/);
+  if (deep && /^https:\/\//.test(webappUrl || '')) {
+    var item = null;
+    try {
+      JSON.parse(getCatalogJson_()).products.forEach(function (p) { if (p.id.toLowerCase() === deep[1].toLowerCase()) item = p; });
+    } catch (err) { console.error('deep link: ' + err); }
+    if (item) {
+      tg_(token, 'sendMessage', {
+        chat_id: msg.chat.id, text: (ru && item.ru) || item.ua,
+        reply_markup: { inline_keyboard: [[{ text: ru ? '🛒 Открыть товар' : '🛒 Відкрити товар',
+          web_app: { url: webappUrl + (webappUrl.indexOf('?') < 0 ? '?' : '&') + 'p=' + encodeURIComponent(item.id) } }]] }
+      });
+      return;
+    }
+  }
   var settings = readSettings_();
   var payload = { chat_id: msg.chat.id, text: ru ? settings.greeting_ru : settings.greeting_ua };
   var webapp = props.getProperty('WEBAPP_URL');
@@ -1094,7 +1140,8 @@ function adminProduct_(row, col) {
     packs: cell_(row, col.packs), price: info.t === 'w' ? toNum_(col.pKg >= 0 ? row[col.pKg] : 0) : toNum_(col.pUnit >= 0 ? row[col.pUnit] : 0),
     stock: isInStock_(cell_(row, col.stock)) ? 1 : 0, hidden: isYes_(cell_(row, col.hidden)) ? 1 : 0,
     img: normalizePhoto_(cell_(row, col.photo)), dUa: cell_(row, col.descUa), dRu: cell_(row, col.descRu),
-    wh: toNum_(col.whPrice >= 0 ? row[col.whPrice] : 0), wm: cell_(row, col.whMin)
+    wh: toNum_(col.whPrice >= 0 ? row[col.whPrice] : 0), wm: cell_(row, col.whMin),
+    badge: badgeCode_(cell_(row, col.badge)), old: toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : 0)
   };
 }
 
@@ -1140,6 +1187,8 @@ function updateProduct_(id, patch, create) {
     if (patch.t !== undefined && !TYPE_UA[patch.t]) return { ok: false, error: 'bad_form' };
     if (patch.price !== undefined && !(Number(patch.price) >= 0 && Number(patch.price) < 1000000)) return { ok: false, error: 'bad_form' };
     if (patch.wh !== undefined && !(Number(patch.wh) >= 0 && Number(patch.wh) < 1000000)) return { ok: false, error: 'bad_form' };
+    if (patch.old !== undefined && !(Number(patch.old) >= 0 && Number(patch.old) < 1000000)) return { ok: false, error: 'bad_form' };
+    if (patch.badge !== undefined && patch.badge !== '' && !BADGE_UA[patch.badge]) return { ok: false, error: 'bad_form' };
     if (typeof patch.ua === 'string' && !clean_(patch.ua, 120)) return { ok: false, error: 'bad_form' };
     if (typeof patch.img === 'string' && patch.img && !/^https:\/\//i.test(patch.img)) return { ok: false, error: 'bad_form' };
 
@@ -1176,12 +1225,24 @@ function updateProduct_(id, patch, create) {
     if (typeof patch.img === 'string') set(col.photo, patch.img);
     if (patch.stock !== undefined) set(col.stock, patch.stock ? 'є' : 'немає');
     if (patch.wh !== undefined) set(col.whPrice, Number(patch.wh) > 0 ? Math.round(Number(patch.wh) * 100) / 100 : '');
-    if (patch.hidden !== undefined) {
-      if (col.hidden < 0) { // колонки «Приховати» ещё нет — добавляем в конец
-        col.hidden = sheet.getLastColumn();
-        sheet.getRange(1, col.hidden + 1).setValue('Приховати з вітрини');
+    // Колонки, которых в таблице ещё нет, добавляются в конец при первой записи.
+    function ensureCol(key, title) {
+      if (col[key] < 0) {
+        col[key] = sheet.getLastColumn();
+        sheet.getRange(1, col[key] + 1).setValue(title);
       }
+    }
+    if (patch.hidden !== undefined) {
+      ensureCol('hidden', 'Приховати з вітрини');
       set(col.hidden, patch.hidden ? 'так' : '');
+    }
+    if (patch.badge !== undefined && (patch.badge || col.badge >= 0)) {
+      ensureCol('badge', 'Бейдж');
+      set(col.badge, BADGE_UA[patch.badge] || '');
+    }
+    if (patch.old !== undefined && (Number(patch.old) > 0 || col.oldPrice >= 0)) {
+      ensureCol('oldPrice', 'Стара ціна');
+      set(col.oldPrice, Number(patch.old) > 0 ? Math.round(Number(patch.old) * 100) / 100 : '');
     }
     var isWeight = patch.t !== undefined ? patch.t === 'w'
       : priceInfo_(create ? '' : cell_(values[r], col.type), '', 0, 0).t === 'w';
@@ -1332,6 +1393,11 @@ var SETTINGS_DEF = [
   ['pay_card', 'Оплата переказом на картку', 'так'],
   ['pay_cod', 'Накладений платіж (Нова пошта)', 'так'],
   ['min_order', 'Мінімальна сума замовлення, ₴ (0 — без обмеження)', '0'],
+  ['feature_id', 'Блок угорі каталогу: ID товару (наприклад DRY-039). Порожньо — без блоку', ''],
+  ['feature_title_ua', 'Блок угорі каталогу: заголовок (UA)', 'Наша курага'],
+  ['feature_title_ru', 'Блок вверху каталога: заголовок (RU)', 'Наша курага'],
+  ['feature_text_ua', 'Блок угорі каталогу: текст (UA)', 'З родинного саду в Ісфарі. Сушена на сонці, без сірки.'],
+  ['feature_text_ru', 'Блок вверху каталога: текст (RU)', 'Из семейного сада в Исфаре. Сушёная на солнце, без серы.'],
   ['greeting_ua', 'Привітання бота (UA)', 'Вітаємо! Це PAMIR: горіхи, сухофрукти та східні солодощі з Центрального ринку Харкова.\nВідкрийте магазин, зберіть кошик, а ми підтвердимо замовлення тут, у чаті.'],
   ['greeting_ru', 'Приветствие бота (RU)', 'Здравствуйте! Это PAMIR: орехи, сухофрукты и восточные сладости с Центрального рынка Харькова.\nОткройте магазин, соберите корзину, а мы подтвердим заказ здесь, в чате.'],
   ['confirm_ua', 'Текст клієнту після прийняття замовлення (UA)', 'Ми підтвердимо наявність і напишемо вам сюди.'],
@@ -1359,7 +1425,7 @@ function readSettings_() {
     });
   }
   // Пустой обязательный текст заменяем значением по умолчанию: бот не должен слать пустое сообщение.
-  SETTINGS_DEF.forEach(function (d) { if (!out[d[0]] && d[0].indexOf('notice_') !== 0 && d[0] !== 'min_order') out[d[0]] = d[2]; });
+  SETTINGS_DEF.forEach(function (d) { if (!out[d[0]] && d[0].indexOf('notice_') !== 0 && d[0] !== 'min_order' && d[0] !== 'feature_id') out[d[0]] = d[2]; });
   settingsMemo_ = out;
   return out;
 }
@@ -1377,6 +1443,7 @@ function saveSettings_(values) {
     if (values[k] === undefined) { next[k] = current[k]; return; }
     if (k.indexOf('pay_') === 0) next[k] = values[k] === true || isYes_(values[k]) ? 'так' : 'ні';
     else if (k === 'min_order') next[k] = String(Math.max(0, Math.min(100000, Math.round(toNum_(values[k])))));
+    else if (k === 'feature_id') next[k] = clean_(values[k], 20).toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9-]/g, '');
     else next[k] = multiline_(values[k], 500);
   });
   if (!isYes_(next.pay_cash) && !isYes_(next.pay_card)) return { ok: false, error: 'no_payment' };

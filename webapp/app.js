@@ -12,6 +12,11 @@
       toCart: 'У кошик',
       out: 'Немає в наявності',
       badgeIn: 'Є в наявності',
+      badgeNew: 'Новинка', badgeHit: 'Хіт', badgeSale: 'Знижка', featureCta: 'Обрати',
+      admBadge: 'Бейдж на картці', admBadgeNone: 'Без бейджа', admOld: 'Стара ціна, ₴ (буде закреслена)',
+      admOldHint: 'У тих самих одиницях, що й ціна. Порожньо — без знижки.',
+      admLink: 'Посилання на товар для постів', admLinkCopy: 'Скопіювати посилання', admLinkCopied: 'Посилання скопійовано',
+      admLinkFail: 'Не вдалося скопіювати. Виділіть посилання вручну.',
       badgeOut: 'Немає',
       per: 'за',
       perPiece: 'за шт',
@@ -115,6 +120,11 @@
       toCart: 'В корзину',
       out: 'Нет в наличии',
       badgeIn: 'В наличии',
+      badgeNew: 'Новинка', badgeHit: 'Хит', badgeSale: 'Скидка', featureCta: 'Выбрать',
+      admBadge: 'Бейдж на карточке', admBadgeNone: 'Без бейджа', admOld: 'Старая цена, ₴ (будет зачёркнута)',
+      admOldHint: 'В тех же единицах, что и цена. Пусто — без скидки.',
+      admLink: 'Ссылка на товар для постов', admLinkCopy: 'Скопировать ссылку', admLinkCopied: 'Ссылка скопирована',
+      admLinkFail: 'Не удалось скопировать. Выделите ссылку вручную.',
       badgeOut: 'Нет',
       per: 'за',
       perPiece: 'за шт',
@@ -323,10 +333,10 @@
   function cardPrice(p) {
     if (p.t === 'w') {
       if (!(p.k > 0)) return null;
-      return { price: Math.round(p.k * 100 / 1000), unit: t('per') + ' ' + weight(100) };
+      return { price: Math.round(p.k * 100 / 1000), old: p.o > p.k ? Math.round(p.o * 100 / 1000) : 0, unit: t('per') + ' ' + weight(100) };
     }
     if (!(p.p > 0)) return null;
-    return { price: p.p, unit: p.t === 'p' && p.pk ? t('per') + ' ' + p.pk.replace(/ /g, NBSP) : t('perPiece') };
+    return { price: p.p, old: p.o > p.p ? Math.round(p.o) : 0, unit: p.t === 'p' && p.pk ? t('per') + ' ' + p.pk.replace(/ /g, NBSP) : t('perPiece') };
   }
 
   /* ------------------------------ Тема, язык ------------------------------ */
@@ -371,6 +381,17 @@
     reconcileCart();
   }
 
+  /** Ссылка на товар: ?startapp=DRY-039 у Mini App или ?p=DRY-039 в адресе. Открываем один раз. */
+  var deepId = String((inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || params.get('p') || params.get('tgWebAppStartParam') || '').trim().toLowerCase();
+  function openDeepLink() {
+    if (!deepId || !state.catalog || state.view !== 'catalog') return;
+    var found = null;
+    state.catalog.products.forEach(function (p) { if (p.id.toLowerCase() === deepId) found = p; });
+    if (!found) return; // в сохранённой копии товара может не быть — попробуем ещё раз после свежей загрузки
+    deepId = '';
+    openSheet(found.id);
+  }
+
   function loadCatalog() {
     // 1) Мгновенно показываем сохранённую копию, 2) в фоне берём свежую.
     var cachedText = cfg.API_URL ? store.get(CACHE_KEY) : null;
@@ -382,6 +403,7 @@
     }
     if (!state.catalog) state.status = 'loading';
     renderAll();
+    openDeepLink();
 
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 20000);
@@ -403,6 +425,8 @@
           setCatalog(data);
           renderAll();
         }
+        openDeepLink();
+        deepId = '';
       })
       .catch(function () {
         clearTimeout(timer);
@@ -483,9 +507,36 @@
       : '<span class="badge badge--out">' + esc(t('badgeOut')) + '</span>';
   }
 
+  var PROMO = { 'new': 'badgeNew', hit: 'badgeHit', sale: 'badgeSale' };
+  /** Бейдж «Новинка / Хіт / Знижка»; у товара, которого нет, не показываем. */
+  function promoHtml(p) {
+    return p.a && PROMO[p.b] ? '<span class="badge promo promo--' + p.b + '">' + esc(t(PROMO[p.b])) + '</span>' : '';
+  }
+  function priceHtml(cp) {
+    return '<span class="price">' + money(cp.price) + '</span>' +
+      (cp.old ? '<s class="price-old">' + money(cp.old) + '</s>' : '') + '<span class="unit">' + esc(cp.unit) + '</span>';
+  }
+
+  /** Блок наверху каталога («Наша курага»): виден без поиска и фильтра, пока товар в наличии. */
+  function featureHtml() {
+    var f = shopInfo().feature;
+    if (!f || state.q.trim() || state.cat) return '';
+    var p = state.catalog.byId[f.id];
+    if (!p || !p.a) return '';
+    var ru = state.lang === 'ru';
+    var title = (ru ? f.title.ru : f.title.ua) || name(p);
+    var text = (ru ? f.text.ru : f.text.ua) || '';
+    var cp = cardPrice(p);
+    return '<article class="feature card" data-id="' + esc(p.id) + '"><div class="feature__img card__img">' + photoHtml(p) + '</div>' +
+      '<div class="feature__body"><h2 class="feature__title">' + esc(title) + '</h2>' +
+      (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') +
+      '<div class="feature__foot"><div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
+      '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
+  }
+
   function cardHtml(p) {
     var cp = cardPrice(p);
-    var meta = cp ? '<span class="price">' + money(cp.price) + '</span><span class="unit">' + esc(cp.unit) + '</span>' : '';
+    var meta = cp ? priceHtml(cp) : '';
     var inCart = p.a ? cartQty(p.id) : 0;
     var btn = inCart
       ? '<button type="button" class="btn btn--soft btn--block">' + esc(t('inCart')) + ' · ' + inCart + '</button>'
@@ -493,7 +544,7 @@
       ? '<button type="button" class="btn btn--primary btn--block"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>' + esc(t('toCart')) + '</button>'
       : '<button type="button" class="btn btn--block" disabled>' + esc(t('out')) + '</button>';
     return '<article class="card' + (p.a ? '' : ' card--out') + '" data-id="' + esc(p.id) + '">' +
-      '<div class="card__img">' + photoHtml(p) + badgeHtml(p) + '</div>' +
+      '<div class="card__img">' + photoHtml(p) + badgeHtml(p) + promoHtml(p) + '</div>' +
       '<h2 class="card__name">' + esc(name(p)) + '</h2>' +
       '<div class="card__meta">' + meta + '</div>' + btn + '</article>';
   }
@@ -520,7 +571,7 @@
         '<button type="button" class="btn" data-action="reset">' + esc(t('reset')) + '</button></div>';
       return;
     }
-    el.main.innerHTML = '<div class="grid">' + list.map(cardHtml).join('') + '</div>';
+    el.main.innerHTML = featureHtml() + '<div class="grid">' + list.map(cardHtml).join('') + '</div>';
   }
 
   /* ------------------------------ Шторка товара ------------------------------ */
@@ -552,6 +603,14 @@
     return unit * qty;
   }
 
+  /** Сумма позиции по старой цене (для зачёркивания); 0 — скидки нет. */
+  function oldTotal(p, vi, qty) {
+    var base = p.t === 'w' ? p.k : p.p;
+    if (!(p.o > base)) return 0;
+    var unit = p.t === 'w' ? (p.v[vi] ? Math.round(p.o * p.v[vi][0] / 1000) : 0) : Math.round(p.o);
+    return unit * qty;
+  }
+
   function renderSheet() {
     var s = state.sheet;
     var p = state.catalog && state.catalog.byId[s.id];
@@ -559,10 +618,10 @@
     if (p.t === 'w' && s.vi >= p.v.length) s.vi = 0;
 
     var body = '<div class="sheet__img">' + photoHtml(p) + '</div>' +
-      '<div class="sheet__head">' + badgeHtml(p) +
+      '<div class="sheet__head"><div class="sheet__badges">' + badgeHtml(p) + promoHtml(p) + '</div>' +
       '<h2 class="sheet__title" id="sheetTitle">' + esc(name(p)) + '</h2>';
     if (p.t === 'w' && p.k > 0) {
-      body += '<p class="sheet__perkg">' + money(p.k) + ' ' + esc(t('per')) + ' ' + weight(1000) + '</p>';
+      body += '<p class="sheet__perkg">' + money(p.k) + (p.o > p.k ? ' <s class="price-old">' + money(p.o) + '</s>' : '') + ' ' + esc(t('per')) + ' ' + weight(1000) + '</p>';
     }
     body += '</div>';
 
@@ -584,7 +643,8 @@
         '<button type="button" data-step="-1" aria-label="' + esc(t('less')) + '"' + (s.qty <= 1 ? ' disabled' : '') + '>' + icon('minus') + '</button>' +
         '<output>' + s.qty + NBSP + esc(t('pcs')) + '</output>' +
         '<button type="button" data-step="1" aria-label="' + esc(t('more')) + '"' + (s.qty >= 99 ? ' disabled' : '') + '>' + icon('plus') + '</button>' +
-        '</div><span class="total">' + money(lineTotal(p, s.vi, s.qty)) + '</span></div>';
+        '</div><span class="total">' + (oldTotal(p, s.vi, s.qty) ? '<s class="price-old">' + money(oldTotal(p, s.vi, s.qty)) + '</s> ' : '') +
+        money(lineTotal(p, s.vi, s.qty)) + '</span></div>';
     } else {
       body += '<p class="note note--out">' + esc(t('outNote')) + '</p>';
     }
@@ -1340,7 +1400,7 @@
   function productFormHtml() {
     var isNew = adm.edit === '+';
     var p = isNew
-      ? { id: '', cat: adm.cats && adm.cats[0] ? adm.cats[0].ua : '', t: 'w', ua: '', ru: '', packs: '100 г / 250 г / 500 г / 1 кг', price: '', stock: 1, hidden: 0, img: '', dUa: '', dRu: '', wh: '', wm: '' }
+      ? { id: '', cat: adm.cats && adm.cats[0] ? adm.cats[0].ua : '', t: 'w', ua: '', ru: '', packs: '100 г / 250 г / 500 г / 1 кг', price: '', stock: 1, hidden: 0, img: '', dUa: '', dRu: '', wh: '', wm: '', badge: '', old: '' }
       : adminProduct(adm.edit);
     if (!p) return '';
     var cats = (adm.cats || []).map(function (c) { return [c.ua, c.ua]; });
@@ -1358,11 +1418,31 @@
       fRow('ua', t('admNameUa'), p.ua, 'type="text" maxlength="120"') +
       fRow('ru', t('admNameRu'), p.ru, 'type="text" maxlength="120"') +
       fRow('price', t('admPrice'), p.price || '', 'type="text" inputmode="decimal" maxlength="9"', t('admPriceHint')) +
+      fRow('old', t('admOld'), p.old || '', 'type="text" inputmode="decimal" maxlength="9"', t('admOldHint')) +
+      fSelect('badge', t('admBadge'), p.badge || '', [['', t('admBadgeNone')], ['new', t('badgeNew')], ['hit', t('badgeHit')], ['sale', t('badgeSale')]]) +
       fRow('packs', t('admPacks'), p.packs, 'type="text" maxlength="80"', t('admPacksHint')) +
       fArea('dUa', t('admDescUa'), p.dUa) + fArea('dRu', t('admDescRu'), p.dRu) +
       fRow('wh', t('admWh'), p.wh || '', 'type="text" inputmode="decimal" maxlength="9"') +
       fRow('wm', t('admWm'), p.wm, 'type="text" maxlength="40"') +
-      fCheck('stock', t('admStock'), p.stock) + fCheck('hidden', t('admHidden'), p.hidden) + saveBtn() + '</form>';
+      fCheck('stock', t('admStock'), p.stock) + fCheck('hidden', t('admHidden'), p.hidden) + saveBtn() +
+      (isNew ? '' : '<div class="field"><label class="label" for="a-link">' + esc(t('admLink')) + '</label>' +
+        '<input class="input" id="a-link" type="text" readonly value="' + esc(productLink(p.id)) + '">' +
+        '<button type="button" class="btn btn--block" data-action="adm-link">' + esc(t('admLinkCopy')) + '</button></div>') + '</form>';
+  }
+
+  /** Ссылка для постов. С привязанным Mini App (cfg.APP) открывает товар сразу, без него — через кнопку в чате бота. */
+  function productLink(id) {
+    var bot = 'https://t.me/' + (cfg.BOT || '');
+    return cfg.APP ? bot + '/' + cfg.APP + '?startapp=' + encodeURIComponent(id) : bot + '?start=' + encodeURIComponent(id);
+  }
+  function copyText(text, input) {
+    function fallback() {
+      try { input.focus(); input.select(); input.setSelectionRange(0, text.length); return document.execCommand('copy'); } catch (e) { return false; }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return fallback(); });
+    }
+    return Promise.resolve(fallback());
   }
 
   function saveProductForm() {
@@ -1370,9 +1450,9 @@
     var p = isNew ? null : adminProduct(adm.edit);
     if ((!isNew && !p) || adm.busy) return;
     var next = { cat: fVal('cat'), t: fVal('t'), ua: fVal('ua'), ru: fVal('ru'), packs: fVal('packs'), wm: fVal('wm'), dUa: fVal('dUa'), dRu: fVal('dRu'),
-      price: fNum('price'), wh: fNum('wh'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0 };
+      price: fNum('price'), wh: fNum('wh'), old: fNum('old'), badge: fVal('badge'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0 };
     if (!next.ua) { fErr('admErrName'); return; }
-    if (!(next.price >= 0) || !(next.wh >= 0)) { fErr('admErrPrice'); return; }
+    if (!(next.price >= 0) || !(next.wh >= 0) || !(next.old >= 0)) { fErr('admErrPrice'); return; }
     if (isNew) {
       next.stock = !!next.stock; next.hidden = !!next.hidden;
       adm.busy = true;
@@ -1504,6 +1584,7 @@
     return '<form class="form" id="admForm" novalidate>' + FORM_ERR + adm.settings.map(function (f) {
       if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
       if (f.k === 'min_order') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+      if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
       return fArea(f.k, f.label, f.v, 500);
     }).join('') + saveBtn() + '</form>';
   }
@@ -1576,6 +1657,11 @@
     if (name === 'adm-refresh') { loadAdmin(true); return true; }
     if (name === 'adm-save') {
       if (adm.edit) saveProductForm(); else if (adm.catEdit) saveCategoryForm(); else saveSettingsForm();
+      return true;
+    }
+    if (name === 'adm-link') {
+      var linkInput = document.getElementById('a-link');
+      if (linkInput) copyText(linkInput.value, linkInput).then(function (ok) { toast(t(ok ? 'admLinkCopied' : 'admLinkFail')); });
       return true;
     }
     if (name === 'adm-photo-del') {
