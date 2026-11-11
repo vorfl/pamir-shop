@@ -1002,3 +1002,24 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .mail__text { overflow-wrap: anywhere; }
 #mailForm .field .input + .input { margin-top: var(--space-2); }
 .confirm__text + .label, .sheet__body .mailpv { margin-top: 0; }
+
+/* ================= Этап 8, волна 2в ================= */
+/* ---------- В1. «Як їсти» и рецепты ---------- */
+.how { display: flex; flex-direction: column; gap: var(--space-1); }
+.how .label { margin: 0; }
+.how__text { margin: 0; white-space: pre-line; font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+.recs__list { display: flex; flex-direction: column; gap: var(--space-2); }
+.recs .recs__list { padding: 0; }
+.recs__item {
+  display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--tap); padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--ink);
+  font: inherit; font-size: 15px; line-height: 20px; font-weight: 700; text-align: left; overflow-wrap: anywhere;
+}
+.rec__p { margin: 0; font-size: 15px; line-height: 22px; overflow-wrap: anywhere; }
+
+/* ---------- В2. Квиз ---------- */
+.bizline--quiz { background: var(--apricot-soft); color: var(--on-apricot-soft); margin-bottom: var(--space-2); }
+.quiz__step { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+.quiz__q { margin: 0 0 var(--space-2); font-family: var(--font-display); font-size: 20px; line-height: 28px; font-weight: 600; overflow-wrap: anywhere; }
+.quiz__opts { display: flex; flex-direction: column; gap: var(--space-2); }
+.quiz__opt { min-height: 52px; font-size: 16px; }

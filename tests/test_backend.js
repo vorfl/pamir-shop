@@ -1265,5 +1265,122 @@ console.log('Волна 2б · Б1: рассылка');
   ok(g.sandbox.__errors.filter(e => !/обрив запуску/.test(e)).length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+/* ============================ Этап 8, волна 2в ============================ */
+console.log('Волна 2в · В1: «Як їсти» и рецепты');
+{
+  const g = fresh();
+  const P = g.sheets['Товари'].rows;
+  const cat0 = g.get({ action: 'catalog' });
+  ok(cat0.recipes === undefined && cat0.products.every(p => p.eu === undefined && p.tg === undefined), 'без листа «Рецепти» и колонок «Як їсти» в каталоге ничего нового нет');
+  ok(adm(g, 900, 'admin.products').products[0].eUa === '' && P[0].indexOf('Як їсти (UA)') < 0, 'панель работает и без новых колонок');
+  const made = g.call('setupWave2c');
+  ok(made.length === 4 && g.sheets['Рецепти'].rows.length === 1 && g.sheets['Рецепти'].rows[0].join('|') === 'ID|Назва (UA)|Название (RU)|Фото|Текст (UA)|Текст (RU)|Товари|Показувати' && P[0].indexOf('Теги') > 0,
+    'меню «Етап 8.4» создаёт пустой лист «Рецепти» и колонки «Як їсти», «Как есть», «Теги»', made);
+  ok(g.call('setupWave2c').length === 0 && g.get({ action: 'catalog' }).recipes === undefined, 'повторный запуск ничего не меняет; пустой лист рецептов на витрину не влияет');
+  // «Як їсти»
+  addAdmin(g, 840, 'manager', ['stock']);
+  ok(adm(g, 840, 'admin.product', { id: 'DRY-039', patch: { eUa: 'просто так' } }).error === 'no_perm', '«Як їсти» меняет только тот, у кого право «Тексти товарів»');
+  const sv = adm(g, 900, 'admin.product', { id: 'DRY-039', patch: { eUa: 'Просто так, до чаю.\nУ компот.', eRu: 'Просто так, к чаю.\nВ компот.', tags: ' До чаю, перекус; ДО ЧАЮ ' } });
+  ok(sv.ok && sv.product.eUa === 'Просто так, до чаю.\nУ компот.' && sv.product.tags === 'до чаю, перекус', '«Як їсти» и теги сохраняются из панели; теги приводятся к виду, без повторов', sv.product);
+  const p39 = g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039'), p1 = g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-001');
+  ok(p39.eu === 'Просто так, до чаю.\nУ компот.' && p39.er === 'Просто так, к чаю.\nВ компот.' && p39.tg.join() === 'до чаю,перекус' && p1.eu === undefined && p1.tg === undefined, 'в каталоге «Як їсти» и теги только у товара, где они заполнены', [p39.eu, p1.eu]);
+  // рецепты
+  const R = g.sheets['Рецепти'].rows;
+  R.push(['rec-1', 'Узвар з кураги', 'Узвар из кураги', 'https://img.test/uzvar.jpg', 'Промити курагу.\nВарити 15–20 хвилин.', '', 'dry-039, NUT-008, NOPE-1', 'так']);
+  R.push(['REC-2', 'Плов', 'Плов', 'AgACAgIAAxkBAAIBcGXfileIdExample123456', 'Текст плову', 'Текст плова', 'SPC-001;SPC-004', 'так']);
+  R.push(['REC-3', 'Прихований', '', '', 'Текст', '', 'DRY-039', 'ні']);
+  R.push(['REC-1', 'Дубль', '', '', 'Текст', '', '', 'так']);
+  R.push(['', 'Без ID', '', '', 'Текст', '', '', 'так']);
+  g.clearCache();
+  const rc = g.get({ action: 'catalog' }).recipes;
+  ok(rc.length === 2 && rc[0].id === 'REC-1' && rc[0].ua === 'Узвар з кураги' && rc[0].ru === 'Узвар из кураги' && rc[0].img === 'https://img.test/uzvar.jpg' && rc[0].tUa === 'Промити курагу.\nВарити 15–20 хвилин.' && rc[0].items.join() === 'DRY-039,NUT-008,NOPE-1',
+    'в каталоге только рецепты с «Показувати» = так, без дублей и строк без ID', rc);
+  ok(rc[1].id === 'REC-2' && rc[1].img === undefined && rc[1].fid === 1 && !/AgACAg/.test(JSON.stringify(rc)), 'код фото (file_id) на витрину не уходит — только отметка, что он есть');
+  ok(!/СЕКРЕТ|do-smaku|33%/.test(JSON.stringify(g.get({ action: 'catalog' }))), 'служебные колонки по-прежнему не уходят');
+  // шаблон «Рецепт» для рассылки
+  addAdmin(g, 841, 'manager', ['mail']);
+  ok(adm(g, 840, 'admin.recipePhoto', { id: 'REC-2' }).error === 'no_perm' && adm(g, 841, 'admin.recipePhoto', { id: 'rec-2' }).photo === 'AgACAgIAAxkBAAIBcGXfileIdExample123456' && adm(g, 841, 'admin.recipePhoto', { id: 'REC-9' }).photo === '', 'фото рецепта для рассылки получает только админ с правом «Розсилка»');
+  const ms = adm(g, 841, 'admin.mailSave', { ua: 'Рецепт: Плов', ru: '', photo: 'AgACAgIAAxkBAAIBcGXfileIdExample123456', btn: { k: 'rec', v: 'rec-2' }, seg: { k: 'all', v: '' } });
+  const b0 = g.sent.length;
+  adm(g, 841, 'admin.mailTest', { id: ms.mail.id });
+  const msg = g.sent.slice(b0).find(m => m.method === 'sendPhoto');
+  ok(ms.ok && ms.mail.btn.v === 'REC-2' && msg && /[?&]rec=REC-2/.test(msg.payload.reply_markup.inline_keyboard[0][0].web_app.url) && /Відкрити рецепт/.test(msg.payload.reply_markup.inline_keyboard[0][0].text), 'рассылка с кнопкой «Відкрити рецепт» и фото рецепта', msg && msg.payload);
+  ok(adm(g, 841, 'admin.mailSave', { ua: 'x', btn: { k: 'rec', v: '' }, seg: { k: 'all' } }).error === 'bad_form', 'кнопка «рецепт» без рецепта не принимается');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Волна 2в · В3: «Пригости друга»');
+{
+  const g = fresh();
+  const one = (uid, total, extra) => order(g, U(uid), [{ id: 'NUT-007', g: 0, q: total / 85 }], total, extra);
+  const giftLines = () => { const r = g.sheets['Замовлення'].rows.slice(-1)[0]; try { return JSON.parse(r[16]).g || []; } catch (e) { return []; } };
+  const I = () => (g.sheets['Запрошення'] ? g.sheets['Запрошення'].rows : []);
+  // выключено по умолчанию
+  const f = adm(g, 900, 'admin.settings').fields;
+  ok(f.find(x => x.k === 'referral_on').v === '0' && f.find(x => x.k === 'referral_gift_ua').v === '' && f.find(x => x.k === 'referral_min_order').v === '0', 'по умолчанию: referral_on = 0, пробник пустой');
+  ok(!g.get({ action: 'catalog' }).shop.ref, 'выключено — в каталоге ничего про приглашения нет');
+  const off = one(951, 85, { ref: '950000' });
+  ok(off.ok && (!off.gifts || !off.gifts.length) && !g.sheets['Запрошення'], 'выключено — заказ по ссылке друга ничего не даёт и ничего не записывает', off);
+  settings(g, { referral_on: '1' });
+  ok(!g.get({ action: 'catalog' }).shop.ref, 'включено, но пробник не задан — функции по-прежнему нет');
+  settings(g, { referral_on: '0', referral_gift_ua: '50 г кураги' });
+  ok(!g.get({ action: 'catalog' }).shop.ref, 'пробник задан, но выключено — функции нет');
+  settings(g, { referral_on: 'так', referral_gift_ua: '50 г кураги', referral_min_order: '170' });
+  const sr = g.get({ action: 'catalog' }).shop.ref;
+  ok(sr && sr.min === 170 && sr.gift.ua === '50 г кураги' && sr.gift.ru === '50 г кураги' && g.sheets['Налаштування'].rows.find(r => r[0] === 'referral_on')[1] === '1', 'включено и пробник задан — функция работает', sr);
+  // пригласивший 960000 (у него уже есть заказ)
+  one(960000, 85);
+  ok(giftLines().length === 0, 'обычный заказ пригласившего — без пробника');
+  // новый клиент по ссылке
+  const low = one(961000, 85, { ref: '960000' });
+  ok(low.ok && (!low.gifts || !low.gifts.length) && I().length === 0, 'первый заказ меньше минимальной суммы: пробника нет, приглашение не засчитано', low);
+  const first = one(962000, 170, { ref: '960000', lang: 'ru' });
+  ok(first.ok && first.gifts.length === 1 && first.gifts[0] === 'Пробник по приглашению друга: 50 г кураги' && giftLines()[0] === 'Пробник за запрошенням друга: 50 г кураги', 'новый клиент по ссылке: пробник к первому заказу (клиенту — на его языке)', first.gifts);
+  ok(I().length === 2 && I()[1][1] === '960000' && I()[1][2] === '962000' && /^P-/.test(I()[1][3]) && I()[1][4] === '50 г кураги' && I()[1][5] === '', 'запись в листе «Запрошення»', I()[1]);
+  ok(/Пробник за запрошенням друга: 50 г кураги/.test(g.sent.filter(m => String(m.payload.chat_id) === '900' && /Замовлення P-/.test(m.payload.text || '')).pop().payload.text), 'в сообщении админу пометка о пробнике');
+  const second = one(962000, 170, { ref: '960000' });
+  ok(second.ok && (!second.gifts || !second.gifts.length) && I().length === 2, 'второй заказ того же клиента: пробник второй раз не даётся');
+  ok(!(one(961000, 170, { ref: '960000' }).gifts || []).length && I().length === 2, 'у клиента уже был заказ — по ссылке он не «новый»');
+  const self = one(963000, 170, { ref: '963000' });
+  ok(self.ok && (!self.gifts || !self.gifts.length) && I().length === 2, 'самоприглашение не работает', self);
+  ok(!(one(964000, 170, { ref: 'abc' }).gifts || []).length && !(one(965000, 170, { ref: '12' }).gifts || []).length && I().length === 2, 'мусор вместо id пригласившего игнорируется');
+  ok(!(g.post({ action: 'order', initData: g.initData(U(966000)), test: true, ref: '960000', items: [{ id: 'NUT-007', g: 0, q: 2 }], total: 170, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash' }).gifts || []).length && I().length === 2, 'тестовый заказ приглашением не считается');
+  one(967000, 170, { ref: '960000' });
+  ok(I().length === 3, 'второй приглашённый друг засчитан');
+  // пригласивший получает пробник к следующим заказам: по одному на заказ
+  const inv1 = one(960000, 85);
+  ok(inv1.gifts.length === 1 && inv1.gifts[0] === 'Пробник за запрошеного друга: 50 г кураги' && /^P-/.test(I()[1][5]) && I()[2][5] === '', 'пригласивший получил пробник к следующему заказу (минимальная сумма для него не нужна)', inv1.gifts);
+  const inv2 = one(960000, 85), inv3 = one(960000, 85);
+  ok(inv2.gifts.length === 1 && /^P-/.test(I()[2][5]) && (!inv3.gifts || !inv3.gifts.length), 'за второго друга — пробник к ещё одному заказу; дальше пробников нет', [inv2.gifts, inv3.gifts]);
+  ok(logRows(g, 'Запрошення: зараховано').length === 2 && logRows(g, 'Запрошення: пробник запросившому').length === 2, 'всё записано в «Журнал»');
+  // подарок от суммы и пробник складываются, сумма заказа не меняется
+  settings(g, { gift_from: '100', gift_text_ua: 'жменя родзинок' });
+  const both = one(968000, 170, { ref: '960000' });
+  ok(both.ok && both.gifts.length === 2 && g.sheets['Замовлення'].rows.slice(-1)[0][13] === 170, 'пробник не меняет сумму заказа и складывается с подарком от суммы', both.gifts);
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Часовой пояс: всё считается по Киеву, от пояса проекта не зависит');
+{
+  const g = fresh();
+  // полночь по Киеву сегодня — в виде момента времени
+  const kyivDay = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', dateStyle: 'short' }).format(new Date());
+  const midnight = g.call('kyivToMs_', kyivDay + 'T00:00');
+  ok(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' }).format(new Date(midnight)) === kyivDay + ' 00:00', 'полночь по Киеву вычисляется верно', new Date(midnight).toISOString());
+  const O = g.sheets['Замовлення'].rows;
+  const base = O[1].slice();
+  const add = (num, ms) => { const r = base.slice(); r[0] = num; r[1] = new Date(ms); r[2] = 'новий'; r[13] = 100; r[15] = 'miniapp'; O.push(r); };
+  const before = adm(g, 900, 'admin.orders').stats.today.n;
+  add('P-9001', midnight - 10 * 60000); // 23:50 вчера по Киеву
+  add('P-9002', midnight + 10 * 60000); // 00:10 сегодня по Киеву
+  const today = adm(g, 900, 'admin.orders');
+  ok(today.stats.today.n === before + 1, 'заказ в 23:50 по Киеву — вчерашний, в 00:10 — сегодняшний', [before, today.stats.today.n]);
+  const row = n => today.orders.find(o => o.num === n);
+  ok(row('P-9001').date.slice(6) === '23:50' && row('P-9002').date.slice(6) === '00:10' && row('P-9001').date.slice(0, 5) !== row('P-9002').date.slice(0, 5), 'в панели время заказов показано киевским, дата меняется в полночь по Киеву', [row('P-9001').date, row('P-9002').date]);
+  ok(g.call('saleEnd_', '31.12.2099', 'Europe/Berlin').day === '2099-12-31' && g.call('saleEnd_', '31.12.2099', 'Europe/Kiev').end === g.call('saleEnd_', '31.12.2099', 'Europe/Berlin').end, '«Акція до», записанная текстом, не зависит от часового пояса');
+  ok(!/getScriptTimeZone|getTimezoneOffset|\.getHours\(\)|toLocale/.test(require('fs').readFileSync(CODE, 'utf8')), 'в коде нет обращений к часовому поясу проекта (кроме часа ежедневного таймера)');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

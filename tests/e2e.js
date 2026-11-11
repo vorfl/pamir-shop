@@ -1480,6 +1480,215 @@ const smallTargets = page => page.evaluate(() => {
     await m.page.context().close(); st.server.close();
   }
 
+  /* ---------------- 8. Этап 8, волна 2в ---------------- */
+  console.log('Волна 2в · В1: «Як їсти» и рецепты');
+  {
+    const st = await start(8825, undefined, s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], head = rows[0];
+      head.push('Як їсти (UA)', 'Как есть (RU)');
+      rows.slice(1).forEach(r => { r.push('', ''); });
+      const row = rows.find(r => r[0] === 'DRY-039');
+      row[head.indexOf('Як їсти (UA)')] = 'Просто так, до чаю.\nУ компот.';
+      row[head.indexOf('Как есть (RU)')] = 'Просто так, к чаю.\nВ компот.';
+      s.sheets['Рецепти'] = [['ID', 'Назва (UA)', 'Название (RU)', 'Фото', 'Текст (UA)', 'Текст (RU)', 'Товари', 'Показувати'],
+        ['REC-1', 'Узвар з кураги', 'Узвар из кураги', 'https://img.test/uzvar.svg', 'Промити курагу.\nВарити 15–20 хвилин.', 'Промыть курагу.\nВарить 15–20 минут.', 'DRY-039, NUT-008, NUT-001, NOPE-1', 'так'],
+        ['REC-2', 'Прихований рецепт', '', '', 'Текст', '', 'DRY-039', 'ні']];
+    });
+    const g = st.gas;
+    const { page, errors } = await open(browser, st.url, { uid: 700 });
+    await page.waitForSelector('.recs');
+    ok(await count(page, '.recs__item') === 1 && /Узвар з кураги/.test(await text(page, '.recs')), 'на главной блок «Рецепти» только с показываемым рецептом');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'главная с рецептами: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.locator('.main .mini[data-id="DRY-039"]').first().click();
+    await page.waitForSelector('.sheet .how');
+    ok(/Як їсти/.test(await text(page, '.sheet .how')) && /Просто так, до чаю\.\nУ компот\./.test(await text(page, '.sheet .how__text')), 'блок «Як їсти» на странице товара', await text(page, '.sheet .how'));
+    ok(/Рецепти з цим товаром/.test(await text(page, '#sheet')) && await count(page, '.sheet [data-w1="rec"]') === 1, 'на странице товара ссылка на рецепт, где он есть (скрытый рецепт не показан)');
+    await page.screenshot({ path: OUT + '/83-how.png' });
+    await page.click('.sheet [data-w1="rec"]');
+    await page.waitForSelector('.rec__p');
+    ok(/Узвар з кураги/.test(await text(page, '.page__title')) && await count(page, '.rec__p') === 2 && await count(page, '.page .card') === 3 && await count(page, '.page .story__img') === 1, 'экран рецепта: название, фото, текст по абзацам, три товара (несуществующий пропущен)');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'экран рецепта: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/84-recipe.png', fullPage: true });
+    await page.click('[data-w1="rec-add"]');
+    await page.waitForSelector('.page .note');
+    const cartIds = () => page.evaluate(() => JSON.parse(localStorage.getItem('pamir_cart_v1')).i.map(l => l.id).sort().join());
+    ok(await cartIds() === 'DRY-039,NUT-001' && /Додано в кошик: 2\. Зараз немає в наявності: Пекан\./.test(await text(page, '.page .note')), '«Додати інгредієнти»: в корзине только товары «є», про остальные — сообщение', [await cartIds(), await text(page, '.page .note')]);
+    await page.click('[data-w1="rec-add"]');
+    ok(await cartIds() === 'DRY-039,NUT-001' && /немає в наявності: Пекан/.test(await text(page, '.page .note')) && !/Додано/.test(await text(page, '.page .note')), 'повторное нажатие не добавляет товары второй раз', await text(page, '.page .note'));
+    await page.evaluate(() => window.__tg.back.cb());
+    await page.waitForSelector('.recs');
+    ok(await page.evaluate(() => document.body.getAttribute('data-view')) === 'catalog', '«Назад» Telegram возвращает из рецепта в каталог');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close();
+    // товар без «Як їсти»: блока нет
+    const n = await open(browser, st.url, { uid: 701, start: 'NUT-002' });
+    await n.page.waitForSelector('.sheet__title');
+    ok(await count(n.page, '.sheet .how') === 0, 'у товара без «Як їсти» и рецептов блоков нет');
+    await n.page.context().close();
+    // RU, тёмная тема, ссылка из рассылки
+    const r = await open(browser, st.url, { uid: 702, lc: 'ru', theme: 'dark', query: '?rec=REC-1&m=M-0001' });
+    await r.page.waitForSelector('.rec__p');
+    ok(/Узвар из кураги/.test(await text(r.page, '.page__title')) && /Промыть курагу/.test(await text(r.page, '.rec__p')) && /Добавить ингредиенты в корзину/.test(await text(r.page, '[data-w1="rec-add"]')) && await noOverflow(r.page), 'RU, тёмная тема: ссылка ?rec= открывает рецепт на русском');
+    await r.page.screenshot({ path: OUT + '/85-recipe-dark.png' });
+    ok(r.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', r.errors);
+    await r.page.context().close();
+    // панель: шаблон «Рецепт» и поля товара
+    const a = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await a.page.waitForSelector('.ord');
+    await a.page.locator('[data-tab="mail"]').click();
+    await a.page.waitForSelector('[data-mail-rec="REC-1"]');
+    await a.page.click('[data-mail-rec="REC-1"]');
+    await a.page.waitForSelector('#mailForm');
+    ok(/Рецепт: Узвар з кураги/.test(await a.page.inputValue('#m-ua')) && /Рецепт: Узвар из кураги/.test(await a.page.inputValue('#m-ru')) && await a.page.inputValue('#m-btnK') === 'rec' && await a.page.inputValue('#m-btnV') === 'REC-1' && await a.page.inputValue('#m-photo') === 'https://img.test/uzvar.svg',
+      'шаблон «Рецепт» одной кнопкой: тексты, фото и кнопка «Відкрити рецепт»', await a.page.inputValue('#m-ua'));
+    await a.page.click('[data-nav="back"]');
+    await a.page.locator('[data-tab="products"]').click();
+    await a.page.waitForSelector('.prod');
+    await a.page.fill('#admPQ', 'NUT-002');
+    await a.page.locator('[data-edit="NUT-002"]').click();
+    await a.page.waitForSelector('#a-eUa');
+    await a.page.fill('#a-eUa', 'До кави.');
+    await a.page.fill('#a-tags', 'Перекус, солоне');
+    await a.page.click('[data-action="adm-save"]');
+    await a.page.waitForSelector('.prod');
+    const saved = g.get({ action: 'catalog' }).products.find(p => p.id === 'NUT-002');
+    ok(saved.eu === 'До кави.' && saved.tg.join() === 'перекус,солоне', '«Як їсти» и теги вписываются в карточке товара в панели', saved);
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (админ)', a.errors);
+    await a.page.context().close(); st.server.close();
+  }
+
+  console.log('Волна 2в · В2: квиз');
+  {
+    const tagged = s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], head = rows[0];
+      head.push('Теги');
+      rows.slice(1).forEach(r => { r.push(''); });
+      const tag = (id, v) => { rows.find(r => r[0] === id)[head.indexOf('Теги')] = v; };
+      tag('DRY-039', 'До чаю, солодке'); tag('SWT-001', 'до чаю, солодке, подарунок'); tag('NUT-001', 'перекус, солоне'); tag('NUT-002', 'перекус, солоне');
+      tag('NUT-008', 'для плову'); // товара нет в наличии — его тег в вопросах не появляется
+    };
+    const st = await start(8826, undefined, tagged);
+    const { page, errors } = await open(browser, st.url, { uid: 710 });
+    await page.waitForSelector('.bizline--quiz');
+    ok(/Підібрати смаколики/.test(await text(page, '.bizline--quiz')) && await noOverflow(page) && (await smallTargets(page)).length === 0, 'на главной кнопка «Підібрати смаколики»', await smallTargets(page));
+    await page.click('.bizline--quiz');
+    await page.waitForSelector('.quiz__opt');
+    const opts = () => page.locator('.quiz__opt').allInnerTexts();
+    ok(/Питання 1 з 3/.test(await text(page, '.quiz__step')) && (await opts()).join('|') === 'До чаю|Перекус|Подарунок|Байдуже', 'вопрос 1: только те варианты, для которых есть товары в наличии', await opts());
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'квиз: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/86-quiz.png' });
+    await page.locator('.quiz__opt', { hasText: 'До чаю' }).click();
+    ok((await opts()).join('|') === 'Солодке|Солоне|Байдуже' && /Питання 2 з 3/.test(await text(page, '.quiz__step')), 'вопрос 2: солодке чи солоне', await opts());
+    await page.locator('.quiz__opt', { hasText: 'Солодке' }).click();
+    ok((await opts()).length === 3 && /Питання 3 з 3/.test(await text(page, '.quiz__step')), 'вопрос 3: бюджет');
+    await page.locator('.quiz__opt').last().click();
+    await page.waitForSelector('#quizGrid .card');
+    const ids = () => page.evaluate(() => [].map.call(document.querySelectorAll('#quizGrid .card'), c => c.getAttribute('data-id')).sort().join());
+    ok(await ids() === 'DRY-039,SWT-001' && /Ось що вам підійде/.test(await text(page, '.quiz__q')), 'результат: товары «є» с тегами «до чаю» и «солодке»', await ids());
+    ok(await count(page, '#quizGrid .card__act .btn') === 2 && (await smallTargets(page)).length === 0, 'у товаров кнопка «У кошик»');
+    await page.screenshot({ path: OUT + '/87-quiz-result.png' });
+    await page.locator('#quizGrid .card[data-id="DRY-039"] .card__name').click();
+    await page.waitForSelector('.sheet__title');
+    await page.click('[data-action="add"]');
+    await page.waitForSelector('#toast:not([hidden])');
+    ok(await page.evaluate(() => JSON.parse(localStorage.getItem('pamir_cart_v1')).i.length) === 1 && /У кошику/.test(await page.locator('#quizGrid .card[data-id="DRY-039"] .card__act').textContent()), 'товар из результата кладётся в корзину, карточка это помнит');
+    // нет совпадений → популярные, а не пустой экран
+    await page.click('[data-action="quiz-again"]');
+    await page.locator('.quiz__opt', { hasText: 'Перекус' }).click();
+    await page.locator('.quiz__opt', { hasText: 'Солодке' }).click();
+    await page.locator('.quiz__opt').last().click();
+    await page.waitForSelector('#quizGrid .card');
+    ok(/Точного збігу немає/.test(await text(page, '.quiz__q')) && await count(page, '#quizGrid .card') >= 3 && (await ids()).indexOf('DRY-039') >= 0, 'совпадений нет — показаны популярные товары', await ids());
+    // бюджет
+    await page.click('[data-action="quiz-again"]');
+    await page.locator('.quiz__opt', { hasText: 'Перекус' }).click();
+    await page.locator('.quiz__opt').last().click();
+    await page.locator('.quiz__opt').first().click(); // до 150 ₴: мигдаль 100 г = 56 ₴, кеш’ю 100 г = 64 ₴
+    await page.waitForSelector('#quizGrid .card');
+    ok(await ids() === 'NUT-001,NUT-002', 'бюджет сравнивается с ценой самой маленькой фасовки', await ids());
+    await page.evaluate(() => window.__tg.back.cb());
+    await page.waitForSelector('.bizline--quiz');
+    ok(await page.evaluate(() => document.body.getAttribute('data-view')) === 'catalog', '«Назад» Telegram возвращает из квиза в каталог');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close();
+    const r = await open(browser, st.url, { uid: 711, lc: 'ru', theme: 'dark', query: '?view=quiz' });
+    await r.page.waitForSelector('.quiz__opt');
+    ok(/Подобрать вкусности/.test(await text(r.page, '.page__title')) && (await r.page.locator('.quiz__opt').allInnerTexts()).join('|') === 'К чаю|Перекус|Подарок|Неважно' && await noOverflow(r.page), 'RU, тёмная тема: вопросы на русском');
+    await r.page.screenshot({ path: OUT + '/88-quiz-dark.png' });
+    ok(r.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', r.errors);
+    await r.page.context().close(); st.server.close();
+    // ни одного товара с тегами — квиз скрыт
+    const st2 = await start(8827, undefined, withPhotos);
+    const e = await open(browser, st2.url, { uid: 712 });
+    await e.page.waitForSelector('.card');
+    ok(await count(e.page, '.bizline--quiz') === 0 && await count(e.page, '.recs') === 0, 'без тегов квиза нет; без листа «Рецепти» блока рецептов нет');
+    await e.page.context().close();
+    const e2 = await open(browser, st2.url, { uid: 713, query: '?view=quiz' });
+    await e2.page.waitForSelector('.page__title');
+    ok(await count(e2.page, '.quiz__opt') === 0 && e2.errors.length === 0, 'прямая ссылка на квиз без тегов не ломает магазин', e2.errors);
+    await e2.page.context().close(); st2.server.close();
+  }
+
+  console.log('Волна 2в · В3: «Пригости друга»');
+  {
+    const st = await start(8828, undefined, s => {
+      withPhotos(s);
+      s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис'], ['referral_on', '1', ''], ['referral_gift_ua', '50 г кураги', ''], ['referral_gift_ru', '50 г кураги', ''], ['referral_min_order', '80', '']];
+    });
+    const g = st.gas;
+    // пригласивший: блок в профиле и своя ссылка
+    const a = await open(browser, st.url, { uid: 720000, query: '?view=orders' });
+    await a.page.waitForSelector('[data-w1="ref-share"]');
+    ok(/Пригости друга/.test(await text(a.page, '.page')) && /До першого замовлення від 80\s₴ він отримає пробник: 50 г кураги/.test(await text(a.page, '.refcard')), 'в профиле блок «Пригости друга» с условиями из настроек', await text(a.page, '.refcard'));
+    ok(await noOverflow(a.page) && (await smallTargets(a.page)).length === 0, 'профиль с блоком: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(a.page));
+    await a.page.screenshot({ path: OUT + '/89-referral.png', fullPage: true });
+    await a.page.click('[data-w1="ref-share"]');
+    const shared = await a.page.evaluate(() => (window.__tg.calls.filter(c => c[0] === 'openTelegramLink').pop() || [])[1] || '');
+    ok(shared.indexOf(encodeURIComponent('https://t.me/pamir_test_bot/shop?startapp=ref_720000')) >= 0, '«Поділитися посиланням»: личная ссылка ?startapp=ref_<id>', shared);
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (пригласивший)', a.errors);
+    await a.page.context().close();
+
+    // новый клиент пришёл по ссылке друга
+    const { page, errors } = await open(browser, st.url, { uid: 721000, start: 'ref_720000' });
+    await page.waitForSelector('.card');
+    ok(await page.evaluate(() => localStorage.getItem('pamir_ref')) === '720000' && await count(page, '.sheet:not([hidden])') === 0, 'ссылка друга запомнена; товар по ней не открывается');
+    await toCard(page, 'NUT-007');
+    await page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+    await page.click('.tabbar [data-go="cart"]');
+    await page.waitForSelector('.line');
+    ok(/Вас запросив друг: до першого замовлення від 80\s₴ — пробник \(50 г кураги\)/.test(await text(page, '.page')), 'в корзине подсказка о пробнике', await text(page, '.page'));
+    await page.evaluate(() => window.__tg.main.cb());
+    await page.waitForSelector('#f-phone');
+    await page.fill('#f-phone', '0501234567');
+    await page.evaluate(() => window.__tg.main.cb());
+    await page.waitForSelector('.done');
+    const sentOrder = st.log.filter(x => x.action === 'order').pop();
+    ok(sentOrder.ref === '720000' && /Пробник за запрошенням друга: 50 г кураги/.test(await text(page, '.page')), 'заказ ушёл с отметкой о приглашении; на экране «Замовлення прийнято» виден пробник', await text(page, '.page'));
+    ok(g.sheets['Запрошення'].rows.length === 2 && g.sheets['Запрошення'].rows[1][1] === '720000' && g.sheets['Запрошення'].rows[1][2] === '721000' && await page.evaluate(() => localStorage.getItem('pamir_ref')) === '', 'приглашение записано в лист «Запрошення»; после первого заказа ссылка забыта');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (новый клиент)', errors);
+    await page.context().close();
+    // сам себя пригласить нельзя
+    const s = await open(browser, st.url, { uid: 722000, start: 'ref_722000' });
+    await s.page.waitForSelector('.card');
+    ok(await s.page.evaluate(() => localStorage.getItem('pamir_ref')) === null, 'своя же ссылка не запоминается');
+    await s.page.context().close(); st.server.close();
+    // выключено по умолчанию: ни блока, ни подсказки, ни отметки в заказе
+    const st2 = await start(8829, undefined, withPhotos);
+    const o = await open(browser, st2.url, { uid: 723000, start: 'ref_720000', query: '?view=orders' });
+    await o.page.waitForSelector('.page__title');
+    await o.page.waitForTimeout(600);
+    ok(await count(o.page, '[data-w1="ref-share"]') === 0 && !/Пригости друга/.test(await text(o.page, '.page')), 'функция выключена по умолчанию: блока в профиле нет');
+    await o.page.click('.tabbar [data-go="catalog"]');
+    await toCard(o.page, 'NUT-007');
+    await o.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+    await o.page.click('.tabbar [data-go="cart"]');
+    await o.page.waitForSelector('.line');
+    ok(!/запросив друг/.test(await text(o.page, '.page')) && o.errors.length === 0, 'и подсказки в корзине нет');
+    await o.page.context().close(); st2.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);

@@ -534,6 +534,7 @@
   /** Ссылка на товар: ?startapp=DRY-039 у Mini App или ?p=DRY-039 в адресе. Открываем один раз. */
   var deepId = String((inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || params.get('p') || params.get('tgWebAppStartParam') || '').trim().toLowerCase();
   function openDeepLink() {
+    openStartRecipe();
     if (!deepId || !state.catalog || state.view !== 'catalog') return;
     var found = null;
     state.catalog.products.forEach(function (p) { if (p.id.toLowerCase() === deepId) found = p; });
@@ -895,7 +896,7 @@
     function perk(ico, text) { return '<p class="perk">' + icon(ico) + '<span>' + esc(text) + '</span></p>'; }
     if (s.gift) out += '<div id="homeGift" class="homegift">' + homeGiftHtml() + '</div>';
     if (s.loyal) out += perk('users', tf('loyalText', { k: s.loyal.every, g: ru ? s.loyal.ru : s.loyal.ua }));
-    return (out ? '<div class="perks">' + out + '</div>' : '') + bizBannerHtml();
+    return (out ? '<div class="perks">' + out + '</div>' : '') + quizBannerHtml() + bizBannerHtml();
   }
 
   /** Кнопка под карточкой. Штучный товар кладётся в корзину сразу; у весового сначала выбирают вес. */
@@ -978,7 +979,7 @@
       html += railHtml(t('secForYou'), '', two(forYou()));
     }
     html += railHtml(t('secSeen'), '', seen.map(product).filter(Boolean).slice(0, 10));
-    return html;
+    return html + recipesHomeHtml();
   }
 
   function skeletonHtml() {
@@ -1179,7 +1180,7 @@
 
     var d = desc(p);
     if (d) body += '<p class="sheet__desc">' + esc(d) + '</p>';
-    body += compHtml(p) + passportHtml(p);
+    body += howHtml(p) + compHtml(p) + passportHtml(p) + recipeLinksHtml(p);
 
     if (p.a) {
       if (p.t === 'w') {
@@ -1524,7 +1525,7 @@
     if (state.view === 'cart' && view !== 'cart') { ackPriceChanges(); state.cartNotice = ''; state.cartNoticeInfo = false; }
     if (view === 'checkout' && !(cartTotal() > 0)) view = 'cart';
     if (state.sheet) closeSheet();
-    if ((view === 'points' || view === 'story' || view === 'biz') && state.view !== view) state.back = state.view;
+    if (SUB_VIEWS[view] && state.view !== view && !SUB_VIEWS[state.view]) state.back = state.view; // экраны «второго уровня»: «Назад» возвращает туда, откуда пришли
     var changed = state.view !== view;
     state.view = view;
     document.body.setAttribute('data-view', view);
@@ -1554,7 +1555,7 @@
       if (reload) loadAdmin(false);
       return;
     }
-    if (state.view === 'points' || state.view === 'story' || state.view === 'biz') { go(state.back && state.back !== 'done' ? state.back : 'catalog'); return; }
+    if (SUB_VIEWS[state.view]) { go(state.back && state.back !== 'done' ? state.back : 'catalog'); return; }
     if (state.view !== 'catalog') go('catalog');
   }
 
@@ -1622,6 +1623,8 @@
     else if (state.view === 'points') el.page.innerHTML = pointsHtml();
     else if (state.view === 'story') el.page.innerHTML = storyHtml();
     else if (state.view === 'biz') el.page.innerHTML = bizHtml();
+    else if (state.view === 'recipe') el.page.innerHTML = recipeHtml();
+    else if (state.view === 'quiz') el.page.innerHTML = quizHtml();
     else el.page.innerHTML = '';
   }
 
@@ -1714,7 +1717,7 @@
     });
     html += '</ul>';
     if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
-    html += whCartHtml() + cartPerksHtml();
+    html += whCartHtml() + refCartHtml() + cartPerksHtml();
     html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
     html += railHtml(t('cartMore'), '', crossSell(), true);
     html += '<button type="button" class="btn btn--ghost btn--block" data-action="clear-cart">' + icon('trash-2') + esc(t('clearCart')) + '</button>';
@@ -1896,7 +1899,7 @@
       name: f.name, phone: f.phone.replace(/\s+/g, ''),
       delivery: f.delivery, city: f.delivery === 'np' ? f.city : '', branch: f.delivery === 'np' ? f.branch : '',
       npType: f.delivery === 'np' ? (f.npType || 'branch') : '', point: f.delivery === 'pickup' ? (f.point || '') : '',
-      pay: f.pay, comment: f.comment, lang: state.lang, total: cartTotal(),
+      pay: f.pay, comment: f.comment, lang: state.lang, total: cartTotal(), ref: refStored(),
       initData: inTelegram ? tg.initData : '', test: DEBUG
     };
   }
@@ -1975,7 +1978,7 @@
       state.done = { number: res.number || '', stub: !!res.stub, test: DEBUG && !res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay,
         npType: state.form.npType, point: state.form.delivery === 'pickup' && pointById(state.form.point) ? loc(pointById(state.form.point)) : '',
         gifts: Array.isArray(res.gifts) ? res.gifts : [] };
-      if (!res.stub) { store.set(HASORD_KEY, '1'); my.list = null; }
+      if (!res.stub) { store.set(HASORD_KEY, '1'); my.list = null; store.set(REF_KEY, ''); } // приглашение засчитывается только к первому заказу
       track('order', res.number || '', total);
       flushEvents(false);
       saveFormCloud();
@@ -2099,7 +2102,7 @@
     html += '<h3 class="sec">' + esc(t('ptsTitle')) + '</h3><button type="button" class="btn btn--block" data-w1="go" data-view="points">' + icon('pin') + esc(t('ptsBtn')) + '</button>' +
       (shop.story ? '<button type="button" class="btn btn--block" data-w1="go" data-view="story">' + icon('sprout') + esc(t('storyBtn')) + '</button>' : '') +
       (shop.contact ? '<button type="button" class="btn btn--block" data-w1="contact">' + esc(t('writeUs')) + '</button>' : '') +
-      (bizAvailable() ? '<button type="button" class="btn btn--block" data-w1="go" data-view="biz">' + esc(t('bizBtn')) + '</button>' : '');
+      (bizAvailable() ? '<button type="button" class="btn btn--block" data-w1="go" data-view="biz">' + esc(t('bizBtn')) + '</button>' : '') + refHtml();
     if (!points().length && (addr || hours)) {
       html += '<h3 class="sec">' + esc(t('meShop')) + '</h3><div class="facts facts--card">' +
         (addr ? '<p>' + icon('pin') + '<span>' + esc(addr) + '</span></p>' : '') +
@@ -2178,7 +2181,7 @@
   var STATUS_BTNS = [['c', 'stC', 'підтверджено'], ['n', 'stN', 'немає в наявності'], ['s', 'stS', 'відправлено'], ['d', 'stD', 'виконано']];
   var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats', 'cats'], ['settings', 'admSettings', 'settings'], ['reviews', 'admReviews', 'reviews'], ['wh', 'admWh', 'wh'], ['mail', 'admMail', 'mail'], ['admins', 'admAdmins', 'admins']];
   /** Какое право нужно, чтобы менять поле товара (то же самое проверяет сервер). */
-  var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
+  var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text', eUa: 'text', eRu: 'text', tags: 'text',
     price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', whn: 'price', packs: 'price', t: 'price' };
   var CAT_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
@@ -2557,6 +2560,8 @@
       fRow('wm', t('admWm'), p.wm, 'type="text" maxlength="40"', p.whn === undefined ? '' : t('admWmHint')) +
       (p.whn === undefined ? '' : fRow('whn', t('admWhn'), p.whn, 'type="text" inputmode="decimal" maxlength="8"', t('admWhnHint'))) +
       (p.cUa === undefined ? '' : fArea('cUa', t('admCompUa'), p.cUa, 400) + fArea('cRu', t('admCompRu'), p.cRu, 400)) +
+      (p.eUa === undefined ? '' : fArea('eUa', t('admHowUa'), p.eUa, 400) + fArea('eRu', t('admHowRu'), p.eRu, 400) +
+        fRow('tags', t('admTags'), p.tags, 'type="text" maxlength="200"', t('admTagsHint'))) +
       fCheck('stock', t('admStock'), p.stock) + fCheck('hidden', t('admHidden'), p.hidden) + saveBtn() +
       (isNew ? '' : '<div class="field"><label class="label" for="a-link">' + esc(t('admLink')) + '</label>' +
         '<input class="input" id="a-link" type="text" readonly value="' + esc(productLink(p.id)) + '">' +
@@ -2589,7 +2594,8 @@
       price: fNum('price'), wh: fNum('wh'), old: fNum('old'), badge: fVal('badge'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0,
       qty: fVal('qty').replace(/\s/g, ''), end: fVal('end') };
     if (document.getElementById('a-cUa')) { next.cUa = fVal('cUa'); next.cRu = fVal('cRu'); }
-    if (document.getElementById('a-whn')) next.whn = fVal('whn').replace(/\s/g, ''); // поля есть только с новым бэкендом
+    if (document.getElementById('a-whn')) next.whn = fVal('whn').replace(/\s/g, '');
+    if (document.getElementById('a-eUa')) { next.eUa = fVal('eUa'); next.eRu = fVal('eRu'); next.tags = fVal('tags'); } // поля есть только с новым бэкендом
     if (next.qty && !/^\d+([.,]\d+)?$/.test(next.qty)) { fErr('admErrPrice'); return; }
     if (!next.ua) { fErr('admErrName'); return; }
     if (!(next.price >= 0) || !(next.wh >= 0) || !(next.old >= 0)) { fErr('admErrPrice'); return; }
@@ -2866,6 +2872,8 @@
       if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
       if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
       if (/^(gift|loyal)_text_/.test(f.k)) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
+      if (f.k === 'referral_on' || f.k === 'referral_min_order' || f.k === 'mail_every_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+      if (f.k.indexOf('referral_gift') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
       if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
       if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
       return fArea(f.k, f.label, f.v, 500);
@@ -3011,7 +3019,7 @@
       if (goBtn) { go(goBtn.getAttribute('data-go')); return; }
       var lg = e.target.closest('button[data-lang]');
       if (lg) { setLang(lg.getAttribute('data-lang')); return; }
-      if ((state.view === 'fav' || state.view === 'cart') && productClick(e)) return;
+      if ((state.view === 'fav' || state.view === 'cart' || state.view === 'recipe' || state.view === 'quiz') && productClick(e)) return;
       var rep = e.target.closest('[data-repeat]');
       if (rep) { repeatOrder(rep.getAttribute('data-repeat')); return; }
       var myr = e.target.closest('[data-action="my-refresh"]');
@@ -3842,6 +3850,14 @@
       openUrl(b.getAttribute('data-url'));
     } else if (kind === 'contact') {
       openUrl(shopInfo().contact);
+    } else if (kind === 'ref-share') {
+      refShare(false);
+    } else if (kind === 'ref-copy') {
+      refShare(true);
+    } else if (kind === 'rec') {
+      openRecipe(b.getAttribute('data-id'));
+    } else if (kind === 'rec-add') {
+      recipeAdd(b.getAttribute('data-id'));
     } else if (kind === 'product') {
       go('catalog'); openSheet(b.getAttribute('data-pid'));
     } else if (kind === 'usual') {
@@ -4047,6 +4063,274 @@
     Object.keys(I18N_2B[lang]).forEach(function (k) { I18N[lang][k] = I18N_2B[lang][k]; });
   });
 
+  /* ======================================================================== */
+  /* ЭТАП 8, волна 2в: «Як їсти», рецепты, квиз, «Пригости друга»              */
+  /* ======================================================================== */
+  var I18N_2C = {
+    ua: {
+      howTitle: 'Як їсти', recTitle: 'Рецепти', recWith: 'Рецепти з цим товаром', recItems: 'Що знадобиться', recAdd: 'Додати інгредієнти в кошик', recOut: 'немає в наявності',
+      recAdded: 'Додано в кошик: {n}.', recAlready: 'Усі інгредієнти вже в кошику.', recMissing: 'Зараз немає в наявності: {list}.', recNone: 'Цих товарів зараз немає в наявності.',
+      recGone: 'Рецепт не знайдено.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для підбору', admTagsHint: 'Через кому: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      refTitle: 'Пригости друга', refText: 'Надішліть другові своє посилання. До першого замовлення він отримає пробник: {gift}. А ви — такий самий пробник до свого наступного замовлення.',
+      refTextMin: 'Надішліть другові своє посилання. До першого замовлення від {min} він отримає пробник: {gift}. А ви — такий самий пробник до свого наступного замовлення.',
+      refShare: 'Поділитися посиланням', refCopy: 'Скопіювати посилання', refCopied: 'Посилання скопійовано', refMsg: 'Пригощаю: PAMIR — горіхи та сухофрукти. За цим посиланням до першого замовлення дадуть пробник.',
+      refCart: 'Вас запросив друг: до першого замовлення — пробник ({gift}).', refCartMin: 'Вас запросив друг: до першого замовлення від {min} — пробник ({gift}).',
+      quizBtn: 'Підібрати смаколики', quizTitle: 'Підібрати смаколики', quizQ1: 'Для чого обираєте?', quizQ2: 'Солодке чи солоне?', quizQ3: 'Скільки готові витратити на одну позицію?',
+      quizAny: 'Байдуже', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без обмежень', quizStep: 'Питання {a} з {b}', quizResult: 'Ось що вам підійде', quizPopular: 'Точного збігу немає. Ось те, що зараз беруть найчастіше',
+      quizAgain: 'Підібрати ще раз', quizBack: 'Назад',
+      'tag_до чаю': 'До чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарунок', 'tag_солодке': 'Солодке', 'tag_солоне': 'Солоне', 'tag_для плову': 'Для плову', 'tag_для випічки': 'Для випічки',
+      mailBtn_rec: 'Відкрити рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Розсилка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
+    },
+    ru: {
+      howTitle: 'Как есть', recTitle: 'Рецепты', recWith: 'Рецепты с этим товаром', recItems: 'Что понадобится', recAdd: 'Добавить ингредиенты в корзину', recOut: 'нет в наличии',
+      recAdded: 'Добавлено в корзину: {n}.', recAlready: 'Все ингредиенты уже в корзине.', recMissing: 'Сейчас нет в наличии: {list}.', recNone: 'Этих товаров сейчас нет в наличии.',
+      recGone: 'Рецепт не найден.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для подбора', admTagsHint: 'Через запятую: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      refTitle: 'Угости друга', refText: 'Отправьте другу свою ссылку. К первому заказу он получит пробник: {gift}. А вы — такой же пробник к своему следующему заказу.',
+      refTextMin: 'Отправьте другу свою ссылку. К первому заказу от {min} он получит пробник: {gift}. А вы — такой же пробник к своему следующему заказу.',
+      refShare: 'Поделиться ссылкой', refCopy: 'Скопировать ссылку', refCopied: 'Ссылка скопирована', refMsg: 'Угощаю: PAMIR — орехи и сухофрукты. По этой ссылке к первому заказу дадут пробник.',
+      refCart: 'Вас пригласил друг: к первому заказу — пробник ({gift}).', refCartMin: 'Вас пригласил друг: к первому заказу от {min} — пробник ({gift}).',
+      quizBtn: 'Подобрать вкусности', quizTitle: 'Подобрать вкусности', quizQ1: 'Для чего выбираете?', quizQ2: 'Сладкое или солёное?', quizQ3: 'Сколько готовы потратить на одну позицию?',
+      quizAny: 'Неважно', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без ограничений', quizStep: 'Вопрос {a} из {b}', quizResult: 'Вот что вам подойдёт', quizPopular: 'Точного совпадения нет. Вот то, что сейчас берут чаще всего',
+      quizAgain: 'Подобрать ещё раз', quizBack: 'Назад',
+      'tag_до чаю': 'К чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарок', 'tag_солодке': 'Сладкое', 'tag_солоне': 'Солёное', 'tag_для плову': 'Для плова', 'tag_для випічки': 'Для выпечки',
+      mailBtn_rec: 'Открыть рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Рассылка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_2C[lang]).forEach(function (k) { I18N[lang][k] = I18N_2C[lang][k]; });
+  });
+  var SUB_VIEWS = { points: 1, story: 1, biz: 1, recipe: 1, quiz: 1 };
+
+  /* ---- В1. «Як їсти» и рецепты ---- */
+  function recipes() { return (state.catalog && Array.isArray(state.catalog.recipes)) ? state.catalog.recipes : []; }
+  function recipeById(id) { var found = null; recipes().forEach(function (r) { if (r.id === id) found = r; }); return found; }
+  function recName(r) { return state.lang === 'ru' && r.ru ? r.ru : r.ua; }
+  function recText(r) { return state.lang === 'ru' ? (r.tRu || r.tUa || '') : (r.tUa || r.tRu || ''); }
+  /** «Як їсти» в карточке товара — только если текст вписан в таблицу. */
+  function howHtml(p) {
+    var text = state.lang === 'ru' ? (p.er || p.eu) : (p.eu || p.er);
+    return text ? '<div class="how"><p class="label">' + esc(t('howTitle')) + '</p><p class="how__text">' + esc(text) + '</p></div>' : '';
+  }
+  /** Ссылки на рецепты, в которых есть этот товар. */
+  function recipeLinksHtml(p) {
+    var list = recipes().filter(function (r) { return (r.items || []).indexOf(p.id) >= 0; });
+    if (!list.length) return '';
+    return '<div class="how"><p class="label">' + esc(t('recWith')) + '</p>' + list.map(function (r) {
+      return '<button type="button" class="linkbtn" data-w1="rec" data-id="' + esc(r.id) + '">' + esc(recName(r)) + '</button>';
+    }).join('') + '</div>';
+  }
+  function recipesHomeHtml() {
+    var list = recipes();
+    if (!list.length) return '';
+    return '<section class="rail recs"><div class="rail__head"><h2 class="rail__title">' + esc(t('recTitle')) + '</h2></div><div class="recs__list">' + list.slice(0, 8).map(function (r) {
+      return '<button type="button" class="recs__item" data-w1="rec" data-id="' + esc(r.id) + '">' + icon('sprout') + '<span>' + esc(recName(r)) + '</span></button>';
+    }).join('') + '</div></section>';
+  }
+  var startRec = String(params.get('rec') || '').toUpperCase();
+  function openStartRecipe() { // ссылка ?rec=ID из рассылки: открываем один раз, когда каталог загружен
+    if (!startRec || !state.catalog) return;
+    var id = startRec;
+    if (recipeById(id)) { startRec = ''; openRecipe(id); }
+  }
+  function openRecipe(id) {
+    if (!recipeById(id)) return;
+    state.recipe = id; state.recipeNote = '';
+    go('recipe');
+    window.scrollTo(0, 0);
+  }
+  function recipeHtml() {
+    var r = recipeById(state.recipe);
+    var html = pageHead(r ? recName(r) : t('recTitle'));
+    if (!r) return html + '<p class="state__text adm__msg">' + esc(t('recGone')) + '</p>';
+    var items = (r.items || []).map(product).filter(Boolean);
+    html += (r.img ? '<img class="story__img" src="' + esc(r.img) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">' : '') +
+      (state.recipeNote ? '<p class="note note--opt" role="status">' + esc(state.recipeNote) + '</p>' : '') +
+      recText(r).split(/\n+/).filter(Boolean).map(function (line) { return '<p class="rec__p">' + esc(line) + '</p>'; }).join('');
+    if (items.length) {
+      html += '<h3 class="sec">' + esc(t('recItems')) + '</h3><div class="grid">' + items.map(function (p) { return cardHtml(p); }).join('') + '</div>' +
+        '<button type="button" class="btn btn--primary btn--block" data-w1="rec-add" data-id="' + esc(r.id) + '">' + icon('plus') + esc(t('recAdd')) + '</button>';
+    }
+    return html;
+  }
+  /** «Додати інгредієнти в кошик»: кладёт только товары, которые есть в наличии; про остальные — короткое сообщение. */
+  function recipeAdd(id) {
+    var r = recipeById(id);
+    if (!r) return;
+    var added = 0, had = 0, missing = [];
+    (r.items || []).forEach(function (pid) {
+      var p = product(pid);
+      if (!p) return;                       // товара нет в магазине совсем (архив) — молча пропускаем
+      if (!p.a) { missing.push(name(p)); return; }
+      if (cartQty(pid) > 0) { had++; return; }
+      var g = 0;
+      if (p.t === 'w') { // первая фасовка, которой хватает на складе
+        g = p.v[0] ? p.v[0][0] : 0;
+        for (var i = 0; i < p.v.length; i++) if (maxQty(p, p.v[i][0]) >= 1) { g = p.v[i][0]; break; }
+      }
+      var price = unitPrice(p, g);
+      if (!(price > 0) || maxQty(p, g) < 1) { missing.push(name(p)); return; }
+      state.cart.i.push({ id: pid, g: g, q: 1, pr: price });
+      added++;
+    });
+    var parts = [];
+    if (added) parts.push(tf('recAdded', { n: added })); else if (had && !missing.length) parts.push(t('recAlready'));
+    if (missing.length) parts.push(added || had ? tf('recMissing', { list: missing.join(', ') }) : t('recNone'));
+    state.recipeNote = parts.join(' ');
+    if (added) { saveCart(); haptic('success'); track('add', id, 'recipe'); } else haptic('error');
+    renderPage();
+    updateChrome();
+    if (added) toast(tf('recAdded', { n: added }), t('open'), function () { go('cart'); });
+  }
+  /* ---- В3. «Пригости друга» ---- */
+  /*
+   * Работает, только когда владелец включил функцию и задал пробник (тогда сервер присылает shop.ref).
+   * Пока выключено — ни блока, ни ссылок. Засчитывает приглашение сервер: один новый клиент — один раз, себя пригласить нельзя.
+   */
+  var REF_KEY = 'pamir_ref';
+  (function () { // пришли по ссылке друга ?startapp=ref_<id>: запоминаем до первого заказа
+    var m = String((inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || params.get('tgWebAppStartParam') || '').match(/^ref_(\d{5,15})$/);
+    if (m && tgUser && String(tgUser.id) !== m[1]) store.set(REF_KEY, m[1]);
+  })();
+  function refStored() {
+    var v = String(store.get(REF_KEY) || '');
+    return /^\d{5,15}$/.test(v) && shopInfo().ref ? v : '';
+  }
+  function refLink() {
+    return tgUser && cfg.BOT && cfg.APP ? 'https://t.me/' + cfg.BOT + '/' + cfg.APP + '?startapp=ref_' + tgUser.id : '';
+  }
+  function refHtml() {
+    var r = shopInfo().ref;
+    if (!r || !inTelegram || !refLink()) return '';
+    return '<h3 class="sec">' + esc(t('refTitle')) + '</h3><div class="bizcard refcard"><p class="bizcard__text">' +
+      esc(tf(r.min > 0 ? 'refTextMin' : 'refText', { gift: loc(r.gift), min: money(r.min) })) + '</p></div>' +
+      '<button type="button" class="btn btn--primary btn--block" data-w1="ref-share">' + esc(t('refShare')) + '</button>' +
+      '<button type="button" class="btn btn--block" data-w1="ref-copy">' + esc(t('refCopy')) + '</button>';
+  }
+  /** Подсказка в корзине тому, кого пригласили (пока он не сделал первый заказ). */
+  function refCartHtml() {
+    var r = shopInfo().ref;
+    if (!r || !refStored() || (my.list && my.list.length)) return '';
+    return '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf(r.min > 0 ? 'refCartMin' : 'refCart', { gift: loc(r.gift), min: money(r.min) })) + '</span></p>';
+  }
+  function refShare(copyOnly) {
+    var link = refLink();
+    if (!link) return;
+    if (copyOnly) {
+      var tmp = document.createElement('input');
+      tmp.value = link; tmp.setAttribute('readonly', ''); tmp.style.position = 'fixed'; tmp.style.opacity = '0';
+      document.body.appendChild(tmp);
+      copyText(link, tmp).then(function (ok) { document.body.removeChild(tmp); toast(t(ok ? 'refCopied' : 'admLinkFail')); });
+      return;
+    }
+    track('share', '', 'ref');
+    openTg('https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(t('refMsg')));
+  }
+  function openTg(url) {
+    try { tg.openTelegramLink(url); } catch (e) { window.open(url, '_blank'); }
+  }
+
+  /* ---- В2. Квиз «Підібрати смаколики» ---- */
+  /*
+   * Подбор идёт только по тегам из колонки «Теги» и по настоящим ценам. Нет ни одного товара в наличии с тегами — квиза нет.
+   * Нет совпадений — показываем популярное (по настоящим заказам), а не пустой экран.
+   */
+  var QUIZ_FOR = ['до чаю', 'перекус', 'подарунок', 'для плову', 'для випічки'];
+  var QUIZ_TASTE = ['солодке', 'солоне'];
+  var QUIZ_BUDGET = [150, 400, 0];
+  var quiz = { step: 0, purpose: '', taste: '', budget: 0 };
+  function quizTagSet() {
+    var set = {};
+    if (state.catalog) state.catalog.products.forEach(function (p) { if (p.a && Array.isArray(p.tg)) p.tg.forEach(function (x) { set[x] = 1; }); });
+    return set;
+  }
+  function quizOn() { return Object.keys(quizTagSet()).length > 0; }
+  function quizBannerHtml() {
+    if (!quizOn()) return '';
+    return '<button type="button" class="bizline bizline--quiz" data-w1="go" data-view="quiz">' + icon('gift') + '<span>' + esc(t('quizBtn')) + '</span></button>';
+  }
+  /** Самая маленькая цена, за которую товар можно купить: младшая фасовка у весового, упаковка или штука у остальных. */
+  function minPrice(p) {
+    if (p.t !== 'w') return p.p > 0 ? p.p : Infinity;
+    var m = Infinity;
+    (p.v || []).forEach(function (v) { if (v[1] > 0 && v[1] < m) m = v[1]; });
+    return m;
+  }
+  function quizPick() {
+    var list = state.catalog.products.filter(function (p) {
+      if (!p.a || !Array.isArray(p.tg)) return false;
+      if (quiz.purpose && p.tg.indexOf(quiz.purpose) < 0) return false;
+      if (quiz.taste && p.tg.indexOf(quiz.taste) < 0) return false;
+      return !(quiz.budget > 0) || minPrice(p) <= quiz.budget;
+    }).sort(function (a, b) { return (b.n || 0) - (a.n || 0); }).slice(0, 6);
+    if (list.length) return { list: list, exact: true };
+    var pop = popular(6).list; // точного совпадения нет — популярное по настоящим заказам, а не пустой экран
+    if (!pop.length) pop = state.catalog.products.filter(function (p) { return p.a; }).slice(0, 6);
+    return { list: pop, exact: false };
+  }
+  function quizHtml() {
+    var html = pageHead(t('quizTitle'));
+    if (!state.catalog || !quizOn()) return html + '<p class="state__text adm__msg">' + esc(t('emptyTitle')) + '</p><button type="button" class="btn btn--block" data-nav="catalog">' + esc(t('toCatalog')) + '</button>';
+    var have = quizTagSet();
+    function opts(values, labelOf) {
+      return '<div class="quiz__opts">' + values.map(function (v) {
+        return '<button type="button" class="btn btn--block quiz__opt" data-quiz="' + esc(String(v)) + '">' + esc(labelOf(v)) + '</button>';
+      }).join('') + '</div>';
+    }
+    var back = quiz.step > 0 ? '<button type="button" class="btn btn--ghost btn--block" data-action="quiz-back">' + esc(t('quizBack')) + '</button>' : '';
+    if (quiz.step === 0) {
+      return html + '<p class="quiz__step">' + esc(tf('quizStep', { a: 1, b: 3 })) + '</p><h3 class="quiz__q">' + esc(t('quizQ1')) + '</h3>' +
+        opts(QUIZ_FOR.filter(function (x) { return have[x]; }).concat(['']), function (v) { return v ? t('tag_' + v) : t('quizAny'); });
+    }
+    if (quiz.step === 1) {
+      return html + '<p class="quiz__step">' + esc(tf('quizStep', { a: 2, b: 3 })) + '</p><h3 class="quiz__q">' + esc(t('quizQ2')) + '</h3>' +
+        opts(QUIZ_TASTE.filter(function (x) { return have[x]; }).concat(['']), function (v) { return v ? t('tag_' + v) : t('quizAny'); }) + back;
+    }
+    if (quiz.step === 2) {
+      return html + '<p class="quiz__step">' + esc(tf('quizStep', { a: 3, b: 3 })) + '</p><h3 class="quiz__q">' + esc(t('quizQ3')) + '</h3>' +
+        opts(QUIZ_BUDGET, function (v) { return t(v === 150 ? 'quizB1' : v === 400 ? 'quizB2' : 'quizB3'); }) + back;
+    }
+    var res = quizPick();
+    return html + '<h3 class="quiz__q">' + esc(t(res.exact ? 'quizResult' : 'quizPopular')) + '</h3>' +
+      '<div class="grid" id="quizGrid">' + res.list.map(function (p) { return cardHtml(p); }).join('') + '</div>' +
+      '<button type="button" class="btn btn--block" data-action="quiz-again">' + esc(t('quizAgain')) + '</button>' +
+      '<button type="button" class="btn btn--ghost btn--block" data-nav="catalog">' + esc(t('toCatalog')) + '</button>';
+  }
+  el.page.addEventListener('click', function (e) {
+    if (state.view !== 'quiz') return;
+    var q = e.target.closest('[data-quiz]');
+    if (q) {
+      var v = q.getAttribute('data-quiz');
+      if (quiz.step === 0) quiz.purpose = v; else if (quiz.step === 1) quiz.taste = v; else quiz.budget = Number(v) || 0;
+      quiz.step++;
+      hapticSelect();
+      if (quiz.step === 3) track('search', '', 'quiz:' + [quiz.purpose, quiz.taste, quiz.budget].join('|'));
+      renderPage(); window.scrollTo(0, 0);
+      return;
+    }
+    var act = e.target.closest('[data-action]');
+    var kind = act ? act.getAttribute('data-action') : '';
+    if (kind === 'quiz-back') { quiz.step = Math.max(0, quiz.step - 1); renderPage(); window.scrollTo(0, 0); }
+    if (kind === 'quiz-again') { quiz = { step: 0, purpose: '', taste: '', budget: 0 }; renderPage(); window.scrollTo(0, 0); }
+  });
+
+  /* Панель: шаблон «Рецепт» для рассылки */
+  function mailRecipesHtml() {
+    var list = recipes();
+    if (!list.length) return '';
+    return '<p class="label">' + esc(t('mailRecTitle')) + '</p><div class="recs__list">' + list.slice(0, 12).map(function (r) {
+      return '<button type="button" class="btn btn--block" data-mail-rec="' + esc(r.id) + '">' + esc(tf('mailRecBtn', { name: r.ua })) + '</button>';
+    }).join('') + '</div>';
+  }
+  function mailFromRecipe(id, btn) {
+    var r = recipeById(id);
+    if (!r || adm.busy) return;
+    adm.busy = true; btnBusy(btn);
+    api('admin.recipePhoto', { id: id }).then(function (res) { return res && res.ok ? res.photo || '' : ''; }, function () { return ''; }).then(function (photo) {
+      adm.busy = false; btnFree(btn);
+      mailOpen({ ua: I18N.ua.mailRecUa.replace('{name}', r.ua), ru: I18N.ru.mailRecRu.replace('{name}', r.ru || r.ua), photo: photo, btn: { k: 'rec', v: r.id }, seg: { k: 'all', v: '' } });
+    });
+  }
+
   /* ---- Б1. Рассылка (панель) ---- */
   /*
    * Порядок жёсткий: текст → «Зберегти й надіслати тільки мені» → экран с числом получателей и точным текстом → отправка.
@@ -4070,6 +4354,7 @@
     var d = adm.mail || { mails: [] };
     var html = '<button type="button" class="btn btn--primary btn--block" data-action="mail-new">' + icon('plus') + esc(t('mailNew')) + '</button>' +
       (d.trigger ? '' : '<p class="info info__muted">' + esc(t('mailNoTrigger')) + '</p>');
+    html += mailRecipesHtml();
     if (!d.mails.length) return html + '<p class="state__text adm__msg">' + esc(t('mailEmpty')) + '</p>';
     return html + '<ul class="lines">' + d.mails.map(function (m) {
       var cls = m.status === 'завершена' ? 'badge--stock' : m.status === 'скасована' ? 'badge--out' : m.status === 'створена' ? '' : 'badge--opt';
@@ -4125,10 +4410,11 @@
       '<p class="field__hint">' + esc(t('mailLangHint')) + '</p></div>' +
       '<div class="field"><label class="label" for="m-photo">' + esc(t('mailPhoto')) + '</label><input class="input" id="m-photo" type="text" maxlength="200" autocomplete="off" value="' + esc(d.photo) + '">' +
       '<p class="field__hint">' + esc(t('mailPhotoHint')) + '</p></div>' +
-      '<div class="field"><label class="label" for="m-btnK">' + esc(t('mailBtn')) + '</label><select class="input" id="m-btnK">' + ['none', 'shop', 'prod', 'cat'].map(function (k) {
+      '<div class="field"><label class="label" for="m-btnK">' + esc(t('mailBtn')) + '</label><select class="input" id="m-btnK">' + ['none', 'shop', 'prod', 'cat'].concat(recipes().length ? ['rec'] : []).map(function (k) {
         return '<option value="' + k + '"' + (d.btnK === k ? ' selected' : '') + '>' + esc(t('mailBtn_' + k)) + '</option>'; }).join('') + '</select>' +
       (d.btnK === 'prod' ? '<input class="input" id="m-btnV" type="text" maxlength="40" autocapitalize="characters" autocomplete="off" placeholder="' + esc(t('mailBtnProd')) + '" aria-label="' + esc(t('mailBtnProd')) + '" value="' + esc(d.btnV) + '">' : '') +
-      (d.btnK === 'cat' ? catSelect('m-btnV', d.btnV) : '') + '</div>' +
+      (d.btnK === 'cat' ? catSelect('m-btnV', d.btnV) : '') +
+      (d.btnK === 'rec' ? '<select class="input" id="m-btnV">' + recipes().map(function (r) { return '<option value="' + esc(r.id) + '"' + (r.id === d.btnV ? ' selected' : '') + '>' + esc(r.ua) + '</option>'; }).join('') + '</select>' : '') + '</div>' +
       '<div class="field"><label class="label" for="m-segK">' + esc(t('mailSeg')) + '</label><select class="input" id="m-segK">' + ['all', 'cat', 'prod', 'idle', 'wh', 'sub'].map(function (k) {
         return '<option value="' + k + '"' + (d.segK === k ? ' selected' : '') + '>' + esc(t('mailSeg_' + k)) + '</option>'; }).join('') + '</select>' +
       (d.segK === 'prod' || d.segK === 'sub' ? '<input class="input" id="m-segV" type="text" maxlength="40" autocapitalize="characters" autocomplete="off" placeholder="' + esc(t('mailSegProd')) + '" aria-label="' + esc(t('mailSegProd')) + '" value="' + esc(d.segV) + '">' : '') +
@@ -4147,7 +4433,7 @@
     if (v('m-photo') !== null) d.photo = v('m-photo').trim();
     if (v('m-btnK') !== null) d.btnK = v('m-btnK');
     if (v('m-segK') !== null) d.segK = v('m-segK');
-    d.btnV = d.btnK === 'prod' || d.btnK === 'cat' ? (v('m-btnV') !== null ? v('m-btnV').trim().toUpperCase() : d.btnV) : '';
+    d.btnV = d.btnK === 'prod' || d.btnK === 'cat' || d.btnK === 'rec' ? (v('m-btnV') !== null ? v('m-btnV').trim().toUpperCase() : d.btnV) : '';
     d.segV = d.segK === 'prod' || d.segK === 'cat' || d.segK === 'sub' ? (v('m-segV') !== null ? v('m-segV').trim().toUpperCase() : d.segV) : '';
   }
   function mailFail(res, btn) {
@@ -4221,6 +4507,8 @@
     var cn = e.target.closest('[data-mail-cancel]');
     if (cn) { mailCancelAsk(cn.getAttribute('data-mail-cancel')); return true; }
     if (name === 'mail-new') { mailOpen({}); return true; }
+    var mr = e.target.closest('[data-mail-rec]');
+    if (mr) { if (!mr.disabled) mailFromRecipe(mr.getAttribute('data-mail-rec'), mr); return true; }
     if (name === 'mail-fresh') {
       var p = adminProduct(adm.edit);
       if (p) mailOpen({ ua: I18N.ua.mailFreshUa.replace('{name}', p.ua), ru: I18N.ru.mailFreshRu.replace('{name}', p.ru || p.ua), btn: { k: 'prod', v: p.id }, seg: { k: 'all', v: '' } });
@@ -4936,7 +5224,7 @@
   // Админу заказы подгружаются заранее, пока он смотрит магазин: панель открывается уже с данными, бэкенд к этому моменту «разогрет».
   if (adminHint && params.get('admin') !== '1') setTimeout(function () { if (state.view !== 'admin') prefetchAdmin('orders'); }, 1500);
   if (adminHint && params.get('admin') === '1') go('admin');
-  else if (/^(points|story|cart|biz)$/.test(params.get('view') || '')) go(params.get('view')); // кнопки в сообщениях бота
+  else if (/^(points|story|cart|biz|quiz)$/.test(params.get('view') || '')) go(params.get('view')); // кнопки в сообщениях бота
   else if (params.get('view') === 'orders') go('orders'); // кнопка «Повторити замовлення» в сообщении бота
   // Кнопка «Повторити звичне» в приветствии бота: последний заказ сразу ложится в корзину.
   if (params.get('repeat') === 'last' && inTelegram) {
