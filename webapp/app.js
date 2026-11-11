@@ -14,7 +14,7 @@
       out: 'Немає в наявності',
       badgeIn: 'Є в наявності',
       badgeNew: 'Новинка', badgeHit: 'Хіт', badgeSale: 'Знижка', featureCta: 'Обрати',
-      myOrders: 'Мої замовлення', myEmpty: 'Замовлень поки немає', myEmptyText: 'Після першого замовлення воно з’явиться тут.',
+      myOrders: 'Мої замовлення', myEmpty: 'Замовлень поки немає', myEmptyText: 'Коли з’являться — тут буде їхня історія та кнопка «Повторити».',
       myErr: 'Не вдалося завантажити замовлення. Спробуйте ще раз.', myTg: 'Свої замовлення видно, коли магазин відкрито в Telegram.',
       myRefresh: 'Оновити', repeat: 'Повторити замовлення', repeatOld: 'Це замовлення зроблено до оновлення: зберіть кошик заново.',
       repeatNone: 'Цих товарів зараз немає в наявності.',
@@ -53,8 +53,8 @@
       checkoutBtn: 'Оформити замовлення',
       confirmBtn: 'Підтвердити замовлення',
       back: 'Назад',
-      cartEmptyTitle: 'Кошик порожній',
-      cartEmptyText: 'Додайте товари з каталогу.',
+      cartEmptyTitle: 'Тут поки порожньо',
+      cartEmptyText: 'Почніть із кураги — вона з нашого саду.',
       toCatalog: 'Перейти до каталогу',
       remove: 'Видалити',
       total: 'Разом',
@@ -133,7 +133,7 @@
       out: 'Нет в наличии',
       badgeIn: 'В наличии',
       badgeNew: 'Новинка', badgeHit: 'Хит', badgeSale: 'Скидка', featureCta: 'Выбрать',
-      myOrders: 'Мои заказы', myEmpty: 'Заказов пока нет', myEmptyText: 'После первого заказа он появится здесь.',
+      myOrders: 'Мои заказы', myEmpty: 'Заказов пока нет', myEmptyText: 'Когда появятся — здесь будет их история и кнопка «Повторить».',
       myErr: 'Не удалось загрузить заказы. Попробуйте ещё раз.', myTg: 'Свои заказы видно, когда магазин открыт в Telegram.',
       myRefresh: 'Обновить', repeat: 'Повторить заказ', repeatOld: 'Этот заказ сделан до обновления: соберите корзину заново.',
       repeatNone: 'Этих товаров сейчас нет в наличии.',
@@ -172,8 +172,8 @@
       checkoutBtn: 'Оформить заказ',
       confirmBtn: 'Подтвердить заказ',
       back: 'Назад',
-      cartEmptyTitle: 'Корзина пуста',
-      cartEmptyText: 'Добавьте товары из каталога.',
+      cartEmptyTitle: 'Здесь пока пусто',
+      cartEmptyText: 'Начните с кураги — она из нашего сада.',
       toCatalog: 'Перейти в каталог',
       remove: 'Удалить',
       total: 'Итого',
@@ -273,7 +273,7 @@
   var I18N_MORE = {
     ua: {
       navHome: 'Каталог', navFav: 'Обране', navCart: 'Кошик', navMe: 'Профіль',
-      favTitle: 'Обране', favEmptyTitle: 'В обраному поки порожньо', favEmpty: 'Натисніть на сердечко біля товару, і він збережеться тут.',
+      favTitle: 'Обране', favEmptyTitle: 'В обраному поки порожньо', favEmpty: 'Зберігайте сюди те, що сподобалося, — наступного разу не доведеться шукати.',
       favAdd: 'Додати в обране', favDel: 'Прибрати з обраного', favAdded: 'Додано в обране', favRemoved: 'Прибрано з обраного',
       secAgain: 'Купити знову', secPop: 'Популярне', secPopSub: 'за замовленнями за 30 днів', secSale: 'Знижки', secNew: 'Новинки',
       secSets: 'Набори', secSeen: 'Ви дивилися', secForYou: 'Вам може сподобатися', secAll: 'Усі товари',
@@ -305,7 +305,7 @@
     },
     ru: {
       navHome: 'Каталог', navFav: 'Избранное', navCart: 'Корзина', navMe: 'Профиль',
-      favTitle: 'Избранное', favEmptyTitle: 'В избранном пока пусто', favEmpty: 'Нажмите на сердечко у товара, и он сохранится здесь.',
+      favTitle: 'Избранное', favEmptyTitle: 'В избранном пока пусто', favEmpty: 'Сохраняйте сюда то, что понравилось, — в следующий раз не придётся искать.',
       favAdd: 'Добавить в избранное', favDel: 'Убрать из избранного', favAdded: 'Добавлено в избранное', favRemoved: 'Убрано из избранного',
       secAgain: 'Купить снова', secPop: 'Популярное', secPopSub: 'по заказам за 30 дней', secSale: 'Скидки', secNew: 'Новинки',
       secSets: 'Наборы', secSeen: 'Вы смотрели', secForYou: 'Вам может понравиться', secAll: 'Все товары',
@@ -3339,7 +3339,7 @@
       rv1: 'відгук', rv2: 'відгуки', rv5: 'відгуків', rvOnly: 'Відгуки залишають лише покупці після отримання замовлення.',
       bulkSave: '{big} вигідніше на {pct} %, ніж {k} × {small}',
       usualTitle: 'Ваше звичне', usualSub: 'те, що ви берете найчастіше', usualAdd: 'Додати все', usualDone: 'Звичне додано в кошик',
-      emptyAsk: 'Не знайшли? Напишіть нам — підкажемо або привеземо.', writeUs: 'Написати нам',
+      emptyAsk: 'Напишіть нам — підкажемо, чи є це на прилавку.', writeUs: 'Написати нам',
       npBranch: 'Відділення', npLocker: 'Поштомат', npCourier: 'Кур’єр',
       fBranch_branch: '№ або адреса відділення', fBranch_locker: '№ поштомата', fBranch_courier: 'Адреса: вулиця, будинок, квартира',
       errAddr: 'Вкажіть адресу для кур’єра', ttn: 'ТТН', track: 'Відстежити', ttnPh: 'Номер ТТН', ttnSave: 'Зберегти ТТН', ttnBad: 'У номері ТТН має бути 10–20 цифр',
@@ -3359,7 +3359,7 @@
       rv1: 'отзыв', rv2: 'отзыва', rv5: 'отзывов', rvOnly: 'Отзывы оставляют только покупатели после получения заказа.',
       bulkSave: '{big} выгоднее на {pct} %, чем {k} × {small}',
       usualTitle: 'Ваше привычное', usualSub: 'то, что вы берёте чаще всего', usualAdd: 'Добавить всё', usualDone: 'Привычное добавлено в корзину',
-      emptyAsk: 'Не нашли? Напишите нам — подскажем или привезём.', writeUs: 'Написать нам',
+      emptyAsk: 'Напишите нам — подскажем, есть ли это на прилавке.', writeUs: 'Написать нам',
       npBranch: 'Отделение', npLocker: 'Почтомат', npCourier: 'Курьер',
       fBranch_branch: '№ или адрес отделения', fBranch_locker: '№ почтомата', fBranch_courier: 'Адрес: улица, дом, квартира',
       errAddr: 'Укажите адрес для курьера', ttn: 'ТТН', track: 'Отследить', ttnPh: 'Номер ТТН', ttnSave: 'Сохранить ТТН', ttnBad: 'В номере ТТН должно быть 10–20 цифр',
@@ -4070,7 +4070,7 @@
     ua: {
       howTitle: 'Як їсти', recTitle: 'Рецепти', recWith: 'Рецепти з цим товаром', recItems: 'Що знадобиться', recAdd: 'Додати інгредієнти в кошик', recOut: 'немає в наявності',
       recAdded: 'Додано в кошик: {n}.', recAlready: 'Усі інгредієнти вже в кошику.', recMissing: 'Зараз немає в наявності: {list}.', recNone: 'Цих товарів зараз немає в наявності.',
-      recGone: 'Рецепт не знайдено.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для підбору', admTagsHint: 'Через кому: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      recGone: 'Рецепт не знайдено.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для підбору', admTagsHint: 'Через кому: до чаю, перекус, подарунок, солодке, солоне, сніданок, випічка, для плову, до м’яса, суп, узвар, спеції батька',
       refTitle: 'Пригости друга', refText: 'Надішліть другові своє посилання. До першого замовлення він отримає пробник: {gift}. А ви — такий самий пробник до свого наступного замовлення.',
       refTextMin: 'Надішліть другові своє посилання. До першого замовлення від {min} він отримає пробник: {gift}. А ви — такий самий пробник до свого наступного замовлення.',
       refShare: 'Поділитися посиланням', refCopy: 'Скопіювати посилання', refCopied: 'Посилання скопійовано', refMsg: 'Пригощаю: PAMIR — горіхи та сухофрукти. За цим посиланням до першого замовлення дадуть пробник.',
@@ -4079,12 +4079,13 @@
       quizAny: 'Байдуже', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без обмежень', quizStep: 'Питання {a} з {b}', quizResult: 'Ось що вам підійде', quizPopular: 'Точного збігу немає. Ось те, що зараз беруть найчастіше',
       quizAgain: 'Підібрати ще раз', quizBack: 'Назад',
       'tag_до чаю': 'До чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарунок', 'tag_солодке': 'Солодке', 'tag_солоне': 'Солоне', 'tag_для плову': 'Для плову', 'tag_для випічки': 'Для випічки',
+      'tag_сніданок': 'На сніданок', 'tag_випічка': 'Для випічки', "tag_до м'яса": 'До м’яса', 'tag_суп': 'У суп', 'tag_узвар': 'На узвар', 'tag_спеції батька': 'Спеції від батька',
       mailBtn_rec: 'Відкрити рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Розсилка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
     },
     ru: {
       howTitle: 'Как есть', recTitle: 'Рецепты', recWith: 'Рецепты с этим товаром', recItems: 'Что понадобится', recAdd: 'Добавить ингредиенты в корзину', recOut: 'нет в наличии',
       recAdded: 'Добавлено в корзину: {n}.', recAlready: 'Все ингредиенты уже в корзине.', recMissing: 'Сейчас нет в наличии: {list}.', recNone: 'Этих товаров сейчас нет в наличии.',
-      recGone: 'Рецепт не найден.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для подбора', admTagsHint: 'Через запятую: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      recGone: 'Рецепт не найден.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для подбора', admTagsHint: 'Через запятую: до чаю, перекус, подарунок, солодке, солоне, сніданок, випічка, для плову, до м’яса, суп, узвар, спеції батька',
       refTitle: 'Угости друга', refText: 'Отправьте другу свою ссылку. К первому заказу он получит пробник: {gift}. А вы — такой же пробник к своему следующему заказу.',
       refTextMin: 'Отправьте другу свою ссылку. К первому заказу от {min} он получит пробник: {gift}. А вы — такой же пробник к своему следующему заказу.',
       refShare: 'Поделиться ссылкой', refCopy: 'Скопировать ссылку', refCopied: 'Ссылка скопирована', refMsg: 'Угощаю: PAMIR — орехи и сухофрукты. По этой ссылке к первому заказу дадут пробник.',
@@ -4093,6 +4094,7 @@
       quizAny: 'Неважно', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без ограничений', quizStep: 'Вопрос {a} из {b}', quizResult: 'Вот что вам подойдёт', quizPopular: 'Точного совпадения нет. Вот то, что сейчас берут чаще всего',
       quizAgain: 'Подобрать ещё раз', quizBack: 'Назад',
       'tag_до чаю': 'К чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарок', 'tag_солодке': 'Сладкое', 'tag_солоне': 'Солёное', 'tag_для плову': 'Для плова', 'tag_для випічки': 'Для выпечки',
+      'tag_сніданок': 'На завтрак', 'tag_випічка': 'Для выпечки', "tag_до м'яса": 'К мясу', 'tag_суп': 'В суп', 'tag_узвар': 'На компот', 'tag_спеції батька': 'Специи от отца',
       mailBtn_rec: 'Открыть рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Рассылка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
     }
   };
@@ -4102,7 +4104,15 @@
   var SUB_VIEWS = { points: 1, story: 1, biz: 1, recipe: 1, quiz: 1 };
 
   /* ---- В1. «Як їсти» и рецепты ---- */
-  function recipes() { return (state.catalog && Array.isArray(state.catalog.recipes)) ? state.catalog.recipes : []; }
+  /** Рецепт виден, только когда его главный ингредиент (первый в списке товаров) есть на витрине и в наличии. Рецепт без товаров виден всегда. */
+  function recipes() {
+    if (!state.catalog || !Array.isArray(state.catalog.recipes)) return [];
+    return state.catalog.recipes.filter(function (r) {
+      if (!r.items || !r.items.length) return true;
+      var main = product(r.items[0]);
+      return !!(main && main.a);
+    });
+  }
   function recipeById(id) { var found = null; recipes().forEach(function (r) { if (r.id === id) found = r; }); return found; }
   function recName(r) { return state.lang === 'ru' && r.ru ? r.ru : r.ua; }
   function recText(r) { return state.lang === 'ru' ? (r.tRu || r.tUa || '') : (r.tUa || r.tRu || ''); }
@@ -4234,13 +4244,15 @@
    * Подбор идёт только по тегам из колонки «Теги» и по настоящим ценам. Нет ни одного товара в наличии с тегами — квиза нет.
    * Нет совпадений — показываем популярное (по настоящим заказам), а не пустой экран.
    */
-  var QUIZ_FOR = ['до чаю', 'перекус', 'подарунок', 'для плову', 'для випічки'];
+  var QUIZ_FOR = ['до чаю', 'перекус', 'подарунок', 'сніданок', 'випічка', 'для випічки', 'для плову', "до м'яса", 'суп', 'узвар', 'спеції батька'];
+  /** Теги товара в одном виде: апостроф в «до м'яса» может быть набран по-разному. */
+  function tagsOf(p) { return Array.isArray(p.tg) ? p.tg.map(function (x) { return String(x).replace(/[’ʼ`]/g, "'"); }) : []; }
   var QUIZ_TASTE = ['солодке', 'солоне'];
   var QUIZ_BUDGET = [150, 400, 0];
   var quiz = { step: 0, purpose: '', taste: '', budget: 0 };
   function quizTagSet() {
     var set = {};
-    if (state.catalog) state.catalog.products.forEach(function (p) { if (p.a && Array.isArray(p.tg)) p.tg.forEach(function (x) { set[x] = 1; }); });
+    if (state.catalog) state.catalog.products.forEach(function (p) { if (p.a) tagsOf(p).forEach(function (x) { set[x] = 1; }); });
     return set;
   }
   function quizOn() { return Object.keys(quizTagSet()).length > 0; }
@@ -4257,9 +4269,10 @@
   }
   function quizPick() {
     var list = state.catalog.products.filter(function (p) {
-      if (!p.a || !Array.isArray(p.tg)) return false;
-      if (quiz.purpose && p.tg.indexOf(quiz.purpose) < 0) return false;
-      if (quiz.taste && p.tg.indexOf(quiz.taste) < 0) return false;
+      var tg = tagsOf(p);
+      if (!p.a || !tg.length) return false;
+      if (quiz.purpose && tg.indexOf(quiz.purpose) < 0) return false;
+      if (quiz.taste && tg.indexOf(quiz.taste) < 0) return false;
       return !(quiz.budget > 0) || minPrice(p) <= quiz.budget;
     }).sort(function (a, b) { return (b.n || 0) - (a.n || 0); }).slice(0, 6);
     if (list.length) return { list: list, exact: true };

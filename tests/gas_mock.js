@@ -32,6 +32,8 @@ class Range {
   }
   setValue(v) { this.s._op('write'); this.s._set(this.r, this.c, v); return this; }
   getFormula() { return ''; }
+  getFormulas() { const out = []; for (let i = 0; i < this.nr; i++) { const row = []; for (let j = 0; j < this.nc; j++) row.push(''); out.push(row); } return out; }
+  clearContent() { this.s._op('write'); for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) { const row = this.s.rows[this.r - 1 + i]; if (row && this.c - 1 + j < row.length) row[this.c - 1 + j] = ''; } return this; }
   setFontWeight() { return this; }
   setNumberFormat() { return this; }
 }
@@ -95,12 +97,18 @@ function createGas(codePath, seed) {
   const ss = {
     getSheetByName: n => sheets[n] || null,
     insertSheet: n => { sheets[n] = new Sheet(n, [], ops); return sheets[n]; },
-    getSpreadsheetTimeZone: () => 'Europe/Kiev'
+    getSpreadsheetTimeZone: () => 'Europe/Kiev',
+    // «Создать копию»: стенд запоминает имя и снимок всех листов на момент копии
+    copy: name => { copies.push({ name, sheets: JSON.parse(JSON.stringify(Object.fromEntries(Object.keys(sheets).map(k => [k, sheets[k].rows])))) }); return {}; }
   };
+  const copies = [];
+  const ui = { alerts: [], answer: 'YES', ButtonSet: { YES_NO: 'YES_NO' }, Button: { YES: 'YES', NO: 'NO' },
+    alert(...a) { ui.alerts.push(a.join(' | ')); return ui.answer; },
+    createMenu: () => { const m = { items: [], addItem: (t, fn) => { m.items.push([t, fn]); return m; }, addSeparator: () => m, addSubMenu: sub => { m.items.push(['>', sub]); return m; }, addToUi() { ui.menu = m; } }; return m; } };
   const sandbox = {
     console: { log() {}, warn() {}, error(...a) { sandbox.__errors.push(a.join(' ')); } },
     __errors: [],
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ({ alert() {}, createMenu: () => { const m = { addItem: () => m, addSeparator: () => m, addToUi() {} }; return m; } }) },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ui },
     CacheService: { getScriptCache: () => ({
       get: k => { op('cache'); return k in cache ? cache[k] : null; },
       put: (k, v) => { op('cache'); cache[k] = String(v); },
@@ -147,11 +155,17 @@ function createGas(codePath, seed) {
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(codePath, 'utf8'), sandbox, { filename: 'Code.gs' });
+  // В Apps Script все файлы проекта живут в одном пространстве имён: подгружаем остальные .gs из той же папки.
+  // seed.skipFiles — какие файлы не брать; seed.extraCode — код, который подставляется вместо них (например тестовые оптовые цены).
+  const dir = require('path').dirname(codePath);
+  fs.readdirSync(dir).filter(n => n.endsWith('.gs') && n !== require('path').basename(codePath) && !(seed.skipFiles || []).includes(n)).sort()
+    .forEach(n => vm.runInContext(fs.readFileSync(require('path').join(dir, n), 'utf8'), sandbox, { filename: n }));
+  (seed.extraCode || []).forEach((code, i) => vm.runInContext(code, sandbox, { filename: 'extra' + i + '.gs' }));
 
   function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; } if (typeof propsMemo_ !== "undefined") { propsMemo_ = null; logBuffer_ = null; perf_ = null; pointsMemo_ = null; } if (typeof whMapMemo_ !== "undefined") { whMapMemo_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
 
   return {
-    sandbox, sheets, props, cache, sent, triggers, ops,
+    sandbox, sheets, props, cache, sent, triggers, ops, copies, ui,
     resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); },
     setTelegramFail(v) { failTelegram = v; },
     clearCache() { Object.keys(cache).forEach(k => { delete cache[k]; }); },
