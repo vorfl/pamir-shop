@@ -18,6 +18,20 @@ const withPhotos = s => {
 };
 const text = (page, sel) => page.locator(sel).first().innerText();
 const count = (page, sel) => page.locator(sel).count();
+/** Листает страницы каталога, пока на экране не появится карточка товара id. */
+async function toCard(page, id) {
+  for (let i = 0; i < 30; i++) {
+    if (await page.locator('#grid .card[data-id="' + id + '"]').count()) return true;
+    const next = page.locator('.main .pager [data-page]').last();
+    if (!(await next.count()) || await next.isDisabled()) { // дошли до конца — начинаем с первой страницы
+      const first = page.locator('.main .pager [data-page="1"]').first();
+      if (i > 0 || !(await first.count())) return false;
+      await first.click();
+    } else await next.click();
+    await page.waitForTimeout(50);
+  }
+  return false;
+}
 const noOverflow = page => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
 /** Кнопки и поля на экране, у которых зона нажатия меньше 44 px (учитываем ::before, расширяющий зону). */
 const smallTargets = page => page.evaluate(() => {
@@ -37,7 +51,7 @@ const smallTargets = page => page.evaluate(() => {
 });
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] });
+  const browser = await chromium.launch({ channel: process.env.BROWSER_CHANNEL || undefined, executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] });
 
   /* ---------------- 1. Покупатель в Telegram: главная → товар → корзина → заказ ---------------- */
   console.log('Покупатель в Telegram (360 px, светлая тема)');
@@ -50,7 +64,7 @@ const smallTargets = page => page.evaluate(() => {
     const { page, errors } = await open(browser, st.url, { uid: 501 });
     const tg = fn => page.evaluate(fn);
 
-    ok(await count(page, '.card') === 30, 'первая порция каталога: 30 карточек', await count(page, '.card'));
+    ok(await count(page, '.card') === 20, 'первая страница каталога: 20 карточек', await count(page, '.card'));
     ok(await count(page, '.feature') === 1 && /Наша курага/.test(await text(page, '.feature__title')), 'блок «Наша курага» наверху');
     ok(await count(page, '.perk') === 2, 'подарок от суммы и подарок постоянным клиентам показаны на главной');
     const rails = await page.locator('.main .rail__title').allInnerTexts();
@@ -61,11 +75,17 @@ const smallTargets = page => page.evaluate(() => {
     ok(await tg(() => window.__tg.main.visible) === false, 'в каталоге нативная кнопка Telegram скрыта (корзина — в нижней навигации)');
     await page.screenshot({ path: OUT + '/10-home.png' });
 
-    // длинный каталог догружается при прокрутке
+    // длинный каталог листается страницами: автоподгрузки при прокрутке больше нет
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 38);
-    ok(true, 'остальные товары догрузились при прокрутке (38)');
+    await page.waitForTimeout(300);
+    ok(await count(page, '#grid .card') === 20 && await count(page, '#more') === 0, 'при прокрутке товары сами не подгружаются, кнопки «Показати ще» нет');
+    ok(/Товари 1–20 з 38/.test(await text(page, '.pager__range')), 'подпись над страницами: «Товари 1–20 з 38»', await text(page, '.pager__range'));
+    await page.click('.main .pager [data-page="2"]');
+    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 18);
+    ok(/Товари 21–38 з 38/.test(await text(page, '.pager__range')), 'вторая страница: остальные 18 товаров, «Товари 21–38 з 38»', await text(page, '.pager__range'));
     ok(await page.locator('#grid .card').last().evaluate(n => n.classList.contains('card--out')), 'товары, которых нет, стоят в конце списка');
+    await page.click('.main .pager [data-page="1"]');
+    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 20);
     await page.evaluate(() => window.scrollTo(0, 0));
 
     // поиск
@@ -80,7 +100,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(/Нічого не знайдено/.test(await text(page, '.state__title')) && await count(page, '.main .rail') === 1, 'пустой результат: подсказка и популярные товары');
     await page.locator('#search').blur();
     await page.click('#searchClear');
-    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 30);
+    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 20);
     ok(await page.locator('#recent').isVisible() === false || (await count(page, '#recent [data-recent]')) >= 0, 'поиск очищается крестиком');
     await page.locator('#search').blur();
 
@@ -103,7 +123,7 @@ const smallTargets = page => page.evaluate(() => {
     await page.click('[data-action="fil-reset"]');
     await page.click('.sheet__close');
     await page.click('.chip[data-cat=""]');
-    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 30);
+    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 20);
 
     // товар: шторка
     await page.locator('.main .rail .mini[data-id="DRY-039"]').first().click();
@@ -126,8 +146,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(/У кошику · 2/.test(await page.locator('.card[data-id="DRY-039"] .card__act').first().textContent()), 'карточка помнит, что товар в корзине');
 
     // быстрое добавление штучного товара прямо с карточки
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await page.waitForFunction(() => document.querySelectorAll('#grid .card').length === 38);
+    await toCard(page, 'NUT-007');
     const piece = page.locator('#grid .card[data-id="NUT-007"]');
     await piece.scrollIntoViewIfNeeded();
     await piece.locator('[data-quick="1"]').click();
@@ -136,6 +155,7 @@ const smallTargets = page => page.evaluate(() => {
     await piece.locator('[data-quick="-1"]').click();
     ok(await piece.locator('.step--card output').innerText() === '1', '«−» на карточке уменьшает количество');
     // остаток: чурчхелы всего 3
+    await toCard(page, 'SWT-004');
     const few = page.locator('#grid .card[data-id="SWT-004"]');
     await few.scrollIntoViewIfNeeded();
     ok(/Залишилось 3 шт/.test(await few.locator('.badge--low').innerText()), 'бейдж «Залишилось 3 шт» берётся из колонки «Залишок»');
@@ -143,6 +163,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(await few.locator('.step--card output').innerText() === '3' && await few.locator('[data-quick="1"]').isDisabled(), 'больше остатка в корзину не положить');
     for (let i = 0; i < 3; i++) await few.locator('[data-quick="-1"]').click();
     // товар, которого нет: подписка
+    await toCard(page, 'DRY-005');
     const out = page.locator('#grid .card[data-id="DRY-005"]');
     await out.scrollIntoViewIfNeeded();
     await out.locator('.card__name').click();
@@ -230,6 +251,9 @@ const smallTargets = page => page.evaluate(() => {
     ok(['open', 'view', 'add', 'cart', 'checkout', 'order', 'fav', 'share', 'search0', 'repeat', 'notify'].every(e => evs.includes(e)), 'аналитика: все ключевые события записаны', evs);
     const evCalls = st.log.filter(x => x.action === 'ev').length;
     ok(evCalls <= 4, 'события уходят пачками: запросов к серверу ' + evCalls);
+    // волна 2а, А5: открытие магазина и заказ записывают клиента в лист «Клієнти»
+    const clients = st.gas.sheets['Клієнти'] ? st.gas.sheets['Клієнти'].rows : [];
+    ok(clients.filter(r => String(r[0]) === '501').length === 1 && clients.find(r => String(r[0]) === '501')[2] === 'ua', 'покупатель записан в лист «Клієнти» одной строкой', clients);
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close(); st.server.close();
   }
@@ -293,7 +317,7 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForSelector('#a-gift_from');
     await page.fill('#a-gift_from', '700'); await page.fill('#a-gift_text_ua', 'жменя родзинок');
     await page.click('[data-action="adm-save"]');
-    await page.waitForFunction(() => /Збережено/.test(document.getElementById('toast').textContent));
+    await page.waitForSelector('[data-action="adm-save"].is-saved'); // «Збережено» — галочкой на самой кнопке (А1)
     ok(st.gas.get({ action: 'catalog' }).shop.gift.from === 700, 'подарок от суммы настраивается из панели');
     ok(st.log.filter(x => x.action === 'ev').length === 0 || st.gas.sheets['Події'].rows.length === 6, 'действия админа не попадают в аналитику');
     // Этап 8: админы с правами и журнал
@@ -359,11 +383,12 @@ const smallTargets = page => page.evaluate(() => {
   /* ---------------- 4. Обычный браузер (?debug=1) и старый бэкенд ---------------- */
   console.log('Новая витрина со СТАРЫМ бэкендом (пока Code.gs не обновлён) и режим ?debug=1');
   {
-    const oldCode = '/tmp/Code.old.gs';
-    fs.writeFileSync(oldCode, execSync('git show HEAD:apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+    // «Старый бэкенд» — Code.gs из main (то, что сейчас работает у клиентов). Другую версию можно задать через OLD_BACKEND_REF.
+    const oldCode = path.join(require('os').tmpdir(), 'Code.old.gs');
+    fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const st = await start(8814, oldCode, s => { s.props.ALLOW_TEST_ORDERS = '1'; });
     const { page, errors } = await open(browser, st.url, { uid: 0, query: '?debug=1' });
-    ok(await count(page, '.card') === 30 && /Тестовий режим/.test(await text(page, '#banner')), 'каталог со старого бэкенда загружается');
+    ok(await count(page, '.card') === 20 && /Тестовий режим/.test(await text(page, '#banner')), 'каталог со старого бэкенда загружается');
     await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
     await page.click('[data-action="add"]');
     await page.click('#toastBtn');
@@ -596,8 +621,436 @@ const smallTargets = page => page.evaluate(() => {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.card');
     await page.waitForFunction(() => !document.getElementById('banner').hidden);
-    ok(/Немає з’єднання/.test(await text(page, '#banner')) && await count(page, '.card') === 30, 'без связи показывается сохранённый каталог и предупреждение');
+    ok(/Немає з’єднання/.test(await text(page, '#banner')) && await count(page, '.card') === 20, 'без связи показывается сохранённый каталог и предупреждение');
     await page.context().close(); st.server.close();
+  }
+
+  /* ---------------- 6. Этап 8, волна 2а ---------------- */
+  console.log('Волна 2а · А1: отклик кнопок');
+  {
+    const st = await start(8816);
+    const n = action => st.log.filter(x => x.action === action).length;
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    st.opt.delay = 500; // ответ сервера идёт полсекунды, как у настоящего Apps Script
+
+    // статус заказа: два быстрых нажатия — один запрос
+    await page.locator('.ord__head').first().click();
+    await page.waitForSelector('[data-st="c"]:not([disabled])');
+    await page.evaluate(() => { const b = document.querySelector('[data-st="c"]:not([disabled])'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('.ord__acts .is-busy'); return !!b && b.disabled && [].every.call(document.querySelectorAll('.ord__acts button'), x => x.disabled); }), 'кнопка статуса сразу показывает индикатор, соседние кнопки заблокированы');
+    await page.locator('.ord__acts').screenshot({ path: OUT + '/50-busy-status.png' });
+    await page.waitForFunction(() => !document.querySelector('.ord__acts .is-busy'));
+    ok(n('admin.status') === 1, 'двойное нажатие на статус заказа — один запрос', n('admin.status'));
+
+    // переключатель наличия: меняется сразу, второй запрос не уходит
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('[data-stock="NUT-002"]');
+    const was = await page.getAttribute('[data-stock="NUT-002"]', 'aria-checked');
+    await page.evaluate(() => { const b = document.querySelector('[data-stock="NUT-002"]'); b.click(); b.click(); });
+    ok(await page.getAttribute('[data-stock="NUT-002"]', 'aria-checked') !== was, 'переключатель наличия меняется сразу, не дожидаясь сервера');
+    await page.waitForFunction(() => !document.querySelector('[data-stock="NUT-002"]').disabled);
+    ok(n('admin.product') === 1 && await page.getAttribute('[data-stock="NUT-002"]', 'aria-checked') !== was, 'двойное нажатие на переключатель — один запрос, значение сохранилось', n('admin.product'));
+    // ошибка сервера: переключатель возвращается назад с сообщением
+    st.opt.failAction = 'admin.product';
+    const mid = await page.getAttribute('[data-stock="NUT-003"]', 'aria-checked');
+    await page.click('[data-stock="NUT-003"]');
+    ok(await page.getAttribute('[data-stock="NUT-003"]', 'aria-checked') !== mid, 'при нажатии переключатель сразу меняется');
+    await page.waitForFunction(() => /повернули/.test(document.getElementById('toast').textContent));
+    ok(await page.getAttribute('[data-stock="NUT-003"]', 'aria-checked') === mid, 'сервер ответил ошибкой — переключатель вернулся назад, показано сообщение');
+    st.opt.failAction = '';
+
+    // сохранение товара: индикатор, один запрос, «Збережено» на кнопке
+    const before = n('admin.product');
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.waitForSelector('#a-ua');
+    await page.fill('#a-dUa', 'Перевірка відгуку кнопки');
+    await page.evaluate(() => { const b = document.querySelector('[data-action="adm-save"]'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('[data-action="adm-save"]'); return b.classList.contains('is-busy') && b.disabled; }), '«Зберегти» сразу показывает индикатор и блокируется');
+    await page.locator('[data-action="adm-save"]').screenshot({ path: OUT + '/51-busy-save.png' });
+    await page.waitForSelector('[data-action="adm-save"].is-saved');
+    ok(/Збережено/.test(await text(page, '[data-action="adm-save"]')), 'после ответа на кнопке галочка и «Збережено»');
+    await page.locator('[data-action="adm-save"]').screenshot({ path: OUT + '/52-saved.png' });
+    await page.waitForSelector('.prod');
+    ok(n('admin.product') === before + 1, 'двойное нажатие на «Зберегти» — один запрос', n('admin.product') - before);
+
+    // галочка «Приховати» в карточке товара сохраняется сразу
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.waitForSelector('#a-hidden');
+    await page.check('#a-hidden');
+    await page.waitForFunction(() => /Збережено/.test(document.getElementById('toast').textContent));
+    const hRow = st.gas.sheets['Товари'].rows.find(x => x[0] === 'NUT-004'), hCol = st.gas.sheets['Товари'].rows[0].findIndex(h => /Приховати/.test(h));
+    ok(hCol >= 0 && hRow[hCol] === 'так', '«Приховати» в карточке товара сохраняется сразу, без кнопки «Зберегти»', hRow[hCol]);
+    await page.uncheck('#a-hidden');
+    await page.waitForFunction(() => !document.getElementById('a-hidden').disabled);
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'карточка товара: кнопки не меньше 44 px, нет горизонтальной прокрутки', await smallTargets(page));
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (админ)', errors);
+    await page.context().close();
+
+    // покупатель: «Повідомити, коли з’явиться» — один запрос; нажатие даёт вибрацию
+    const c = await open(browser, st.url, { uid: 620 });
+    await c.page.waitForSelector('.card');
+    await c.page.evaluate(() => { window.__tg.calls.length = 0; });
+    await c.page.click('.chip[data-cat="DRY"]');
+    ok(await c.page.evaluate(() => window.__tg.calls.filter(x => x[0] === 'impact' || x[0] === 'select').length) === 1, 'нажатие на кнопку — одна вибрация', await c.page.evaluate(() => window.__tg.calls));
+    await c.page.locator('.card[data-id="DRY-005"] .card__name').click();
+    await c.page.waitForSelector('[data-action="notify"]');
+    await c.page.evaluate(() => { const b = document.querySelector('[data-action="notify"]'); b.click(); b.click(); });
+    ok(await c.page.evaluate(() => { const b = document.querySelector('[data-action="notify"]'); return !!b && b.classList.contains('is-busy') && b.disabled; }), '«Повідомити» показывает индикатор и блокируется');
+    await c.page.waitForFunction(() => !document.getElementById('toast').hidden);
+    ok(n('notify') === 1, 'двойное нажатие на «Повідомити» — один запрос', n('notify'));
+    ok(c.errors.length === 0, 'в консоли браузера нет ошибок (покупатель)', c.errors);
+    await c.page.context().close(); st.server.close();
+  }
+
+  console.log('Волна 2а · А2: страницы на витрине');
+  {
+    // большой каталог: 38 товаров стенда + 180 копий = 218 → 11 страниц
+    const st = await start(8817, undefined, s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], base = rows.slice(1).filter(r => /^NUT-00[1-6]$/.test(r[0]));
+      for (let i = 0; i < 180; i++) { const r = base[i % base.length].slice(); r[0] = 'NUT-' + (500 + i); rows.push(r); }
+    });
+    const { page, errors } = await open(browser, st.url, { uid: 630 });
+    await page.waitForSelector('.pager');
+    const total = st.gas.get({ action: 'catalog' }).products.length, pages = Math.ceil(total / 20);
+    const nums = () => page.locator('.main .pager__row > *').allInnerTexts();
+    const cur = () => page.locator('.main .pager [aria-current="page"]').innerText();
+    const oneLine = () => page.evaluate(() => {
+      const items = [].slice.call(document.querySelectorAll('.main .pager__row > *')), box = document.querySelector('.main .pager__row').getBoundingClientRect();
+      const tops = items.map(n => Math.round(n.getBoundingClientRect().top));
+      return tops.every(t => t === tops[0]) && items.every(n => n.getBoundingClientRect().left >= 0 && n.getBoundingClientRect().right <= window.innerWidth) && box.width <= window.innerWidth;
+    });
+    ok(total === 218 && await count(page, '#grid .card') === 20, 'на странице 20 товаров', [total, await count(page, '#grid .card')]);
+    ok((await text(page, '.main .pager__range')) === 'Товари 1–20 з ' + total, 'подпись «Товари 1–20 з N»', await text(page, '.main .pager__range'));
+    ok((await nums()).join(' ') === '‹ 1 2 3 … ' + pages + ' ›' && await cur() === '1', 'номера страниц: ‹ 1 2 3 … 11 ›, текущая выделена', await nums());
+    ok(await page.locator('.main .pager [data-page]').first().isDisabled(), 'на первой странице стрелка «назад» выключена');
+    ok(await oneLine() && await noOverflow(page), 'страницы помещаются в одну строку на 360 px, без горизонтальной прокрутки');
+    ok((await smallTargets(page)).length === 0, 'кнопки страниц не меньше 44 px', await smallTargets(page));
+    ok(await page.evaluate(() => getComputedStyle(document.querySelector('.main .pager [aria-current="page"]')).backgroundColor) === 'rgb(232, 145, 58)', 'текущая страница выделена абрикосовым');
+
+    // переход на страницу 2: подпись, прокрутка к началу списка (под чипы), а не к верху экрана
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.click('.main .pager [data-page="2"]');
+    await page.waitForFunction(() => document.querySelector('.main .pager [aria-current="page"]').textContent === '2');
+    ok((await text(page, '.main .pager__range')) === 'Товари 21–40 з ' + total && await count(page, '#grid .card') === 20, 'страница 2: «Товари 21–40 з N», 20 товаров', await text(page, '.main .pager__range'));
+    const pos = await page.evaluate(() => ({ y: window.scrollY, head: document.getElementById('gridHead').getBoundingClientRect().top, tools: document.querySelector('.tools').getBoundingClientRect().bottom }));
+    ok(pos.y > 100 && pos.head >= pos.tools && pos.head - pos.tools < 40, 'после смены страницы список прокручен к своему началу, сразу под чипами категорий', pos);
+    ok(await page.locator('#grid .card img').first().getAttribute('src') !== null, 'картинки новой страницы на месте');
+
+    // середина длинного списка: первая, последняя, текущая, остальное — «…»
+    await page.locator('.main .pager [data-page]').last().click();
+    await page.locator('.main .pager [data-page]').last().click();
+    await page.locator('.main .pager [data-page]').last().click();
+    ok((await nums()).join(' ') === '‹ 1 … 5 … ' + pages + ' ›' && await cur() === '5', 'в середине: ‹ 1 … 5 … 11 ›', await nums());
+    ok(await oneLine() && await noOverflow(page) && (await smallTargets(page)).length === 0, 'с двумя «…» страницы всё ещё в одну строку, кнопки ≥ 44 px');
+    await page.locator('.main .pager').screenshot({ path: OUT + '/53-pager-middle.png' });
+    await page.click('.main .pager [data-page="' + pages + '"]');
+    await page.waitForFunction(p => document.querySelector('.main .pager [aria-current="page"]').textContent === String(p), pages);
+    ok((await nums()).join(' ') === '‹ 1 … ' + (pages - 2) + ' ' + (pages - 1) + ' ' + pages + ' ›', 'в конце: ‹ 1 … 9 10 11 ›', await nums());
+    ok((await text(page, '.main .pager__range')) === 'Товари 201–218 з 218' && await count(page, '#grid .card') === 18 && await page.locator('.main .pager [data-page]').last().isDisabled(), 'последняя страница: «Товари 201–218 з 218», стрелка «вперёд» выключена');
+
+    // возврат из товара: та же страница и та же прокрутка; «Назад» Telegram закрывает товар, а не листает страницы
+    await page.click('.main .pager [data-page="1"]');
+    await page.click('.main .pager [data-page="3"]');
+    await page.waitForFunction(() => document.querySelector('.main .pager [aria-current="page"]').textContent === '3');
+    await page.locator('#grid .card').nth(9).scrollIntoViewIfNeeded();
+    await page.evaluate(() => window.scrollBy(0, 37));
+    const yBefore = await page.evaluate(() => window.scrollY);
+    const opened = await page.locator('#grid .card').nth(9).getAttribute('data-id');
+    await page.locator('#grid .card').nth(9).locator('.card__name').click();
+    await page.waitForSelector('.sheet__title');
+    ok(await page.evaluate(() => window.__tg.back.visible) === true, 'в товаре показана кнопка «Назад» Telegram');
+    await page.evaluate(() => window.__tg.back.cb());
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    ok(await cur() === '3' && await page.locator('#grid .card').nth(9).getAttribute('data-id') === opened, '«Назад» из товара: открыта та же страница 3');
+    ok(Math.abs(await page.evaluate(() => window.scrollY) - yBefore) <= 1, '«Назад» из товара: та же позиция прокрутки', [yBefore, await page.evaluate(() => window.scrollY)]);
+    ok(await page.evaluate(() => window.__tg.back.visible) === false, 'в списке кнопка «Назад» Telegram скрыта');
+    // то же через корзину и обратно
+    await page.click('.tabbar [data-go="cart"]');
+    await page.click('.tabbar [data-go="catalog"]');
+    ok(await cur() === '3' && Math.abs(await page.evaluate(() => window.scrollY) - yBefore) <= 1, 'после корзины каталог открыт на той же странице и в том же месте', [await cur(), await page.evaluate(() => window.scrollY)]);
+
+    // смена категории, поиска, сортировки или фильтра возвращает на страницу 1
+    await page.click('.chip[data-cat="NUT"]');
+    await page.waitForFunction(() => /Знайдено/.test(document.getElementById('gridHead').textContent));
+    ok(await cur() === '1' && /^Товари 1–20 з /.test(await text(page, '.main .pager__range')), 'смена категории → страница 1', await text(page, '.main .pager__range'));
+    await page.click('.main .pager [data-page="2"]');
+    await page.fill('#search', 'мигдаль');
+    await page.waitForFunction(() => /Товари 1–20 з /.test((document.querySelector('.main .pager__range') || {}).textContent || '') || !document.querySelector('.main .pager'));
+    ok(await count(page, '.main .pager') === 0 || await cur() === '1', 'поиск → страница 1');
+    await page.locator('#search').blur();
+    await page.click('#searchClear');
+    await page.locator('#search').blur();
+    await page.waitForFunction(() => document.querySelector('.main .pager [aria-current="page"]'));
+    await page.click('.main .pager [data-page="2"]');
+    ok(await cur() === '2', 'снова открыта страница 2');
+    await page.click('#filterBtn');
+    await page.locator('.sheet .opt', { hasText: 'Спочатку дешевші' }).click();
+    await page.click('[data-action="fil-apply"]');
+    ok(await cur() === '1', 'сортировка → страница 1');
+    await page.click('.main .pager [data-page="2"]');
+    await page.click('#filterBtn');
+    await page.locator('.sheet .check', { hasText: 'Лише в наявності' }).click();
+    await page.click('[data-action="fil-apply"]');
+    ok(await cur() === '1', 'фильтр «только в наличии» → страница 1');
+    await page.click('#filterBtn');
+    await page.click('[data-action="fil-reset"]');
+    await page.click('.sheet__close');
+    await page.click('.chip[data-cat=""]');
+    ok(await count(page, '.main .rail') > 0 && await cur() === '1', 'подборки на главной на месте, список с первой страницы');
+    await page.screenshot({ path: OUT + '/54-pager-home.png', fullPage: true });
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close();
+
+    // RU, тёмная тема, широкий экран: подпись по-русски, в середине видны соседние страницы
+    const w = await open(browser, st.url, { uid: 631, lc: 'ru', theme: 'dark', w: 480 });
+    await w.page.waitForSelector('.pager');
+    ok((await text(w.page, '.main .pager__range')) === 'Товары 1–20 из ' + total, 'RU: «Товары 1–20 из N»', await text(w.page, '.main .pager__range'));
+    for (let i = 0; i < 5; i++) await w.page.locator('.main .pager [data-page]').last().click();
+    ok((await w.page.locator('.main .pager__row > *').allInnerTexts()).join(' ') === '‹ 1 … 5 6 7 … ' + pages + ' ›', 'на экране пошире видны соседние с текущей: ‹ 1 … 5 6 7 … 11 ›', await w.page.locator('.main .pager__row > *').allInnerTexts());
+    ok(await noOverflow(w.page) && (await smallTargets(w.page)).length === 0, 'тёмная тема, 480 px: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(w.page));
+    await w.page.locator('.main .pager').screenshot({ path: OUT + '/55-pager-dark.png' });
+    ok(w.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', w.errors);
+    await w.page.context().close(); st.server.close();
+  }
+
+  console.log('Волна 2а · А3: товары в админ-панели');
+  {
+    const st = await start(8818, undefined, s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], base = rows.slice(1).filter(r => /^NUT-00[1-6]$/.test(r[0]));
+      for (let i = 0; i < 180; i++) { const r = base[i % base.length].slice(); r[0] = 'NUT-' + (500 + i); r[3] = 'Товар номер ' + (500 + i); rows.push(r); }
+    });
+    const head = st.gas.sheets['Товари'].rows[0];
+    const all = st.gas.sheets['Товари'].rows.slice(1).filter(r => r[0] && r[head.indexOf('Назва (UA)')]);
+    const col = name => head.findIndex(h => String(h).indexOf(name) === 0);
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('.prod');
+    const range = () => text(page, '#admList .pager__range');
+    const cur = () => page.locator('#admList .pager [aria-current="page"]').innerText();
+    ok(all.length === 219 && await count(page, '.prod') === 20, 'в панели 20 товаров на странице (всего 219, включая скрытый)', [all.length, await count(page, '.prod')]);
+    ok(await range() === 'Товари 1–20 з 219' && !/Показано перші 60/.test(await text(page, '.page')), 'подпись «Товари 1–20 з 219», ограничения «первые 60» больше нет', await range());
+    ok((await page.locator('#admList .pager__row > *').allInnerTexts()).join(' ') === '‹ 1 2 3 … 11 ›', 'те же номера страниц, что на витрине');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'список товаров: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/56-admin-products.png', fullPage: true });
+    const firstId = await page.locator('.prod [data-edit]').first().getAttribute('data-edit');
+    await page.click('#admList .pager [data-page="2"]');
+    ok(await range() === 'Товари 21–40 з 219' && await page.locator('.prod [data-edit]').first().getAttribute('data-edit') !== firstId, 'страница 2 показывает следующие 20 товаров', await range());
+    const y = await page.evaluate(() => ({ y: window.scrollY, top: document.getElementById('admList').getBoundingClientRect().top }));
+    ok(y.top >= 0 && y.top < 60, 'после смены страницы список прокручен к своему началу', y);
+
+    // поиск ищет по всем товарам, а не по открытой странице
+    await page.fill('#admPQ', 'номер 679');
+    await page.waitForFunction(() => document.querySelectorAll('.prod').length === 1);
+    ok(await page.locator('.prod [data-edit]').first().getAttribute('data-edit') === 'NUT-679', 'поиск находит товар с последней страницы');
+    await page.fill('#admPQ', '');
+    await page.waitForFunction(() => document.querySelectorAll('.prod').length === 20);
+    ok(await cur() === '1', 'поиск возвращает на страницу 1');
+
+    // категории чипами
+    const catName = await page.locator('#admPChips [data-pcat]').nth(1).getAttribute('data-pcat');
+    const inCat = all.filter(r => r[col('Категорія (UA)')] === catName).length;
+    await page.click('#admList .pager [data-page="3"]');
+    await page.locator('#admPChips [data-pcat]').nth(1).click();
+    const shown = await count(page, '.prod');
+    ok(inCat > 0 && shown === Math.min(20, inCat) && (inCat <= 20 ? await count(page, '#admList .pager') === 0 : await cur() === '1'), 'чип категории «' + catName + '»: только её товары, список с первой страницы', [inCat, shown]);
+    ok(await page.locator('#admPChips [data-pcat]').nth(1).getAttribute('aria-pressed') === 'true', 'выбранная категория выделена');
+    await page.locator('#admPChips [data-pcat=""]').click();
+
+    // фильтры
+    const hidden = all.filter(r => /^так$/i.test(String(r[col('Приховати')] || ''))).length;
+    const noPhoto = all.filter(r => !r[col('Фото')]).length;
+    await page.click('[data-pflt="hidden"]');
+    ok(hidden === 1 && await count(page, '.prod') === 1 && /Приховані · 1/.test(await text(page, '[data-pflt="hidden"]')), 'фильтр «Приховані» показывает скрытые товары, на чипе их число', [hidden, await count(page, '.prod')]);
+    await page.click('[data-pflt="hidden"]');
+    await page.click('[data-pflt="nophoto"]');
+    ok(new RegExp('з ' + noPhoto + '$').test(await range()) && new RegExp('Без фото · ' + noPhoto).test(await text(page, '[data-pflt="nophoto"]')), 'фильтр «Без фото»', [noPhoto, await range()]);
+    await page.click('#admList .pager [data-page="2"]');
+    await page.click('[data-pflt="out"]');
+    const both = all.filter(r => !r[col('Фото')] && !/^(є|e|есть|так|да)$/i.test(String(r[col('Наявність')]).trim())).length;
+    ok((await count(page, '.prod')) === Math.min(20, both) && (both <= 20 || await cur() === '1'), 'фильтры складываются («без фото» и «немає в наявності»), список с первой страницы', [both, await count(page, '.prod')]);
+    await page.click('[data-pflt="nophoto"]');
+    // переключатель в отфильтрованном списке: товар вернули в наличие — число на чипе уменьшилось
+    const outBefore = Number((await text(page, '[data-pflt="out"]')).replace(/\D/g, ''));
+    await page.locator('#admList .sw').first().click();
+    await page.waitForFunction(n => Number(document.querySelector('[data-pflt="out"]').textContent.replace(/\D/g, '')) === n - 1, outBefore);
+    ok(true, 'после переключателя число на чипе «Немає в наявності» обновилось');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'чипы и фильтры: без горизонтальной прокрутки страницы, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/57-admin-filters.png' });
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close(); st.server.close();
+  }
+
+  console.log('Волна 2а · А4: архив и удаление');
+  {
+    const st = await start(8819, undefined, s => {
+      withPhotos(s);
+      s.props.ADMIN_CHAT_IDS = '900,950,960'; // 950 — только в настройках скрипта, 960 — и там, и в листе «Адміни»
+      s.sheets['Категорії'].push(['NEW', 'Порожня', 'Пустая', '', 9]);
+    });
+    const g = st.gas, n = action => st.log.filter(x => x.action === action).length;
+    g.call('writeAdminRow_', { id: '741', name: 'Менеджер Текстів', username: '', role: 'manager', perms: { text: true }, notify: false, active: true, by: 'тест' });
+    g.call('writeAdminRow_', { id: '742', name: 'Менеджер Замовлень', username: '', role: 'manager', perms: { st: true }, notify: false, active: true, by: 'тест' });
+    g.call('writeAdminRow_', { id: '960', name: 'Обидва', username: '', role: 'manager', perms: { st: true }, notify: false, active: true, by: 'тест' });
+    const P = g.sheets['Товари'].rows, inSheet = id => P.some(r => r[0] === id);
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    const sheetText = () => text(page, '#sheet');
+    const toastText = () => page.evaluate(() => document.getElementById('toastText').textContent);
+
+    // «В архів» из карточки товара: подтверждение с названием, один запрос
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('.prod');
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.waitForSelector('[data-action="adm-archive"]');
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'карточка товара с кнопкой «В архів»: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.click('[data-action="adm-archive"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Перенести товар в архів\?/.test(await sheetText()) && /«Волоський горіх, половинки» зникне з вітрини/.test(await sheetText()) && /В архів: Волоський горіх, половинки/.test(await text(page, '[data-action="cf-ok"]')),
+      'подтверждение архивации называет товар', await sheetText());
+    ok(!(await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger'))), 'архивация обратима — кнопка не красная');
+    await page.waitForTimeout(400); // шторка выезжает снизу
+    await page.screenshot({ path: OUT + '/58-confirm-archive.png' });
+    await page.click('[data-action="cf-cancel"]');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    ok(n('admin.archive') === 0 && inSheet('NUT-004'), '«Скасувати» ничего не меняет');
+    st.opt.delay = 400;
+    await page.click('[data-action="adm-archive"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    await page.evaluate(() => { const b = document.querySelector('[data-action="cf-ok"]'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('[data-action="cf-ok"]'); return b.classList.contains('is-busy') && b.disabled && document.querySelector('[data-action="cf-cancel"]').disabled; }), 'кнопка подтверждения показывает индикатор и блокируется');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    st.opt.delay = 0;
+    await page.waitForSelector('.prod');
+    ok(n('admin.archive') === 1 && !inSheet('NUT-004') && await count(page, '[data-edit="NUT-004"]') === 0 && /Перенесено в архів/.test(await toastText()), 'товар ушёл в архив одним запросом и пропал из списка', [n('admin.archive'), await toastText()]);
+    ok(!g.get({ action: 'catalog' }).products.some(p => p.id === 'NUT-004'), 'на витрине архивного товара нет');
+
+    // экран «Архів»
+    await page.click('[data-action="adm-arch"]');
+    await page.waitForSelector('.arch');
+    ok(await count(page, '.arch') === 1 && /Волоський горіх, половинки/.test(await text(page, '.arch')) && /NUT-004/.test(await text(page, '.arch')) && /в архіві з \d\d\.\d\d\.\d{4}/.test(await text(page, '.arch')),
+      'экран «Архів»: товар, его ID и дата архивации', await text(page, '.arch'));
+    ok(await count(page, '[data-arch-restore]') === 1 && await count(page, '[data-arch-purge]') === 1 && await count(page, '#admAQ') === 1, 'у товара кнопки «Відновити» и «Видалити назавжди», есть поиск');
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'экран «Архів»: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/59-archive.png' });
+    await page.fill('#admAQ', 'немає такого');
+    ok(await count(page, '.arch') === 0, 'поиск в архиве фильтрует список');
+    await page.fill('#admAQ', 'nut-004');
+    ok(await count(page, '.arch') === 1, 'поиск в архиве находит по ID');
+
+    // «Видалити назавжди»: красная кнопка с названием, «Це не можна скасувати»
+    await page.click('[data-arch-purge="NUT-004"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Це не можна скасувати/.test(await sheetText()) && /Старі замовлення не зміняться/.test(await sheetText()) && /ID NUT-004 більше не використовуватиметься/.test(await sheetText()), 'подтверждение удаления: «Це не можна скасувати», про заказы и про ID', await sheetText());
+    ok((await text(page, '[data-action="cf-ok"]')).trim() === 'Видалити назавжди Волоський горіх, половинки' && await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger') && getComputedStyle(b).backgroundColor === 'rgb(158, 47, 38)'),
+      'красная кнопка «Видалити назавжди {назва}», а не «ОК»', await text(page, '[data-action="cf-ok"]'));
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'окно подтверждения: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.waitForTimeout(400); // шторка выезжает снизу
+    await page.screenshot({ path: OUT + '/60-confirm-purge.png' });
+    await page.click('[data-action="cf-cancel"]');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    ok(n('admin.purge') === 0 && g.sheets['Архів товарів'].rows.length === 2, 'отмена: товар остался в архиве');
+
+    // «Відновити»
+    await page.click('[data-arch-restore="NUT-004"]');
+    await page.waitForFunction(() => /Відновлено: Волоський горіх/.test(document.getElementById('toastText').textContent));
+    ok(inSheet('NUT-004') && g.sheets['Архів товарів'].rows.length === 1 && /В архіві порожньо/.test(await text(page, '.page')), '«Відновити»: товар снова в «Товари», архив пуст');
+    ok(g.get({ action: 'catalog' }).products.some(p => p.id === 'NUT-004'), 'восстановленный товар снова на витрине');
+    await page.click('[data-nav="back"]');
+    await page.waitForSelector('.prod');
+    await page.fill('#admPQ', 'NUT-004');
+    ok(await count(page, '[data-edit="NUT-004"]') === 1, 'восстановленный товар снова в списке товаров панели');
+
+    // архив → удалить навсегда
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.click('[data-action="adm-archive"]');
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    await page.click('#toastBtn'); // кнопка «Архів товарів» в сообщении
+    await page.waitForSelector('.arch');
+    await page.click('[data-arch-purge="NUT-004"]');
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Видалено назавжди/.test(document.getElementById('toastText').textContent));
+    ok(n('admin.purge') === 1 && !inSheet('NUT-004') && g.sheets['Архів товарів'].rows.length === 1 && g.props.DELETED_IDS === 'NUT-004', 'удалено навсегда: строки нет ни в «Товари», ни в архиве; ID запомнен', g.props.DELETED_IDS);
+    await page.click('[data-nav="back"]');
+
+    // удаление категории: с товарами — через перенос, пустая — сразу
+    await page.locator('[data-tab="cats"]').click();
+    await page.waitForSelector('.page [data-cat="TEA"]');
+    await page.locator('.page [data-cat="TEA"]').click();
+    await page.click('[data-action="adm-cat-del"]');
+    await page.waitForSelector('#cfMove');
+    ok(/У категорії «Чай» товарів: 5 \(разом із прихованими\)/.test(await sheetText()) && /Перенести товари й видалити «Чай»/.test(await text(page, '[data-action="cf-ok"]')) && await count(page, '#cfMove option') === 6,
+      'категория с товарами: панель просит сначала перенести их и даёт список категорий', await sheetText());
+    await page.waitForTimeout(400); // шторка выезжает снизу
+    await page.screenshot({ path: OUT + '/61-confirm-category.png' });
+    await page.selectOption('#cfMove', 'DRY');
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /товарів перенесено: 5/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Категорії'].rows.some(r => r[0] === 'TEA') && P.find(r => r[0] === 'TEA-001')[1] === 'Сухофрукти' && await count(page, '.page [data-cat="TEA"]') === 0, 'категория удалена, товары перенесены в выбранную');
+    await page.locator('.page [data-cat="NEW"]').click();
+    await page.click('[data-action="adm-cat-del"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/немає товарів/.test(await sheetText()) && (await text(page, '[data-action="cf-ok"]')).trim() === 'Видалити «Порожня»' && await count(page, '#cfMove') === 0, 'пустая категория: простое подтверждение с названием', await sheetText());
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Категорію видалено/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Категорії'].rows.some(r => r[0] === 'NEW') && await count(page, '.page [data-cat="NEW"]') === 0, 'пустая категория удалена');
+
+    // удаление админа
+    await page.locator('[data-tab="admins"]').click();
+    await page.waitForSelector('[data-adm="950"]');
+    ok(/Доданий у налаштуваннях скрипта/.test(await text(page, '[data-adm="950"]')) && !/Доданий у налаштуваннях/.test(await text(page, '[data-adm="742"]')), 'админ из ADMIN_CHAT_IDS помечен в списке');
+    await page.screenshot({ path: OUT + '/62-admins.png', fullPage: true });
+    await page.locator('[data-adm="950"]').click();
+    await page.waitForSelector('#admForm');
+    ok(await count(page, '[data-action="adm-admin-del"]') === 0 && /ADMIN_CHAT_IDS/.test(await text(page, '#admForm')) && /Script Properties/.test(await text(page, '#admForm')), 'у админа из настроек скрипта вместо «Видалити» — подсказка, где его убрать');
+    await page.click('[data-nav="back"]');
+    await page.locator('[data-adm="960"]').click();
+    await page.click('[data-action="adm-admin-del"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/ADMIN_CHAT_IDS/.test(await sheetText()) && /доступ у неї залишиться/.test(await sheetText()), 'записан и в листе, и в ADMIN_CHAT_IDS: подтверждение предупреждает, что доступ останется', await sheetText());
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /доступ лишився/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Адміни'].rows.some(r => String(r[0]) === '960'), 'строка в листе «Адміни» удалена');
+    await page.locator('[data-adm="742"]').click();
+    await page.click('[data-action="adm-admin-del"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok((await text(page, '[data-action="cf-ok"]')).trim() === 'Видалити Менеджер Замовлень' && await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger')) && !/ADMIN_CHAT_IDS/.test(await sheetText()), 'красная кнопка «Видалити {ім’я}»', await text(page, '[data-action="cf-ok"]'));
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Адміна видалено/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Адміни'].rows.some(r => String(r[0]) === '742') && await count(page, '[data-adm="742"]') === 0, 'админ удалён из листа и из списка');
+    ok(await count(page, '[data-adm="900"]') === 0, 'владельца открыть на удаление нельзя');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (владелец)', errors);
+    await page.context().close();
+
+    // менеджер с правом «Тексти товарів»: архивирует и восстанавливает, но не удаляет навсегда
+    g.post({ action: 'admin.archive', initData: g.initData({ id: 900, first_name: 'Власник' }), id: 'NUT-001' });
+    const m = await open(browser, st.url, { uid: 741, query: '?admin=1' });
+    await m.page.waitForSelector('.ord, .adm__msg');
+    await m.page.locator('[data-tab="products"]').click();
+    await m.page.waitForSelector('.prod');
+    await m.page.click('[data-action="adm-arch"]');
+    await m.page.waitForSelector('.arch');
+    ok(await count(m.page, '[data-arch-restore]') === 1 && await count(m.page, '[data-arch-purge]') === 0 && /лише повний адмін або власник/.test(await text(m.page, '.page')), 'менеджер видит «Відновити», но не «Видалити назавжди»');
+    ok(g.post({ action: 'admin.purge', initData: g.initData({ id: 741, first_name: 'М' }), id: 'NUT-001' }).error === 'no_perm', 'и сервер менеджеру удаление навсегда не разрешает');
+    ok(m.errors.length === 0, 'в консоли браузера нет ошибок (менеджер)', m.errors);
+    await m.page.context().close();
+
+    // покупатель: «Повторити замовлення» с архивным товаром — пропуск и подсказка, а не ошибка
+    const c = await open(browser, st.url, { uid: 501, query: '?view=orders' });
+    await c.page.waitForSelector('[data-repeat="P-0001"]');
+    await c.page.click('[data-repeat="P-0001"]'); // курага + мигдаль (мигдаль в архиве)
+    await c.page.waitForSelector('.line');
+    ok(await count(c.page, '.line') === 1 && /Курага/.test(await text(c.page, '.line')) && /Деяких товарів більше немає/.test(await text(c.page, '.page')), 'повтор заказа: архивный товар пропущен, показано «Деяких товарів більше немає»', await text(c.page, '.page'));
+    await c.page.screenshot({ path: OUT + '/63-repeat-gone.png' });
+    await c.page.click('.tabbar [data-go="catalog"]');
+    await c.page.waitForSelector('.card');
+    ok(await count(c.page, '.mini[data-id="NUT-001"]') === 0 && await count(c.page, '.mini[data-id="DRY-039"]') > 0, 'в подборках «Купити знову» и «Ваше звичне» архивного товара нет');
+    ok(c.errors.length === 0, 'в консоли браузера нет ошибок (покупатель)', c.errors);
+    await c.page.context().close(); st.server.close();
   }
 
   await browser.close();

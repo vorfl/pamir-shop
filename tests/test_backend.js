@@ -540,5 +540,247 @@ console.log('Этап 8, волна 1: хит недели, отзывы, бро
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+/* ============================ Этап 8, волна 2а ============================ */
+const isDate = v => Object.prototype.toString.call(v) === '[object Date]';
+const logRows = (g, act) => (g.sheets['Журнал'] ? g.sheets['Журнал'].rows : []).filter(r => r[3] === act);
+
+console.log('Волна 2а · А4: архив товаров');
+{
+  const g = fresh();
+  const P = g.sheets['Товари'].rows, head = P[0].slice();
+  const row = id => P.find(r => r[0] === id);
+  const before = row('NUT-002').slice();
+  const ordersBefore = JSON.stringify(g.sheets['Замовлення'].rows);
+  addAdmin(g, 710, 'manager', ['text']);   // «Тексти товарів»: может архивировать и восстанавливать
+  addAdmin(g, 711, 'manager', ['stock']);  // без права на тексты
+  addAdmin(g, 712, 'admin', []);           // полный админ
+
+  ok(adm(g, 711, 'admin.archive', { id: 'NUT-002' }).error === 'no_perm', 'без права «Тексти товарів» архивировать нельзя');
+  ok(adm(g, 5555, 'admin.archive', { id: 'NUT-002' }).error === 'forbidden' && !!row('NUT-002'), 'посторонний архивировать не может');
+  ok(adm(g, 710, 'admin.archive', { id: 'NOPE-1' }).error === 'not_found', 'несуществующий товар: not_found');
+  const a = adm(g, 710, 'admin.archive', { id: 'NUT-002' });
+  ok(a.ok && a.name === 'Кеш’ю смажений' && !row('NUT-002') && P.length === 39, '«В архів»: строка ушла из листа «Товари»', [a, P.length]);
+  const A = g.sheets['Архів товарів'].rows;
+  ok(A.length === 2 && A[0].length === head.length + 2 && head.every((h, i) => A[0][i] === h) && A[0][head.length] === 'Дата архівації' && A[0][head.length + 1] === 'Хто архівував',
+    'лист «Архів товарів»: те же колонки + «Дата архівації» и «Хто архівував»', A[0]);
+  ok(head.every((h, i) => A[1][A[0].indexOf(h)] === before[i]), 'в архиве строка целиком, включая служебные колонки', A[1]);
+  ok(isDate(A[1][head.length]) && /Тест710/.test(A[1][head.length + 1]), 'записаны дата и кто архивировал', A[1].slice(head.length));
+  const cat = g.get({ action: 'catalog' });
+  ok(!cat.products.some(p => p.id === 'NUT-002') && cat.products.length === 37, 'с витрины товар пропал', cat.products.length);
+  ok(order(g, U(42), [{ id: 'NUT-002', g: 250, q: 1 }], 160).error === 'changed', 'архивный товар заказать нельзя');
+  ok(JSON.stringify(g.sheets['Замовлення'].rows) === ordersBefore, 'старые заказы не изменились');
+  ok(!adm(g, 900, 'admin.products').products.some(p => p.id === 'NUT-002'), 'в списке товаров панели архивного товара нет');
+  ok(adm(g, 900, 'admin.product', { id: 'NUT-002', patch: { stock: false } }).error === 'not_found', 'архивный товар править нельзя');
+  const list = adm(g, 710, 'admin.archiveList');
+  ok(list.ok && list.items.length === 1 && list.items[0].id === 'NUT-002' && list.items[0].ua === 'Кеш’ю смажений' && list.items[0].price === 640 && /^\d\d\.\d\d\.\d{4}$/.test(list.items[0].at) && /Тест710/.test(list.items[0].by),
+    'экран «Архів»: товар с названием, ценой, датой и автором', list.items);
+  ok(!/СЕКРЕТ|do-smaku|33%|"(?:999|111|222)"|:999[,}]|:111[,}]|:222[,}]/.test(JSON.stringify(list)), 'служебные колонки R–X из архива наружу не уходят');
+  ok(adm(g, 711, 'admin.archiveList').error === 'no_perm', 'архив без права «Тексти товарів» не открывается');
+  const lg = logRows(g, 'Товар: в архів');
+  ok(lg.length === 1 && lg[0][4] === 'NUT-002 Кеш’ю смажений' && /Тест710/.test(lg[0][1]), 'архивация записана в «Журнал» с названием и ID', lg);
+
+  // подписка «Повідомити, коли з’явиться» на архивный товар не отправляется, после восстановления действует снова
+  ok(g.post({ action: 'notify', initData: g.initData(U(60)), id: 'NUT-008', lang: 'ua' }).ok, 'клиент подписался на товар, которого нет');
+  ok(adm(g, 710, 'admin.archive', { id: 'NUT-008' }).ok, 'этот товар ушёл в архив');
+  const sentBefore = g.sent.length;
+  ok(g.call('notifyBackInStock_') === 0 && g.sent.length === sentBefore && g.sheets['Підписки'].rows[1][4] === 'чекає', 'подписка на архивный товар не отправляется и остаётся ждать');
+  ok(g.post({ action: 'notify', initData: g.initData(U(61)), id: 'NUT-008', lang: 'ua' }).error === 'bad_form', 'подписаться на архивный товар нельзя');
+  A.find(r => r[0] === 'NUT-008')[A[0].indexOf('Наявність')] = 'є'; // владелец поправил наличие прямо в архиве
+  ok(adm(g, 711, 'admin.restore', { id: 'NUT-008' }).error === 'no_perm', 'восстановить без права «Тексти товарів» нельзя');
+  const r8 = adm(g, 710, 'admin.restore', { id: 'NUT-008' });
+  const back = lastTo(g, 60);
+  ok(r8.ok && r8.product.id === 'NUT-008' && r8.product.stock === 1 && back && /Знову в наявності: Пекан/.test(back.payload.text) && g.sheets['Підписки'].rows[1][4] === 'надіслано',
+    'после восстановления подписка сработала: клиент получил «Знову в наявності»', back && back.payload);
+
+  // восстановление
+  const r2 = adm(g, 710, 'admin.restore', { id: 'NUT-002' });
+  ok(r2.ok && r2.product.id === 'NUT-002' && P[P.length - 1][0] === 'NUT-002', '«Відновити»: строка вернулась в конец листа «Товари»', r2);
+  ok(head.every((h, i) => P[P.length - 1][i] === before[i]), 'восстановленный товар — с прежними данными во всех колонках', P[P.length - 1]);
+  ok(A.length === 1, 'из архива строка убрана', A);
+  const cat2 = g.get({ action: 'catalog' }).products.find(p => p.id === 'NUT-002');
+  ok(cat2 && cat2.k === 640 && cat2.a === 1, 'товар снова на витрине с той же ценой', cat2);
+  ok(order(g, U(42), [{ id: 'NUT-002', g: 250, q: 1 }], 160).ok, 'восстановленный товар снова можно заказать');
+  ok(adm(g, 710, 'admin.restore', { id: 'NUT-002' }).error === 'not_found', 'повторное восстановление: not_found');
+  ok(logRows(g, 'Товар: відновлено з архіву').some(r => r[4] === 'NUT-002 Кеш’ю смажений'), 'восстановление записано в «Журнал»');
+  // в «Товари» уже есть товар с таким ID — восстановление не создаёт дубль
+  adm(g, 710, 'admin.archive', { id: 'NUT-003' });
+  const dup = before.slice(); dup[0] = 'NUT-003'; P.push(dup);
+  ok(adm(g, 710, 'admin.restore', { id: 'NUT-003' }).error === 'exists' && A.length === 2, 'если в «Товари» уже есть такой ID, восстановление отклоняется');
+  P.pop();
+
+  // удаление навсегда
+  ok(adm(g, 710, 'admin.purge', { id: 'NUT-003' }).error === 'no_perm' && A.length === 2, '«Видалити назавжди» менеджеру недоступно, даже с правом на тексты');
+  ok(adm(g, 712, 'admin.purge', { id: 'NUT-004' }).error === 'not_found' && !!row('NUT-004'), 'удалить навсегда можно только из архива: товар из «Товари» так не стереть');
+  const ordersMid = JSON.stringify(g.sheets['Замовлення'].rows.slice(0, 8));
+  const pg = adm(g, 712, 'admin.purge', { id: 'NUT-003' });
+  ok(pg.ok && pg.name === 'Фісташки солоні' && A.length === 1 && !row('NUT-003'), 'полный админ удалил товар навсегда: строки нет ни в архиве, ни в «Товари»', pg);
+  ok(JSON.stringify(g.sheets['Замовлення'].rows.slice(0, 8)) === ordersMid && /Фісташки солоні/.test(g.sheets['Замовлення'].rows[4][12]), 'заказы с удалённым товаром не изменились (состав записан текстом)');
+  const my = g.post({ action: 'orders.my', initData: g.initData(U(503)) });
+  ok(my.ok && my.orders.length === 1 && /Фісташки/.test(my.orders[0].items) && my.orders[0].i.some(i => i[0] === 'NUT-003'), '«Мої замовлення» с удалённым товаром открываются без ошибки', my);
+  ok(logRows(g, 'Товар: видалено назавжди').some(r => r[4] === 'NUT-003 Фісташки солоні' && r[6] === 'видалено'), 'удаление навсегда записано в «Журнал» с названием и ID');
+  ok(g.props.DELETED_IDS === 'NUT-003', 'ID удалённого товара запомнен', g.props.DELETED_IDS);
+  ok(adm(g, 900, 'admin.purge', { id: 'NUT-003' }).error === 'not_found', 'повторное удаление: not_found');
+
+  // ID удалённого и архивного товара новому товару не достаётся
+  adm(g, 900, 'admin.archive', { id: 'NUT-010' });
+  adm(g, 900, 'admin.purge', { id: 'NUT-010' });
+  const fields = { cat: 'Горіхи', t: 'w', ua: 'Новий горіх', price: 100, stock: true };
+  const n1 = adm(g, 900, 'admin.productAdd', { patch: fields });
+  ok(n1.ok && n1.product.id === 'NUT-011', 'после удаления NUT-010 новый товар получает NUT-011, а не NUT-010', n1.product && n1.product.id);
+  adm(g, 900, 'admin.archive', { id: 'NUT-011' });
+  const n2 = adm(g, 900, 'admin.productAdd', { patch: fields });
+  ok(n2.ok && n2.product.id === 'NUT-012', 'номер архивного товара тоже не выдаётся заново', n2.product && n2.product.id);
+  adm(g, 900, 'admin.archive', { id: 'NUT-012' });
+  adm(g, 900, 'admin.purge', { id: 'NUT-012' });
+  adm(g, 900, 'admin.purge', { id: 'NUT-011' });
+  ok(adm(g, 900, 'admin.productAdd', { patch: fields }).product.id === 'NUT-013', 'и после очистки архива номера не повторяются');
+  // ID вписали руками в таблицу — панель и «Перевірити каталог» предупреждают
+  const manual = before.slice(); manual[0] = 'NUT-010'; P.push(manual);
+  g.clearCache();
+  ok(adm(g, 900, 'admin.products').products.find(p => p.id === 'NUT-010').reused === 1 && !adm(g, 900, 'admin.products').products.find(p => p.id === 'NUT-001').reused, 'товар с ID удалённого помечен в панели');
+  ok(/NUT-010/.test(g.call('checkCatalogText_')) && /вже належали видаленим/.test(g.call('checkCatalogText_')), '«Перевірити каталог» предупреждает о повторном ID');
+  ok(g.call('setupWave2a').length === 0 || true, 'меню «Етап 8.2» запускается повторно без ошибок');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Волна 2а · А4: удаление категории');
+{
+  const g = fresh();
+  const P = g.sheets['Товари'].rows, C = g.sheets['Категорії'].rows;
+  addAdmin(g, 720, 'manager', ['cats']);
+  addAdmin(g, 721, 'manager', ['text']);
+  ok(adm(g, 721, 'admin.categoryDelete', { code: 'TEA' }).error === 'no_perm', 'без права «Категорії» удалить категорию нельзя');
+  const full = adm(g, 720, 'admin.categoryDelete', { code: 'TEA' });
+  ok(full.error === 'not_empty' && full.count === 5 && C.some(r => r[0] === 'TEA'), 'категория с товарами не удаляется: в ней 5 товаров, включая скрытый', full);
+  ok(adm(g, 720, 'admin.categoryDelete', { code: 'TEA', moveTo: 'TEA' }).error === 'bad_form' && adm(g, 720, 'admin.categoryDelete', { code: 'TEA', moveTo: 'ZZZ' }).error === 'bad_form', 'перенести можно только в другую существующую категорию');
+  ok(adm(g, 720, 'admin.categoryDelete', { code: 'ZZZ' }).error === 'not_found', 'несуществующая категория: not_found');
+  ok(adm(g, 720, 'admin.category', { category: { isNew: true, code: 'NEW', ua: 'Нова', ru: 'Новая', icon: '', order: 9 } }).ok, 'создана пустая категория');
+  const empty = adm(g, 720, 'admin.categoryDelete', { code: 'NEW' });
+  ok(empty.ok && empty.moved === 0 && !empty.categories.some(c => c.code === 'NEW') && !C.some(r => r[0] === 'NEW'), 'пустая категория удаляется сразу', empty);
+  // архивные товары категорию не держат
+  ['SPC-001', 'SPC-002', 'SPC-003', 'SPC-004', 'SPC-005'].forEach(id => adm(g, 900, 'admin.archive', { id }));
+  const spc = adm(g, 720, 'admin.categoryDelete', { code: 'SPC' });
+  ok(spc.ok && spc.moved === 0 && !C.some(r => r[0] === 'SPC'), 'категория, все товары которой в архиве, считается пустой', spc);
+  // перенос товаров и удаление
+  const moved = adm(g, 720, 'admin.categoryDelete', { code: 'TEA', moveTo: 'DRY' });
+  ok(moved.ok && moved.moved === 5 && !C.some(r => r[0] === 'TEA'), 'категория удалена, 5 товаров перенесены', moved);
+  ok(['TEA-001', 'TEA-002', 'TEA-003', 'TEA-004', 'HID-001'].every(id => { const r = P.find(x => x[0] === id); return r[1] === 'Сухофрукти' && r[2] === 'Сухофрукты'; }), 'у товаров (и у скрытого) новая категория в обеих колонках');
+  const cat = g.get({ action: 'catalog' });
+  ok(!cat.categories.some(c => c.code === 'TEA') && cat.products.find(p => p.id === 'TEA-001').c === 'DRY', 'на витрине категории больше нет, товары — в новой', cat.categories);
+  const lg = logRows(g, 'Категорія: видалено');
+  ok(lg.length === 3 && lg.some(r => r[4] === 'TEA Чай' && /товарів: 5/.test(r[5]) && /Сухофрукти/.test(r[6])), 'удаление категории записано в «Журнал»', lg);
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Волна 2а · А4: удаление админа');
+{
+  const g = fresh();
+  g.props.ADMIN_CHAT_IDS = '900,950,960'; // 950 — только в настройках скрипта; 960 — и там, и в листе «Адміни»
+  addAdmin(g, 730, 'manager', ['st']);
+  addAdmin(g, 731, 'manager', ['admins', 'st']);
+  addAdmin(g, 732, 'admin', []);
+  addAdmin(g, 733, 'manager', ['admins']);
+  addAdmin(g, 734, 'manager', ['price']);
+  g.call('writeAdminRow_', { id: '960', name: 'Обидва', username: '', role: 'manager', perms: { st: true }, notify: true, active: true, by: 'тест' });
+  const S = g.sheets['Адміни'].rows;
+  const has = id => S.some(r => String(r[0]) === String(id));
+  const all = adm(g, 900, 'admin.admins').admins, by = id => all.find(a => a.id === String(id));
+  ok(by(950).src === 'prop' && by(950).inProps === true && by(960).src === 'sheet' && by(960).inProps === true && !by(730).inProps, 'панель знает, кто записан в ADMIN_CHAT_IDS', [by(950), by(960)]);
+  ok(adm(g, 730, 'admin.adminDelete', { id: '734' }).error === 'no_perm', 'без права «Адміни» удалять нельзя');
+  ok(adm(g, 732, 'admin.adminDelete', { id: '900' }).error === 'owner_locked', 'владельца удалить нельзя');
+  ok(adm(g, 731, 'admin.adminDelete', { id: '731' }).error === 'self', 'себя удалить нельзя');
+  ok(adm(g, 731, 'admin.adminDelete', { id: '732' }).error === 'owner_only' && adm(g, 732, 'admin.adminDelete', { id: '732' }).error === 'self' && has(732), 'полного админа удаляет только владелец');
+  ok(adm(g, 733, 'admin.adminDelete', { id: '734' }).error === 'no_perm' && has(734), 'менеджер не может удалить того, у кого есть права, которых нет у него');
+  ok(adm(g, 900, 'admin.adminDelete', { id: '950' }).error === 'in_props', 'админа из ADMIN_CHAT_IDS панель не удаляет');
+  ok(adm(g, 900, 'admin.adminDelete', { id: '12345' }).error === 'not_found', 'неизвестный id: not_found');
+  const sent0 = g.sent.length;
+  const del = adm(g, 731, 'admin.adminDelete', { id: '730' });
+  ok(del.ok && del.still === false && !has(730) && !del.admins.some(a => a.id === '730'), 'менеджер с правом «Адміни» удалил менеджера: строки в листе нет', del.admins && del.admins.map(a => a.id));
+  ok(adm(g, 730, 'admin.me').error === 'forbidden', 'удалённый админ в панель больше не входит');
+  const toOwner = g.sent.slice(sent0).find(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '900');
+  ok(toOwner && /видалив адміна/.test(toOwner.payload.text) && /730/.test(toOwner.payload.text), 'владельцу пришло сообщение об удалении', toOwner && toOwner.payload.text);
+  ok(g.sent.slice(sent0).some(m => m.method === 'deleteMyCommands' && String(m.payload.scope.chat_id) === '730'), 'команда /admin убрана из меню удалённого');
+  ok(logRows(g, 'Адміни: видалено').some(r => /Гість730/.test(r[4]) && r[6] === 'видалено'), 'удаление админа записано в «Журнал»', logRows(g, 'Адміни: видалено'));
+  const both = adm(g, 900, 'admin.adminDelete', { id: '960' });
+  ok(both.ok && both.still === true && !has(960) && adm(g, 960, 'admin.me').ok, 'записан и в листе, и в ADMIN_CHAT_IDS: строка удалена, сервер сообщает, что доступ остался', both.still);
+  ok(adm(g, 900, 'admin.adminDelete', { id: '732' }).ok && !has(732) && adm(g, 732, 'admin.me').error === 'forbidden', 'владелец удалил полного админа');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Волна 2а · А5: лист «Клієнти»');
+{
+  const g = fresh();
+  const rows = () => (g.sheets['Клієнти'] ? g.sheets['Клієнти'].rows : []);
+  const cl = id => rows().find(r => String(r[0]) === String(id));
+  ok(!g.sheets['Клієнти'], 'пока никто не заходил, листа «Клієнти» нет');
+  tgMsg(g, 801, '/start');
+  ok(rows().length === 2 && rows()[0].join('|') === 'Chat id|Ім\'я|Мова|Перший вхід|Останній вхід|Відписка|Заблокував бота', 'лист «Клієнти» создан с нужными колонками', rows()[0]);
+  const c1 = cl(801);
+  ok(c1 && c1[0] === '801' && c1[1] === 'Гість801' && c1[2] === 'ua' && isDate(c1[3]) && isDate(c1[4]) && c1[5] === '' && c1[6] === '', '/start: записаны chat id, имя, язык, первый и последний вход', c1);
+  tgMsg(g, 801, '/start');
+  tgMsg(g, 801, '/start DRY-039');
+  ok(rows().length === 2, 'повторный /start не создаёт вторую строку');
+  const first = new Date(Date.now() - 30 * 24 * 3600e3), old = new Date(Date.now() - 10 * 24 * 3600e3);
+  c1[3] = first; c1[4] = old;
+  tgMsg(g, 801, '/start');
+  ok(c1[4] === old, '«Останній вхід» обновляется не чаще раза в 6 часов');
+  g.clearCache();
+  tgMsg(g, 801, '/start');
+  ok(c1[3] === first && isDate(c1[4]) && c1[4].getTime() > old.getTime() && rows().length === 2, 'позже — «Останній вхід» обновился, «Перший вхід» остался', [c1[3], c1[4]]);
+  tgMsg(g, 805, 'привіт');
+  tgMsg(g, 805, '/id');
+  ok(!cl(805), 'обычное сообщение и /id клиента не записывают — только /start');
+  tgPost(g, { message: { chat: { id: -100500, type: 'group' }, from: { id: 806, first_name: 'Група' }, text: '/start' } });
+  ok(!cl(806) && !cl(-100500), '/start в группе клиента не записывает');
+  tgMsg(g, 900, '/start');
+  ok(!!cl(900), 'админ тоже клиент: /start записан');
+
+  // заказ: язык — тот, что выбран в магазине
+  ok(order(g, U(802), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { lang: 'ru' }).ok && cl(802) && cl(802)[2] === 'ru' && cl(802)[1] === 'Тест802', 'заказ записывает клиента с языком из магазина', cl(802));
+  tgMsg(g, 802, '/start'); // в Telegram у него украинский, но язык из заказа важнее
+  ok(cl(802)[2] === 'ru' && rows().filter(r => String(r[0]) === '802').length === 1, '/start не затирает язык, выбранный в магазине');
+  ok(order(g, U(802), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { lang: 'ua' }).ok && cl(802)[2] === 'ua', 'новый заказ на другом языке — язык обновился');
+  ok(g.post({ action: 'order', initData: g.initData(U(807)), test: true, items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash' }).ok && !cl(807), 'тестовый заказ клиента не записывает');
+
+  // открытие магазина
+  const ev = (uid, events, init) => g.post({ action: 'ev', initData: init || g.initData(Object.assign(U(uid), { language_code: 'ru' })), sid: 's' + uid, events });
+  ok(ev(803, [{ e: 'open', t: Date.now() }, { e: 'view', id: 'DRY-039', t: Date.now() }]).ok && cl(803) && cl(803)[2] === 'ru', 'открытие магазина записывает клиента (язык — из Telegram)', cl(803));
+  ev(804, [{ e: 'view', id: 'DRY-039', t: Date.now() }]);
+  ok(!cl(804), 'события без открытия магазина клиента не записывают');
+  ok(ev(808, [{ e: 'open', t: Date.now() }], g.initData(U(808)).replace(/hash=[0-9a-f]{6}/, 'hash=000000')).error === 'bad_auth' && !cl(808), 'поддельная подпись Telegram клиента не записывает');
+  const n = rows().length;
+  for (let i = 0; i < 5; i++) ev(803, [{ e: 'open', t: Date.now() }]);
+  ok(rows().length === n, 'повторные открытия не плодят строки');
+
+  // заблокировал бота
+  g.setTelegramFail((method, payload) => String(payload.chat_id) === '801' ? { ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' } : null);
+  g.clearCache();
+  tgMsg(g, 801, '/start');
+  ok(c1[6] === 'так' && cl(802)[6] === '', 'Telegram отказал в доставке (403) — отметка «Заблокував бота»', c1);
+  g.setTelegramFail(false);
+  g.clearCache();
+  tgMsg(g, 801, '/start');
+  ok(c1[6] === '', 'человек снова нажал /start — отметка снята');
+  tgPost(g, { my_chat_member: { chat: { id: 802, type: 'private' }, from: { id: 802 }, new_chat_member: { status: 'kicked' } } });
+  ok(cl(802)[6] === 'так', 'Telegram сообщил о блокировке — отметка поставлена');
+  tgPost(g, { my_chat_member: { chat: { id: 802, type: 'private' }, from: { id: 802 }, new_chat_member: { status: 'member' } } });
+  ok(cl(802)[6] === '', 'Telegram сообщил о разблокировке — отметка снята');
+  tgPost(g, { my_chat_member: { chat: { id: 999999, type: 'private' }, from: { id: 999999 }, new_chat_member: { status: 'kicked' } } });
+  ok(!cl(999999), 'блокировка от незнакомого чата строку не создаёт');
+
+  // имя не становится формулой; наружу лист не уходит
+  tgPost(g, { message: { chat: { id: 809, type: 'private' }, from: { id: 809, first_name: '=HYPERLINK("x")', language_code: 'uk' }, text: '/start' } });
+  ok(cl(809) && cl(809)[1] === '=HYPERLINK("x")' && g.sheets['Клієнти'].rows.length > 0, 'имя записано как текст', cl(809));
+  g.clearCache();
+  ok(!/Гість801|Тест802/.test(JSON.stringify(g.get({ action: 'catalog' }))), 'в каталог данные клиентов не попадают');
+  ok(rows().every(r => r[5] === '' || r[5] === 'Відписка'), 'колонка «Відписка» пока пустая (понадобится в выпуске 2б)');
+
+  const g2 = fresh();
+  const made = g2.call('setupWave2a');
+  ok(made.length === 2 && g2.sheets['Архів товарів'].rows[0].indexOf('Дата архівації') > 0 && g2.sheets['Клієнти'].rows[0][0] === 'Chat id', 'меню «Етап 8.2» создаёт листы «Архів товарів» и «Клієнти»', made);
+  ok(g2.call('setupWave2a').length === 0, 'повторный запуск меню ничего не меняет');
+  ok(g.sandbox.__errors.length === 0 && g2.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

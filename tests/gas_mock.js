@@ -63,6 +63,7 @@ class Sheet {
   hideColumns() {}
   clearContents() { this.rows = []; }
   deleteRows(start, n) { this.rows.splice(start - 1, n); }
+  deleteRow(at) { this.rows.splice(at - 1, 1); }
 }
 
 function formatDate(date, tz, fmt) {
@@ -103,7 +104,7 @@ function createGas(codePath, seed) {
       getProperty: k => (k in props ? props[k] : null),
       setProperty: (k, v) => { props[k] = String(v); }
     }) },
-    LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+    LockService: { getScriptLock: () => ({ waitLock() {}, tryLock() { return true; }, releaseLock() {} }) },
     Utilities: {
       newBlob: (data) => ({ getBytes: () => (typeof data === 'string' ? Array.from(Buffer.from(data, 'utf8')) : data) }),
       computeHmacSha256Signature: (value, key) => {
@@ -119,7 +120,9 @@ function createGas(codePath, seed) {
       const method = url.split('/').pop().split('?')[0];
       const payload = opts && opts.payload ? JSON.parse(opts.payload) : {};
       sent.push({ method, payload });
-      const body = failTelegram ? { ok: false, description: 'mock failure' } : { ok: true, result: { message_id: ++msgId, username: 'pamir_test_bot' } };
+      // failTelegram: true — любой вызов падает; функция (method, payload) → свой ответ Telegram или null (обычный успех)
+      const custom = typeof failTelegram === 'function' ? failTelegram(method, payload) : null;
+      const body = custom || (failTelegram && typeof failTelegram !== 'function' ? { ok: false, description: 'mock failure' } : { ok: true, result: { message_id: ++msgId, username: 'pamir_test_bot' } });
       return { getContentText: () => JSON.stringify(body) };
     } },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ text, setMimeType() { return this; } }) },
