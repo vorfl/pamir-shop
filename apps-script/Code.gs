@@ -46,7 +46,8 @@ var PRODUCT_COLS = {
   descUa:  ['опис (ua)'],
   descRu:  ['описание (ru)'],
   whPrice: ['опт: ціна', 'опт ціна'],
-  whMin:   ['опт: мін', 'опт мін'],
+  whMin:   ['опт: мін. обсяг', 'опт: мін', 'опт мін'],
+  whMinKg: ['опт: мін, кг'], // необязательная числовая колонка: если заполнена — главнее текста из «Опт: мін. обсяг»
   p100:    ['ціна за 100 г'],
   hidden:  ['приховати', 'прихован'],
   badge:   ['бейдж', 'мітка'],
@@ -60,7 +61,10 @@ var PRODUCT_COLS = {
   fresh:   ['свіжа поставка'],
   hint:    ['підказка до ваги'],
   hintRu:  ['подсказка к весу'],
-  packPrices: ['ціни фасувань', 'ціна фасування']
+  packPrices: ['ціни фасувань', 'ціна фасування'],
+  // Волна 2б: состав специй и смесей. Необязательные колонки.
+  compUa:  ['склад (ua)', 'склад'],
+  compRu:  ['состав (ru)', 'состав']
 };
 
 /** Бейдж товара: в таблице пишется словом, витрина получает код. */
@@ -314,12 +318,10 @@ function readProducts_(ss, categories) {
     if (dUa) p.dUa = dUa;
     if (dRu) p.dRu = dRu;
 
+    // Оптовая цена и минимальный объём в общий каталог не идут: их получает только одобренный оптовик отдельным запросом.
+    // Здесь лишь отметка wb — «для этого товара есть оптовая цена» (по ней витрина показывает ссылку на форму для бизнеса).
     var wh = toNum_(col.whPrice >= 0 ? row[col.whPrice] : '');
-    if (wh > 0) {
-      p.w = wh;
-      var whMin = cell_(row, col.whMin);
-      if (whMin) p.wm = whMin;
-    }
+    if (wh > 0 && parseWhMin_(price.t, col.whMinKg >= 0 ? row[col.whMinKg] : '', cell_(row, col.whMin))) p.wb = 1;
     if (oldP > base && base > 0) {
       p.o = Math.round(oldP * 100) / 100;
       if (!badge) badge = 'sale';
@@ -345,6 +347,10 @@ function readProducts_(ss, categories) {
     var hint = cell_(row, col.hint), hintRu = cell_(row, col.hintRu);
     if (hint) p.h = hint;
     if (hintRu && hintRu !== hint) p.hr = hintRu;
+    // «Склад»: только то, что написано в таблице.
+    var compUa = cell_(row, col.compUa), compRu = cell_(row, col.compRu);
+    if (compUa) p.cu = compUa;
+    if (compRu && compRu !== compUa) p.cr = compRu;
     products.push(p);
   }
   return products;
@@ -583,6 +589,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Етап 8: створити листи й колонки', 'setupStage8')
     .addItem('Етап 8.2: створити листи «Архів товарів» і «Клієнти»', 'setupWave2a')
+    .addItem('Етап 8.3: створити листи й колонки (опт, розсилка, оплата)', 'setupWave2b')
     .addToUi();
 }
 
@@ -617,6 +624,11 @@ function checkCatalogText_() {
   if (noPrice.length) {
     lines.push('');
     lines.push('Без ціни або фасування: ' + noPrice.slice(0, 30).join(', ') + (noPrice.length > 30 ? ' …' : ''));
+  }
+  var whBad = wholesaleMap_().bad;
+  if (whBad.length) {
+    lines.push('');
+    lines.push('Оптова ціна є, а мінімальний обсяг не зрозумілий (оптова ціна не діє): ' + whBad.slice(0, 30).join(', ') + (whBad.length > 30 ? ' …' : ''));
   }
   // ID товара, удалённого навсегда, нельзя давать новому товару: путаются статистика и «Повторити замовлення».
   var gone = deletedIdSet_();
@@ -655,7 +667,7 @@ var ORDER_COLS = {
   num: ['№'], date: ['дата'], status: ['статус'], uid: ['telegram user id'], username: ['@username'],
   name: ['ім\'я', 'ім’я'], phone: ['телефон'], delivery: ['доставка'], city: ['місто'], branch: ['відділення'],
   pay: ['оплата'], comment: ['коментар'], items: ['товари'], total: ['сума'], lang: ['мова'],
-  source: ['джерело'], svc: ['службове'], ttn: ['ттн']
+  source: ['джерело'], svc: ['службове'], ttn: ['ттн'], paid: ['оплата: статус']
 };
 var STATUS_NEW = 'новий';
 var STATUS_BY_CODE = { c: 'підтверджено', n: 'немає в наявності', s: 'відправлено', d: 'виконано' };
@@ -682,6 +694,9 @@ function doPost(e) {
     else if (body.action === 'ev') out = handleEvents_(body);
     else if (body.action === 'notify') out = handleNotify_(body);
     else if (body.action === 'cart') out = handleCart_(body);
+    else if (body.action === 'wh.prices') out = handleWhPrices_(body);
+    else if (body.action === 'wh.apply') out = handleWhApply_(body);
+    else if (body.action === 'wh.pricelist') out = handleWhPricelist_(body);
     else if (isAdmin) out = handleAdmin_(body);
     else out = { ok: false, error: 'unknown_action' };
   } catch (err) {
@@ -759,6 +774,7 @@ function handleOrder_(body) {
   var compact = []; // [id, граммы, количество] — по этому «Повторить заказ» собирает корзину заново
   var total = 0;
   var bad = false;
+  var picked = [];
   body.items.forEach(function (it) {
     var id = String((it && it.id) || '');
     var g = Number(it && it.g) || 0;
@@ -770,9 +786,22 @@ function handleOrder_(body) {
       else if (g === 0) price = p.p;
     }
     if (!(price > 0)) { bad = true; return; }
-    lines.push(p.ua + (p.t === 'w' ? ' ' + weightLabel_(g) : '') + ' × ' + q + ' = ' + price * q + ' ₴');
-    compact.push([id, g, q]);
-    total += price * q;
+    picked.push({ p: p, id: id, g: g, q: q, price: price });
+  });
+  // Опт: статус оптовика проверяется при каждом заказе; объём считается по сумме всех фасовок одного товара.
+  var whIds = [];
+  if (!bad && user && isWholesaler_(user.id)) {
+    var whMap = wholesaleMap_().map, whQty = {};
+    picked.forEach(function (x) { whQty[x.id] = (whQty[x.id] || 0) + (x.p.t === 'w' ? x.g * x.q / 1000 : x.q); });
+    picked.forEach(function (x) {
+      var wp = wholesaleUnit_(whMap[x.id], x.p.t, x.g, whQty[x.id]);
+      if (wp > 0 && wp < x.price) { x.price = wp; x.wh = true; if (whIds.indexOf(x.id) < 0) whIds.push(x.id); }
+    });
+  }
+  picked.forEach(function (x) {
+    lines.push(x.p.ua + (x.p.t === 'w' ? ' ' + weightLabel_(x.g) : '') + (x.wh ? ' (опт)' : '') + ' × ' + x.q + ' = ' + x.price * x.q + ' ₴');
+    compact.push([x.id, x.g, x.q]);
+    total += x.price * x.q;
   });
   if (bad || Number(body.total) !== total) return { ok: false, error: 'changed' };
   if (shop.min > 0 && total < shop.min) return { ok: false, error: 'min_order', min: shop.min };
@@ -807,6 +836,7 @@ function handleOrder_(body) {
     o.giftsClient = gifts.map(function (x) { return o.lang === 'ru' ? x.ru : x.ua; });
     var svc = { i: compact };
     if (o.gifts.length) svc.g = o.gifts;
+    if (whIds.length) { svc.w = whIds; o.wh = true; } // позиции по оптовой цене — для отметки «ОПТ» у админа
     o.num = nextOrderNumber_(sheet, col);
     var row = [];
     for (var i = 0; i < sheet.getLastColumn(); i++) row.push('');
@@ -935,7 +965,8 @@ function handleMyOrders_(body) {
       items: cell_(row, col.items),
       total: toNum_(col.total >= 0 ? row[col.total] : 0),
       delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
-      i: again, ttn: svcTtn_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch)
+      i: again, ttn: svcTtn_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch),
+      paid: paidCode_(cell_(row, col.paid))
     });
   }
   return { ok: true, orders: orders, done: done };
@@ -1034,7 +1065,7 @@ function findOrder_(num) {
         name: get('name'), phone: get('phone'), delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
         city: get('city'), branch: get('branch'), pay: payCode, comment: get('comment'),
         items: get('items'), total: toNum_(col.total >= 0 ? row[col.total] : 0),
-        lang: get('lang') === 'ru' ? 'ru' : 'ua', source: get('source'), svc: get('svc'),
+        lang: get('lang') === 'ru' ? 'ru' : 'ua', source: get('source'), svc: get('svc'), paid: get('paid'),
         npType: parseDelivery_(delivery).npType, point: parseDelivery_(delivery).point
       }
     };
@@ -1050,13 +1081,13 @@ function adminText_(o, statusNote) {
   if (o.uid) who = '<a href="tg://user?id=' + o.uid + '">' + who + '</a>';
   if (o.username) who += ' (' + escHtml_(o.username) + ')';
   var lines = [
-    (o.status === STATUS_NEW ? '🆕 ' : '') + '<b>Замовлення ' + o.num + '</b>' + (isTest ? ' · 🧪 ТЕСТ' : ''),
+    (o.status === STATUS_NEW ? '🆕 ' : '') + '<b>Замовлення ' + o.num + '</b>' + (isTest ? ' · 🧪 ТЕСТ' : '') + (orderIsWh_(o) ? ' · 🏷 <b>ОПТ</b>' : ''),
     'Статус: <b>' + escHtml_(o.status) + '</b>' + (statusNote ? ' (' + escHtml_(statusNote) + ')' : ''),
     '',
     '👤 ' + who,
     '📞 ' + escHtml_(o.phone),
     '🚚 ' + escHtml_(deliveryLine_(o)),
-    '💳 ' + PAY_UA[o.pay],
+    '💳 ' + PAY_UA[o.pay] + (paidCode_(o.paid) !== 'unpaid' ? ' · <b>' + PAID_UA[paidCode_(o.paid)] + '</b>' : ''),
     ''
   ];
   String(o.items).split('; ').forEach(function (s) { if (s) lines.push('• ' + escHtml_(s)); });
@@ -1075,7 +1106,8 @@ function adminKeyboard_(num) {
   return {
     inline_keyboard: [
       [{ text: '✅ Підтвердити', callback_data: 'st:' + num + ':c' }, { text: '❌ Немає в наявності', callback_data: 'st:' + num + ':n' }],
-      [{ text: '📦 Відправлено', callback_data: 'st:' + num + ':s' }, { text: '✔️ Виконано', callback_data: 'st:' + num + ':d' }]
+      [{ text: '📦 Відправлено', callback_data: 'st:' + num + ':s' }, { text: '✔️ Виконано', callback_data: 'st:' + num + ':d' }],
+      [{ text: '💳 Оплачено', callback_data: 'pay:' + num }]
     ]
   };
 }
@@ -1262,6 +1294,15 @@ function handleCallback_(cq, token, admins) {
     if (cq.message) tg_(token, 'editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
     return;
   }
+  if (cq.data === 'mu') { // клиент отказался от рассылок: действует сразу, сообщения о заказах остаются
+    mailUnsubscribe_(fromId);
+    var ruMu = String((cq.from && cq.from.language_code) || '').toLowerCase().indexOf('ru') === 0;
+    answer(ruMu ? 'Рассылки отключены' : 'Розсилки вимкнено');
+    tg_(token, 'sendMessage', { chat_id: fromId, text: ruMu
+      ? 'Больше не присылаем рассылки. Сообщения о ваших заказах будут приходить как раньше.'
+      : 'Більше не надсилаємо розсилки. Повідомлення про ваші замовлення приходитимуть, як і раніше.' });
+    return;
+  }
   var props = scriptProps_();
   if (handleCallback8_(cq, token, props, answer)) return; // отзывы, брошенная корзина, ТТН
   var menu = String(cq.data || '').match(/^m:(pts|apr|biz)$/);
@@ -1275,6 +1316,24 @@ function handleCallback_(cq, token, admins) {
   // Права проверяются при каждом нажатии: по тому, кто нажал (или по чату, если это чат из ADMIN_CHAT_IDS).
   var me = adminAccess_(fromId, props) || adminAccess_(chatId, props);
   if (!me) { answer('Немає доступу'); return; }
+  var wa = String(cq.data || '').match(/^wa:(W-\d+):([tar])$/);
+  if (wa) { // заявка на опт: «Взяти в роботу / Схвалити / Відхилити»
+    if (!me.perms.wh) { answer('У вас немає права «Опт»'); return; }
+    actor_ = { id: fromId, name: clean_((cq.from && cq.from.first_name) || me.name || '', 60) };
+    var waRes = decideWhApp_(wa[1], wa[2], token, cq.message ? [chatId, cq.message.message_id] : null);
+    answer(waRes.error === 'not_found' ? 'Заявку ' + wa[1] + ' не знайдено' : waRes.same ? 'Уже: ' + waRes.status : waRes.ok ? 'Заявка ' + wa[1] + ': ' + waRes.status : 'Не вдалося');
+    return;
+  }
+  var pay = String(cq.data || '').match(/^pay:(P-\d+)$/);
+  if (pay) { // «💳 Оплачено» под сообщением о заказе
+    if (!me.perms.st) { answer('У вас немає права змінювати статуси замовлень'); return; }
+    actor_ = { id: fromId, name: clean_((cq.from && cq.from.first_name) || me.name || '', 60) };
+    var paidRes = setOrderPaid_(pay[1], 'paid', token, cq.message ? [chatId, cq.message.message_id] : null);
+    if (paidRes.error === 'not_found') answer('Замовлення ' + pay[1] + ' не знайдено в таблиці');
+    else if (paidRes.same) answer('Уже позначено: оплачено');
+    else answer('Оплату позначено' + (paidRes.told === false ? '. Клієнту написати не вдалося' : ''));
+    return;
+  }
   var m = String(cq.data || '').match(/^st:(P-\d+):([cnsd])$/);
   if (!m) { answer(''); return; }
   if (!me.perms.st) { answer('У вас немає права змінювати статуси замовлень'); return; }
@@ -1570,6 +1629,17 @@ function handleAdmin_(body) {
   if (a === 'admin.adminSave') return deny('admins') || saveAdmin_(me, body, props, token);
   if (a === 'admin.log') return deny('admins') || listLog_();
   if (a === 'admin.ttn') return deny('st') || setTtn_(String(body.num || ''), String(body.ttn || ''), token);
+  // Рассылка (право «Розсилка»). Порядок «черновик → тільки мені → отправка» проверяет сервер.
+  if (a === 'admin.mail') return deny('mail') || listMail_();
+  if (a === 'admin.mailSave') return deny('mail') || saveMail_(body);
+  if (a === 'admin.mailCount') return deny('mail') || (function () { var c = mailCount_(body.seg || {}, ''); return { ok: true, n: c.n, skip: c.skip }; })();
+  if (a === 'admin.mailTest') return deny('mail') || testMail_(String(body.id || ''), me, token);
+  if (a === 'admin.mailSend') return deny('mail') || startMail_(String(body.id || ''), String(body.at || ''), token);
+  if (a === 'admin.mailCancel') return deny('mail') || cancelMail_(String(body.id || ''));
+  if (a === 'admin.wh') return deny('wh') || listWh_();
+  if (a === 'admin.whDecide') return deny('wh') || decideWhApp_(String(body.id || ''), String(body.d || ''), token, null);
+  if (a === 'admin.whRevoke') return deny('wh') || revokeWholesaler_(String(body.uid || ''));
+  if (a === 'admin.paid') return deny('st') || setOrderPaid_(String(body.num || ''), String(body.state || ''), token, null); // «Оплачено» / «Повернено»
   if (a === 'admin.reviews') return deny('reviews') || listReviews_();
   if (a === 'admin.review') return deny('reviews') || moderateReview_(String(body.id || ''), body.ok === true, token);
   return { ok: false, error: 'unknown_action' };
@@ -1608,7 +1678,8 @@ function listOrders_() {
         status: status, uid: cell_(row, col.uid), username: cell_(row, col.username), name: cell_(row, col.name),
         phone: cell_(row, col.phone), delivery: cell_(row, col.delivery), city: cell_(row, col.city),
         branch: cell_(row, col.branch), pay: cell_(row, col.pay), comment: cell_(row, col.comment),
-        items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(cell_(row, col.svc))
+        items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(cell_(row, col.svc)),
+        paid: paidCode_(cell_(row, col.paid)), wh: orderIsWh_({ svc: cell_(row, col.svc) }) ? 1 : 0
       });
     }
   }
@@ -1632,9 +1703,11 @@ function adminProduct_(row, col) {
     stock: isInStock_(cell_(row, col.stock)) ? 1 : 0, hidden: isYes_(cell_(row, col.hidden)) ? 1 : 0,
     img: normalizePhoto_(cell_(row, col.photo)), dUa: cell_(row, col.descUa), dRu: cell_(row, col.descRu),
     wh: toNum_(col.whPrice >= 0 ? row[col.whPrice] : 0), wm: cell_(row, col.whMin),
+    whn: (function () { var n = col.whMinKg >= 0 ? toNum_(row[col.whMinKg]) : 0; return n > 0 ? String(n).replace('.', ',') : ''; })(),
     badge: badgeCode_(cell_(row, col.badge)), old: toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : 0),
     qty: (function () { var q = col.qty >= 0 ? leftQty_(row[col.qty]) : null; return q === null ? '' : String(q).replace('.', ','); })(),
-    end: (function () { var e = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], 'Europe/Kiev') : null; return e ? e.day : ''; })()
+    end: (function () { var e = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], 'Europe/Kiev') : null; return e ? e.day : ''; })(),
+    cUa: cell_(row, col.compUa), cRu: cell_(row, col.compRu)
   };
 }
 
@@ -1685,6 +1758,7 @@ function updateProduct_(id, patch, create) {
     if (patch.old !== undefined && !(Number(patch.old) >= 0 && Number(patch.old) < 1000000)) return { ok: false, error: 'bad_form' };
     if (patch.badge !== undefined && patch.badge !== '' && !BADGE_UA[patch.badge]) return { ok: false, error: 'bad_form' };
     if (patch.qty !== undefined && patch.qty !== '' && !(toNum_(patch.qty) >= 0 && toNum_(patch.qty) < 100000)) return { ok: false, error: 'bad_form' };
+    if (patch.whn !== undefined && patch.whn !== '' && !(toNum_(patch.whn) >= 0 && toNum_(patch.whn) < 100000)) return { ok: false, error: 'bad_form' };
     if (patch.end !== undefined && patch.end !== '' && !saleEnd_(patch.end, 'Europe/Kiev')) return { ok: false, error: 'bad_form' };
     if (typeof patch.ua === 'string' && !clean_(patch.ua, 120)) return { ok: false, error: 'bad_form' };
     if (typeof patch.img === 'string' && patch.img && !/^https:\/\//i.test(patch.img)) return { ok: false, error: 'bad_form' };
@@ -1756,6 +1830,15 @@ function updateProduct_(id, patch, create) {
       ensureCol('qty', 'Залишок');
       set(col.qty, patch.qty === '' ? '' : Math.round(toNum_(patch.qty) * 1000) / 1000);
     }
+    if (patch.whn !== undefined && (toNum_(patch.whn) > 0 || col.whMinKg >= 0)) {
+      ensureCol('whMinKg', 'Опт: мін, кг');
+      set(col.whMinKg, toNum_(patch.whn) > 0 ? Math.round(toNum_(patch.whn) * 1000) / 1000 : '');
+    }
+    [['cUa', 'compUa', 'Склад (UA)'], ['cRu', 'compRu', 'Состав (RU)']].forEach(function (c) { // колонка создаётся, только когда состав впервые вписали
+      if (typeof patch[c[0]] !== 'string' || (!patch[c[0]].trim() && col[c[1]] < 0)) return;
+      ensureCol(c[1], c[2]);
+      set(col[c[1]], safeCell_(multiline_(patch[c[0]], 400)));
+    });
     if (patch.end !== undefined && (patch.end !== '' || col.saleEnd >= 0)) {
       ensureCol('saleEnd', 'Акція до');
       // Текстом ДД.ММ.РРРР: так дата не зависит от часового пояса таблицы.
@@ -1929,8 +2012,8 @@ var SETTINGS_DEF = [
   ['welcome_photo', 'Фото у привітанні бота: посилання https:// або file_id (надішліть фото боту — він відповість кодом). Порожньо — картинка PAMIR', ''],
   ['welcome_video_note', 'Відеокружок перед привітанням: file_id (надішліть кружок боту — він відповість кодом). Порожньо — без кружка', ''],
   ['contact', 'Кнопка «Написати нам»: @username або номер +380… Порожньо — кнопки немає', ''],
-  ['biz_soon_ua', 'Текст кнопки «Для бізнесу (опт)» у боті (UA)', 'Працюємо з кафе, магазинами та офісами. Форма заявки з’явиться зовсім скоро, а поки напишіть нам — обговоримо умови.'],
-  ['biz_soon_ru', 'Текст кнопки «Для бизнеса (опт)» в боте (RU)', 'Работаем с кафе, магазинами и офисами. Форма заявки появится совсем скоро, а пока напишите нам — обсудим условия.'],
+  ['biz_soon_ua', 'Текст кнопки «Для бізнесу (опт)» у боті (UA)', 'Працюємо з кафе, магазинами та офісами. Заповніть коротку заявку — відповімо тут, у Telegram.'],
+  ['biz_soon_ru', 'Текст кнопки «Для бизнеса (опт)» в боте (RU)', 'Работаем с кафе, магазинами и офисами. Заполните короткую заявку — ответим здесь, в Telegram.'],
   ['confirm_ua', 'Текст клієнту після прийняття замовлення (UA)', 'Ми підтвердимо наявність і напишемо вам сюди.'],
   ['confirm_ru', 'Текст клиенту после принятия заказа (RU)', 'Мы подтвердим наличие и напишем вам сюда.'],
   ['gift_from', 'Подарунок від суми замовлення, ₴ (0 — вимкнено)', '0'],
@@ -1951,11 +2034,18 @@ var SETTINGS_DEF = [
   ['story_text_ua', 'Сторінка «Від саду до столу»: текст (UA), кожен абзац з нового рядка. Порожньо — сторінки немає', 'Наш сад — в Ісфарі, на півночі Таджикистану. Тут наша родина вирощує абрикоси.\nКоли абрикоси достигають, ми збираємо врожай і сушимо його — так виходить курага.\nКурагу привозимо до Харкова, на Центральний ринок. Тут ми зустрічаємо покупців на наших точках.\nЗапитуйте про сад і курагу — розповімо з радістю.'],
   ['story_text_ru', 'Страница «От сада до стола»: текст (RU), каждый абзац с новой строки', 'Наш сад — в Исфаре, на севере Таджикистана. Здесь наша семья выращивает абрикосы.\nКогда абрикосы созревают, мы собираем урожай и сушим его — так получается курага.\nКурагу привозим в Харьков, на Центральный рынок. Здесь мы встречаем покупателей на наших точках.\nСпрашивайте про сад и курагу — расскажем с радостью.'],
   ['story_photos', 'Сторінка «Від саду до столу»: посилання на фото (https://…), кожне з нового рядка', ''],
+  ['mail_every_days', 'Розсилка: не частіше ніж раз на N днів одній людині (0 — без обмеження)', '7'],
+  ['father_ids', 'Добірка «Спеції від батька» на головній: ID товарів через кому (наприклад SPC-001, SPC-004). Порожньо — без блоку', ''],
+  ['father_title_ua', 'Добірка «Спеції від батька»: заголовок (UA)', 'Спеції від батька'],
+  ['father_title_ru', 'Подборка «Специи от отца»: заголовок (RU)', 'Специи от отца'],
+  ['father_text_ua', 'Добірка «Спеції від батька»: текст під заголовком (UA). Порожньо — без тексту', ''],
+  ['father_text_ru', 'Подборка «Специи от отца»: текст под заголовком (RU)', ''],
   ['remind_text_ru', 'Текст напоминания (RU)', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.']
 ];
-var SETTINGS_NUM = { min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72 };
+var SETTINGS_NUM = { mail_every_days: 365, min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72 };
 var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'feature_id', 'gift_text_ua', 'gift_text_ru', 'loyal_text_ua', 'loyal_text_ru',
-  'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos'];
+  'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos',
+  'father_ids', 'father_text_ua', 'father_text_ru'];
 var settingsMemo_ = null;
 
 function isYes_(v) {
@@ -1997,6 +2087,7 @@ function saveSettings_(values) {
     if (k.indexOf('pay_') === 0) next[k] = values[k] === true || isYes_(values[k]) ? 'так' : 'ні';
     else if (SETTINGS_NUM[k]) next[k] = String(Math.max(0, Math.min(SETTINGS_NUM[k], Math.round(toNum_(values[k])))));
     else if (k === 'feature_id') next[k] = clean_(values[k], 20).toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9-]/g, '');
+    else if (k === 'father_ids') next[k] = idList_(values[k], 20).join(', ');
     else if (k === 'theme') next[k] = /^(newyear|navruz)$/.test(String(values[k]).trim().toLowerCase()) ? String(values[k]).trim().toLowerCase() : '';
     else next[k] = multiline_(values[k], k.indexOf('story_') === 0 ? 3000 : 500);
   });
@@ -2168,7 +2259,7 @@ function salesStats_(write) {
  */
 var SHEET_EVENTS = 'Події';
 var EVENT_HEADERS = ['Час', 'Користувач', 'Сесія', 'Подія', 'Товар', 'Значення'];
-var EVENT_NAMES = ['open', 'view', 'add', 'cart', 'checkout', 'order', 'search', 'search0', 'fav', 'repeat', 'share', 'notify'];
+var EVENT_NAMES = ['open', 'view', 'add', 'cart', 'checkout', 'order', 'search', 'search0', 'fav', 'repeat', 'share', 'notify', 'mail'];
 var MAX_EVENTS_PER_HOUR = 400;
 var EVENTS_KEEP_ROWS = 20000;
 
@@ -2443,17 +2534,18 @@ function hourlyJob() {
 
 function menuDailyOff() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob') ScriptApp.deleteTrigger(t);
+    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob' || t.getHandlerFunction() === 'mailJob') ScriptApp.deleteTrigger(t);
   });
   try { SpreadsheetApp.getUi().alert('Щоденні повідомлення вимкнено.'); } catch (err) { /* запуск из редактора */ }
 }
 
 function menuDailyOn() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob') ScriptApp.deleteTrigger(t);
+    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob' || t.getHandlerFunction() === 'mailJob') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(11).create();
   ScriptApp.newTrigger('hourlyJob').timeBased().everyHours(1).create();
+  ScriptApp.newTrigger('mailJob').timeBased().everyMinutes(10).create(); // рассылка: порции и отложенная отправка
   try {
     SpreadsheetApp.getUi().alert('Готово. Щодня близько 11:00: повідомлення про появу товарів, прохання про відгук і (якщо задано remind_days) нагадування про повторне замовлення. Щогодини: нагадування про покинутий кошик.');
   } catch (err) { /* запуск из редактора */ }
@@ -2493,8 +2585,8 @@ var ADMIN_COLS = (function () {
 })();
 /** Какое право нужно, чтобы изменить поле товара. */
 var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', img: 'photo',
-  ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text',
-  price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', packs: 'price', t: 'price' };
+  ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
+  price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', whn: 'price', packs: 'price', t: 'price' };
 var INVITE_TTL_MS = 24 * 3600 * 1000;
 var LOG_HEAD = ['Час', 'Хто', 'Chat id', 'Дія', 'Об\'єкт', 'Було', 'Стало'];
 var LOG_KEEP_ROWS = 5000;
@@ -2692,7 +2784,7 @@ function listLog_() {
 /** Что изменилось в товаре: сравниваем то, что видит панель, до и после. */
 var PRODUCT_LOG_NAMES = { cat: 'категорія', ua: 'назва (UA)', ru: 'назва (RU)', t: 'тип', packs: 'фасування', price: 'ціна', stock: 'наявність',
   hidden: 'приховано', img: 'фото', dUa: 'опис (UA)', dRu: 'опис (RU)', wh: 'опт ціна', wm: 'опт мін. обсяг', badge: 'бейдж', old: 'стара ціна',
-  qty: 'залишок', end: 'акція до' };
+  qty: 'залишок', end: 'акція до', cUa: 'склад (UA)', cRu: 'состав (RU)', whn: 'опт мін, кг' };
 function logProductDiff_(before, after) {
   Object.keys(PRODUCT_LOG_NAMES).forEach(function (k) {
     var a = before ? before[k] : '', b = after[k];
@@ -3006,7 +3098,12 @@ function handleMenuCallback_(cq, kind, token, props) {
     }
     if (hasApp) kb.push([{ text: ru ? '🛒 Открыть в магазине' : '🛒 Відкрити в магазині', web_app: { url: found ? appUrl_(webapp, 'p=' + encodeURIComponent(fid)) : webapp } }]);
   } else if (kind === 'biz') {
+    if (isWholesaler_(chatId)) { // оптовику — сразу прайс
+      sendWhPricelist_(token, chatId, ru);
+      return;
+    }
     text = '💼 ' + (ru ? st.biz_soon_ru : st.biz_soon_ua);
+    if (hasApp) kb.push([{ text: ru ? '📝 Заполнить заявку' : '📝 Заповнити заявку', web_app: { url: appUrl_(webapp, 'view=biz') } }]);
     var contact = contactUrl_(st);
     if (contact) kb.push([{ text: ru ? '✍️ Написать нам' : '✍️ Написати нам', url: contact }]);
   } else {
@@ -3214,7 +3311,26 @@ function svcTtn_(svcText) {
 /* ------------------------------ Настройки витрины этапа 8 ------------------------------ */
 
 /** Дополняет «shop» в каталоге: точки, страница «Від саду до столу», сезонная тема, контакт, подсказки НП. */
+/** «SPC-001, spc-004; SPC-001» → ['SPC-001', 'SPC-004']: ID через запятую, пробел или с новой строки, без повторов. */
+function idList_(text, max) {
+  var out = [];
+  String(text === null || text === undefined ? '' : text).toUpperCase().split(/[\s,;]+/).forEach(function (s) {
+    s = s.replace(/[^A-ZА-ЯІЇЄҐ0-9_-]/g, '');
+    if (s && out.indexOf(s) < 0 && out.length < (max || 50)) out.push(s);
+  });
+  return out;
+}
+
 function shopExtras8_(shop, st) {
+  // Волна 2б: подборка «Спеції від батька» — товары и тексты из настроек. Пусто — блока нет.
+  var fatherIds = idList_(st.father_ids, 20);
+  if (fatherIds.length) {
+    shop.father = {
+      ids: fatherIds,
+      title: { ua: st.father_title_ua || st.father_title_ru, ru: st.father_title_ru || st.father_title_ua },
+      text: { ua: st.father_text_ua || st.father_text_ru, ru: st.father_text_ru || st.father_text_ua }
+    };
+  }
   try {
     var points = readPoints_();
     if (points.length) shop.points = points;
@@ -4386,7 +4502,8 @@ function setupWave2a() {
 var SHEET_CLIENTS = 'Клієнти';
 var CLIENT_HEAD = ['Chat id', 'Ім\'я', 'Мова', 'Перший вхід', 'Останній вхід', 'Відписка', 'Заблокував бота'];
 var CLIENT_COLS = { id: ['chat id'], name: ['ім\'я', 'ім’я'], lang: ['мова'], first: ['перший вхід'], last: ['останній вхід'],
-  unsub: ['відписка'], blocked: ['заблокував'] };
+  unsub: ['відписка'], blocked: ['заблокував'],
+  mailId: ['остання розсилка'], mailAt: ['дата останньої розсилки'] }; // необязательные: появляются при первой рассылке
 var CLIENT_TOUCH_SEC = 6 * 3600; // «Останній вхід» обновляется не чаще раза в 6 часов: магазин не должен тормозить из-за записи в таблицу
 
 function ensureClientsSheet_() {
@@ -4539,5 +4656,1041 @@ function perfEnd_(out) {
     if (p.admin && out && typeof out === 'object') out._t = { total: total, marks: p.marks }; // тому, кто не прошёл проверку прав, замеры не уходят
   } catch (err) {
     console.warn('perf: ' + err);
+  }
+}
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2б · Б3: отметка «Оплачено»                                 */
+/* ======================================================================== */
+/*
+ * Оплату отмечает админ вручную (перевод на карту, наличные). Колонка «Оплата: статус» в листе «Замовлення»
+ * появляется сама при первой отметке. Номер карты нигде не хранится: ни в коде, ни в таблице, ни на витрине.
+ */
+
+var PAID_HEAD = 'Оплата: статус';
+var PAID_UA = { unpaid: 'не оплачено', paid: 'оплачено', refund: 'повернено' };
+
+/** Значение ячейки → код. Пусто и всё непонятное — «не оплачено». */
+function paidCode_(v) {
+  var s = String(v === null || v === undefined ? '' : v).trim().toLowerCase();
+  if (/^(оплачен|сплачен|paid)/.test(s)) return 'paid';
+  if (/^(поверн|возвра|refund)/.test(s)) return 'refund';
+  return 'unpaid';
+}
+
+/**
+ * Меняет статус оплаты заказа. state: paid | unpaid | refund.
+ * Клиенту сообщение «Оплату отримали» уходит один раз за всю жизнь заказа (отметка pd в служебной ячейке):
+ * повторное нажатие и «оплачено → не оплачено → оплачено» второго сообщения не шлют.
+ */
+function setOrderPaid_(num, state, token, extraTarget) {
+  if (!PAID_UA[state]) return { ok: false, error: 'bad_form' };
+  var found, first = false, was;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    found = findOrder_(num);
+    if (!found) return { ok: false, error: 'not_found' };
+    var sheet = found.sheet, col = found.col;
+    if (col.paid < 0) { // колонка необязательная: появляется после «Службове» и «ТТН» при первой отметке
+      col.paid = sheet.getLastColumn();
+      sheet.getRange(1, col.paid + 1).setValue(PAID_HEAD).setFontWeight('bold');
+    }
+    was = paidCode_(found.o.paid);
+    if (was === state) return { ok: true, same: true, paid: state, told: null };
+    sheet.getRange(found.rowIndex, col.paid + 1).setValue(PAID_UA[state]);
+    if (state === 'paid' && col.svc >= 0) {
+      var sv = {};
+      try { sv = JSON.parse(found.o.svc || '{}') || {}; } catch (err) { sv = null; } // служебная ячейка испорчена — клиенту не пишем, чтобы не написать дважды
+      if (sv && !sv.pd) {
+        sv.pd = Date.now();
+        found.o.svc = JSON.stringify(sv);
+        sheet.getRange(found.rowIndex, col.svc + 1).setValue(found.o.svc);
+        first = true;
+      }
+    }
+    SpreadsheetApp.flush();
+    logAction_('Замовлення: оплата', num, PAID_UA[was], PAID_UA[state]);
+  } finally {
+    lock.releaseLock();
+  }
+  var o = found.o;
+  o.paid = PAID_UA[state];
+  var targets = [];
+  try { targets = (JSON.parse(o.svc || '{}').m) || []; } catch (err) { targets = []; }
+  if (extraTarget && !targets.some(function (t) { return String(t[0]) === String(extraTarget[0]) && t[1] === extraTarget[1]; })) targets.push(extraTarget);
+  var text = adminText_(o, ''), kb = adminKeyboard_(o.num);
+  tgAll_(token, targets.map(function (t) {
+    return ['editMessageText', { chat_id: t[0], message_id: t[1], text: text, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb }];
+  }));
+  var told = null;
+  if (first && o.uid && String(o.source).indexOf('test') < 0) {
+    told = !!tg_(token, 'sendMessage', { chat_id: o.uid, text: o.lang === 'ru'
+      ? 'Оплату за заказ ' + o.num + ' получили. Спасибо!' : 'Оплату за замовлення ' + o.num + ' отримали. Дякуємо!' }).ok;
+  }
+  return { ok: true, paid: state, told: told };
+}
+
+/**
+ * Платёжный провайдер — заглушка с интерфейсом. Договора с провайдером нет, оплата «Онлайн» на витрине скрыта.
+ * Когда появится договор: реализовать три функции ниже и добавить способ оплаты в настройки.
+ */
+var PayProvider_ = {
+  enabled: false,
+  /** Создать платёж по заказу. Должен вернуть { ok, url, id }. */
+  create: function (order) { return { ok: false, error: 'not_configured' }; },
+  /** Проверить статус платежа. Должен вернуть { ok, paid }. */
+  status: function (paymentId) { return { ok: false, error: 'not_configured' }; },
+  /** Принять уведомление провайдера (callback): проверить подпись и вызвать setOrderPaid_. */
+  callback: function (e) { return { ok: false, error: 'not_configured' }; }
+};
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2б · Б2: опт                                                */
+/* ======================================================================== */
+/*
+ * Оптовые цены видит только одобренный оптовик. В общий каталог они не попадают: оптовик получает их отдельным
+ * запросом по подписи Telegram, а его статус проверяется при каждом запросе и каждом заказе.
+ */
+
+var SHEET_WH_APPS = 'Опт-заявки';
+var WH_APP_HEAD = ['ID', 'Дата', 'Telegram user id', '@username', 'Тип бізнесу', 'Назва', 'Місто', 'Контактна особа', 'Телефон',
+  'Категорії', 'Обсяг', 'Як часто', 'Коментар', 'Статус', 'Хто вирішив', 'Мова', 'Службове'];
+var WA = { id: 0, date: 1, uid: 2, username: 3, type: 4, name: 5, city: 6, contact: 7, phone: 8, cats: 9, volume: 10, freq: 11, comment: 12, status: 13, by: 14, lang: 15, svc: 16 };
+var WA_NEW = 'нова', WA_WORK = 'в роботі', WA_OK = 'схвалено', WA_NO = 'відхилено';
+var SHEET_WH_CLIENTS = 'Оптові клієнти';
+var WH_CLIENT_HEAD = ['Telegram user id', 'Контактна особа', 'Назва', 'Місто', 'Телефон', 'Статус', 'Дата', 'Хто вирішив', 'Заявка'];
+var WC = { uid: 0, contact: 1, name: 2, city: 3, phone: 4, status: 5, date: 6, by: 7, app: 8 };
+var WC_ON = 'активний', WC_OFF = 'відкликано';
+var WH_TYPES = { cafe: 'кафе', shop: 'магазин', office: 'офіс', other: 'інше' };
+var MAX_WH_APPS_PER_DAY = 3;
+
+/**
+ * Минимальный объём для оптовой цены. t — тип товара (w — весовой, иначе упаковка или штука).
+ * Число из колонки «Опт: мін, кг» главнее текста. Возвращает { n, unit: 'kg' | 'pcs' } или null, если понять нельзя.
+ *   «5» → 5 кг для весового, 5 упаковок для остальных; «від 5 кг», «от 5кг», «5,5 кг» → кг; «500 г» → 0,5 кг;
+ *   «10 шт», «10 уп», «10 упаковок» → штуки. Единица не подходит к типу товара или числа нет → null.
+ */
+function parseWhMin_(t, numCell, textCell) {
+  var kg = t === 'w';
+  var n = typeof numCell === 'number' ? numCell : (String(numCell === null || numCell === undefined ? '' : numCell).trim() ? toNum_(numCell) : 0);
+  if (n > 0) return { n: kg ? n : Math.ceil(n), unit: kg ? 'kg' : 'pcs' };
+  var s = String(textCell === null || textCell === undefined ? '' : textCell).toLowerCase().replace(/[\s ]+/g, ' ').trim();
+  var m = s.match(/(\d+(?:[.,]\d+)?)\s*([a-zа-яіїєґ]*)/);
+  if (!m) return null;
+  var v = parseFloat(m[1].replace(',', '.'));
+  if (!(v > 0)) return null;
+  var u = m[2];
+  if (!u) return { n: kg ? v : Math.ceil(v), unit: kg ? 'kg' : 'pcs' };
+  if (/^(кг|kg|кіло|кило)/.test(u)) return kg ? { n: v, unit: 'kg' } : null;
+  if (/^(г|гр|g|грам\S*|грамм\S*)$/.test(u)) return kg ? { n: v / 1000, unit: 'kg' } : null;
+  if (/^(шт|уп|пач|pcs)/.test(u)) return kg ? null : { n: Math.ceil(v), unit: 'pcs' };
+  return null;
+}
+
+/** Оптовые цены из таблицы: { map: { id: { p, n, u } }, bad: [id, у которых цена есть, а объём не понять] }. Наружу целиком не отдаётся. */
+var whMapMemo_ = null;
+function wholesaleMap_() {
+  if (whMapMemo_) return whMapMemo_;
+  var out = { map: {}, bad: [] };
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
+  if (!sheet) return out;
+  var values = sheet.getDataRange().getValues();
+  var col = productCols_(sheet, values[0]);
+  if (col.whPrice < 0) { whMapMemo_ = out; return out; }
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var id = cell_(row, col.id);
+    var wh = toNum_(row[col.whPrice]);
+    if (!id || !(wh > 0) || out.map[id]) continue;
+    var t = priceInfo_(cell_(row, col.type), '', 0, 0).t;
+    var min = parseWhMin_(t, col.whMinKg >= 0 ? row[col.whMinKg] : '', cell_(row, col.whMin));
+    if (!min) { out.bad.push(id); continue; }
+    out.map[id] = { p: Math.round(wh * 100) / 100, n: Math.round(min.n * 1000) / 1000, u: min.unit };
+  }
+  if (out.bad.length) console.warn('опт: мінімальний обсяг не зрозумілий: ' + out.bad.slice(0, 20).join(', '));
+  whMapMemo_ = out;
+  return out;
+}
+
+/** Оптовая цена одной позиции или 0, если порог объёма не набран. Одинаково считают сервер и витрина. */
+function wholesaleUnit_(w, t, grams, have) {
+  if (!w || !(have + 1e-9 >= w.n)) return 0;
+  if ((t === 'w') !== (w.u === 'kg')) return 0;
+  return t === 'w' ? Math.round(w.p * grams / 1000) : Math.round(w.p);
+}
+
+function orderIsWh_(o) {
+  if (o.wh) return true;
+  try { var w = JSON.parse(o.svc || '{}').w; return Array.isArray(w) && w.length > 0; } catch (err) { return false; }
+}
+
+function ensureWhSheet_(name, head) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function whRows_(name, width) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
+}
+
+/** Действующий оптовик? Проверяется по листу «Оптові клієнти» при каждом запросе и заказе, без кэша. */
+function isWholesaler_(uid) {
+  uid = String(uid === null || uid === undefined ? '' : uid).trim();
+  if (!/^\d+$/.test(uid)) return false;
+  return whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length).some(function (row) {
+    return String(row[WC.uid]).trim() === uid && String(row[WC.status]).trim().toLowerCase() === WC_ON;
+  });
+}
+
+function whUser_(body) {
+  var token = scriptProps_().getProperty('BOT_TOKEN');
+  if (!token) return { error: 'not_configured' };
+  var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
+  if (!user) return { error: 'bad_auth' };
+  return { user: user, uid: String(user.id), token: token };
+}
+
+/** Последняя заявка этого человека: её статус показывает экран «Для бізнесу». */
+function lastWhApp_(uid) {
+  var rows = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length);
+  for (var r = rows.length - 1; r >= 0; r--) if (String(rows[r][WA.uid]).trim() === uid) return String(rows[r][WA.status]).trim() || WA_NEW;
+  return '';
+}
+
+/** Оптовые цены — только одобренному оптовику. Остальным: { wh: false } и статус последней заявки. */
+function handleWhPrices_(body) {
+  var who = whUser_(body);
+  if (who.error) return { ok: false, error: who.error };
+  if (!isWholesaler_(who.uid)) return { ok: true, wh: false, app: lastWhApp_(who.uid) };
+  var map = wholesaleMap_().map, prices = {};
+  JSON.parse(getCatalogJson_()).products.forEach(function (p) { // только товары, которые есть на витрине
+    var w = map[p.id];
+    if (w && (p.t === 'w') === (w.u === 'kg')) prices[p.id] = [w.p, w.n, w.u];
+  });
+  return { ok: true, wh: true, prices: prices };
+}
+
+function nextWhAppId_(rows) {
+  var max = 0;
+  rows.forEach(function (row) { var m = String(row[WA.id]).match(/^W-(\d+)$/); if (m) max = Math.max(max, parseInt(m[1], 10)); });
+  var n = String(max + 1);
+  while (n.length < 4) n = '0' + n;
+  return 'W-' + n;
+}
+
+function whAppText_(a) {
+  return '💼 <b>Заявка на опт ' + escHtml_(a.id) + '</b>\nСтатус: <b>' + escHtml_(a.status) + '</b>' + (a.by ? ' (' + escHtml_(a.by) + ')' : '') + '\n\n' +
+    'Тип: ' + escHtml_(a.type) + '\nНазва: ' + escHtml_(a.name) + '\nМісто: ' + escHtml_(a.city) +
+    '\n👤 ' + (a.uid ? '<a href="tg://user?id=' + a.uid + '">' + escHtml_(a.contact) + '</a>' : escHtml_(a.contact)) + (a.username ? ' (' + escHtml_(a.username) + ')' : '') +
+    '\n📞 ' + escHtml_(a.phone) + (a.cats ? '\nКатегорії: ' + escHtml_(a.cats) : '') + (a.volume ? '\nОбсяг: ' + escHtml_(a.volume) : '') +
+    (a.freq ? '\nЯк часто: ' + escHtml_(a.freq) : '') + (a.comment ? '\n💬 ' + escHtml_(a.comment) : '');
+}
+
+function whAppKeyboard_(a) {
+  if (a.status === WA_OK || a.status === WA_NO) return { inline_keyboard: [] };
+  var rows = [];
+  if (a.status === WA_NEW) rows.push([{ text: '🛠 Взяти в роботу', callback_data: 'wa:' + a.id + ':t' }]);
+  rows.push([{ text: '✅ Схвалити як оптового клієнта', callback_data: 'wa:' + a.id + ':a' }]);
+  rows.push([{ text: '❌ Відхилити', callback_data: 'wa:' + a.id + ':r' }]);
+  return { inline_keyboard: rows };
+}
+
+function whAppFromRow_(row) {
+  return { id: String(row[WA.id]).trim(), uid: String(row[WA.uid]).trim(), username: String(row[WA.username] || ''), type: String(row[WA.type] || ''),
+    name: String(row[WA.name] || ''), city: String(row[WA.city] || ''), contact: String(row[WA.contact] || ''), phone: String(row[WA.phone] || ''),
+    cats: String(row[WA.cats] || ''), volume: String(row[WA.volume] || ''), freq: String(row[WA.freq] || ''), comment: String(row[WA.comment] || ''),
+    status: String(row[WA.status] || '').trim() || WA_NEW, by: String(row[WA.by] || ''), lang: String(row[WA.lang]).trim() === 'ru' ? 'ru' : 'ua', svc: String(row[WA.svc] || '') };
+}
+
+/** Форма «Для бізнесу»: заявка в лист «Опт-заявки» и уведомление админам с правом «Опт». */
+function handleWhApply_(body) {
+  var who = whUser_(body);
+  if (who.error) return { ok: false, error: who.error };
+  var props = scriptProps_();
+  if (isWholesaler_(who.uid)) return { ok: true, wh: true };
+  var a = {
+    uid: who.uid, username: who.user.username ? '@' + who.user.username : '',
+    type: WH_TYPES[body.type] || '', name: clean_(body.name, 80), city: clean_(body.city, 60), contact: clean_(body.contact, 60),
+    phone: String(body.phone || '').replace(/[^\d+]/g, '').slice(0, 16),
+    cats: (Array.isArray(body.cats) ? body.cats : []).slice(0, 12).map(function (c) { return clean_(c, 40); }).filter(Boolean).join(', '),
+    volume: clean_(body.volume, 80), freq: clean_(body.freq, 80), comment: clean_(body.comment, 300),
+    lang: body.lang === 'ru' ? 'ru' : 'ua', status: WA_NEW, by: ''
+  };
+  if (!a.type || a.name.length < 2 || a.city.length < 2 || a.contact.length < 2 || !/^\+\d{10,15}$/.test(a.phone)) return { ok: false, error: 'bad_form' };
+  var rowIndex;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = ensureWhSheet_(SHEET_WH_APPS, WH_APP_HEAD);
+    var rows = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length);
+    var dayAgo = Date.now() - 24 * 3600 * 1000, mine = 0;
+    rows.forEach(function (row) {
+      var d = row[WA.date];
+      if (String(row[WA.uid]).trim() === who.uid && Object.prototype.toString.call(d) === '[object Date]' && d.getTime() > dayAgo) mine++;
+    });
+    if (mine >= MAX_WH_APPS_PER_DAY) return { ok: false, error: 'rate_limit' };
+    a.id = nextWhAppId_(rows);
+    sheet.appendRow([a.id, new Date(), '\'' + a.uid, safeCell_(a.username), a.type, safeCell_(a.name), safeCell_(a.city), safeCell_(a.contact), '\'' + a.phone,
+      safeCell_(a.cats), safeCell_(a.volume), safeCell_(a.freq), safeCell_(a.comment), a.status, '', a.lang, '']);
+    rowIndex = sheet.getLastRow();
+    sheet.getRange(rowIndex, WA.date + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  touchClient_(who.user, a.lang, true);
+  // Уведомления. Заявка уже записана: сбой Telegram не должен её отменять.
+  try {
+    var sent = [];
+    adminList_(props).filter(function (x) { return x.active && x.perms.wh; }).forEach(function (x) {
+      var res = tg_(who.token, 'sendMessage', { chat_id: x.id, text: whAppText_(a), parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: whAppKeyboard_(a) });
+      if (res.ok) sent.push([x.id, res.result.message_id]);
+    });
+    if (sent.length) SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_WH_APPS).getRange(rowIndex, WA.svc + 1).setValue(JSON.stringify({ m: sent }));
+    tg_(who.token, 'sendMessage', { chat_id: who.uid, text: a.lang === 'ru'
+      ? '💼 Заявку ' + a.id + ' получили. Ответим здесь, в Telegram.' : '💼 Заявку ' + a.id + ' отримали. Відповімо тут, у Telegram.' });
+  } catch (err) {
+    console.error('wh notify: ' + (err && err.stack || err));
+  }
+  return { ok: true, id: a.id };
+}
+
+/**
+ * Решение по заявке: t — взять в работу, a — одобрить как оптового клиента, r — отклонить.
+ * Одна функция для кнопок в Telegram и для панели. Повторное нажатие ничего не меняет и клиенту второй раз не пишет.
+ */
+function decideWhApp_(id, d, token, extraTarget) {
+  var next = { t: WA_WORK, a: WA_OK, r: WA_NO }[d];
+  if (!next) return { ok: false, error: 'bad_form' };
+  var a, was;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_WH_APPS);
+    var rows = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length);
+    var r = -1;
+    for (var i = rows.length - 1; i >= 0; i--) if (String(rows[i][WA.id]).trim() === id) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' };
+    a = whAppFromRow_(rows[r]);
+    was = a.status;
+    if (was === next) return { ok: true, same: true, status: was };
+    if (was === WA_OK || was === WA_NO) return { ok: true, same: true, status: was }; // решение уже принято; отзыв статуса — отдельным действием
+    a.status = next;
+    a.by = actor_ ? actor_.name : '';
+    sheet.getRange(r + 2, WA.status + 1, 1, 2).setValues([[a.status, safeCell_(clean_(a.by, 80))]]);
+    if (d === 'a') upsertWholesaler_(a);
+    SpreadsheetApp.flush();
+    logAction_('Опт: заявка', a.id + ' ' + a.name, was, a.status);
+  } finally {
+    lock.releaseLock();
+  }
+  var targets = [];
+  try { targets = (JSON.parse(a.svc || '{}').m) || []; } catch (err) { targets = []; }
+  if (extraTarget && !targets.some(function (t) { return String(t[0]) === String(extraTarget[0]) && t[1] === extraTarget[1]; })) targets.push(extraTarget);
+  var text = whAppText_(a), kb = whAppKeyboard_(a);
+  tgAll_(token, targets.map(function (t) {
+    return ['editMessageText', { chat_id: t[0], message_id: t[1], text: text, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb }];
+  }));
+  var told = null;
+  if (d !== 't' && a.uid) {
+    var ru = a.lang === 'ru';
+    var msg = { chat_id: a.uid, text: d === 'a'
+      ? (ru ? '✅ Заявку ' + a.id + ' одобрили. Оптовые цены уже действуют: откройте магазин и положите в корзину нужный объём.'
+            : '✅ Заявку ' + a.id + ' схвалили. Оптові ціни вже діють: відкрийте магазин і покладіть у кошик потрібний обсяг.')
+      : (ru ? 'По заявке ' + a.id + ' сейчас не можем предложить оптовые условия. Напишите нам, если хотите обсудить.'
+            : 'За заявкою ' + a.id + ' зараз не можемо запропонувати оптові умови. Напишіть нам, якщо хочете обговорити.') };
+    var webapp = scriptProps_().getProperty('WEBAPP_URL');
+    if (d === 'a' && /^https:\/\//.test(webapp || '')) {
+      msg.reply_markup = { inline_keyboard: [[{ text: ru ? '🛒 Открыть магазин' : '🛒 Відкрити магазин', web_app: { url: appUrl_(webapp, 'view=biz') } }]] };
+    }
+    told = !!tg_(token, 'sendMessage', msg).ok;
+  }
+  return { ok: true, status: a.status, told: told };
+}
+
+/** Одобренная заявка → строка в листе «Оптові клієнти» (или возврат статуса «активний» существующей). Вызывается под блокировкой. */
+function upsertWholesaler_(a) {
+  var sheet = ensureWhSheet_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD);
+  var rows = whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length);
+  var by = safeCell_(clean_(actor_ ? actor_.name : '', 80));
+  for (var r = 0; r < rows.length; r++) {
+    if (String(rows[r][WC.uid]).trim() !== a.uid) continue;
+    sheet.getRange(r + 2, WC.contact + 1, 1, 8).setValues([[safeCell_(a.contact), safeCell_(a.name), safeCell_(a.city), '\'' + a.phone, WC_ON, new Date(), by, a.id]]);
+    return;
+  }
+  sheet.appendRow(['\'' + a.uid, safeCell_(a.contact), safeCell_(a.name), safeCell_(a.city), '\'' + a.phone, WC_ON, new Date(), by, a.id]);
+  sheet.getRange(sheet.getLastRow(), WC.date + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+}
+
+/** Отзыв статуса оптовика: цены у него сразу розничные (статус проверяется при каждом запросе и заказе). */
+function revokeWholesaler_(uid) {
+  uid = String(uid || '').trim();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_WH_CLIENTS);
+    var rows = whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length);
+    var r = -1;
+    for (var i = 0; i < rows.length; i++) if (String(rows[i][WC.uid]).trim() === uid) { r = i; break; }
+    if (!sheet || r < 0) return { ok: false, error: 'not_found' };
+    if (String(rows[r][WC.status]).trim().toLowerCase() === WC_ON) {
+      sheet.getRange(r + 2, WC.status + 1, 1, 3).setValues([[WC_OFF, new Date(), safeCell_(clean_(actor_ ? actor_.name : '', 80))]]);
+      SpreadsheetApp.flush();
+      logAction_('Опт: статус відкликано', (String(rows[r][WC.name]) || 'id ' + uid) + ', id ' + uid, WC_ON, WC_OFF);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return listWh_();
+}
+
+/** Заявки и оптовые клиенты для панели (право «Опт»). */
+function listWh_() {
+  function day(d) { return Object.prototype.toString.call(d) === '[object Date]' && !isNaN(d.getTime()) ? Utilities.formatDate(d, 'Europe/Kiev', 'dd.MM.yyyy') : String(d || ''); }
+  var apps = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length).slice(-100).reverse().map(function (row) {
+    var a = whAppFromRow_(row);
+    return { id: a.id, date: day(row[WA.date]), type: a.type, name: a.name, city: a.city, contact: a.contact, phone: a.phone, username: a.username,
+      cats: a.cats, volume: a.volume, freq: a.freq, comment: a.comment, status: a.status, by: a.by };
+  });
+  var clients = whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length).reverse().map(function (row) {
+    return { uid: String(row[WC.uid]).trim(), contact: String(row[WC.contact] || ''), name: String(row[WC.name] || ''), city: String(row[WC.city] || ''),
+      phone: String(row[WC.phone] || ''), on: String(row[WC.status]).trim().toLowerCase() === WC_ON ? 1 : 0, date: day(row[WC.date]), by: String(row[WC.by] || ''), app: String(row[WC.app] || '') };
+  }).filter(function (c) { return c.uid; });
+  return { ok: true, apps: apps, clients: clients };
+}
+
+/**
+ * «Прайс для бізнесу» сообщением: товары в наличии с оптовой ценой, по категориям. Длинный прайс — несколькими сообщениями.
+ * Собирается только из клиентских полей и оптовой цены; служебные колонки (закупка, маржа и т. п.) сюда не попадают.
+ */
+function whPricelistTexts_(ru) {
+  var catalog = JSON.parse(getCatalogJson_());
+  var map = wholesaleMap_().map;
+  var blocks = [];
+  catalog.categories.forEach(function (c) {
+    var lines = [];
+    catalog.products.forEach(function (p) {
+      var w = map[p.id];
+      if (p.c !== c.code || !p.a || !w || (p.t === 'w') !== (w.u === 'kg')) return;
+      var n = String(w.n).replace('.', ',');
+      var unit = p.t === 'w' ? (ru ? '₴/кг, от ' + n + ' кг' : '₴/кг, від ' + n + ' кг')
+        : p.t === 'u' ? (ru ? '₴/шт, от ' + n + ' шт' : '₴/шт, від ' + n + ' шт') : (ru ? '₴/уп., от ' + n + ' уп.' : '₴/уп., від ' + n + ' уп.');
+      lines.push('• ' + ((ru && p.ru) || p.ua) + ' — ' + String(w.p).replace('.', ',') + ' ' + unit);
+    });
+    if (lines.length) blocks.push('<b>' + escHtml_(ru ? c.ru : c.ua) + '</b>\n' + lines.map(escHtml_).join('\n'));
+  });
+  if (!blocks.length) return [];
+  var head = '💼 <b>' + (ru ? 'Прайс для бизнеса' : 'Прайс для бізнесу') + ' · PAMIR</b> · ' + Utilities.formatDate(new Date(), 'Europe/Kiev', 'dd.MM.yyyy');
+  var out = [], cur = head;
+  blocks.forEach(function (b) {
+    while (b.length > 3500) { // одна очень длинная категория режется по строкам
+      var cut = b.lastIndexOf('\n', 3500);
+      if (cut < 1) cut = 3500;
+      if (cur) { out.push(cur); cur = ''; }
+      out.push(b.slice(0, cut));
+      b = b.slice(cut + 1);
+    }
+    if ((cur + '\n\n' + b).length > 3500) { out.push(cur); cur = b; } else cur = cur ? cur + '\n\n' + b : b;
+  });
+  if (cur) out.push(cur);
+  return out;
+}
+
+function sendWhPricelist_(token, chatId, ru) {
+  var texts = whPricelistTexts_(ru);
+  if (!texts.length) {
+    tg_(token, 'sendMessage', { chat_id: chatId, text: ru ? 'Сейчас нет товаров с оптовой ценой в наличии.' : 'Зараз немає товарів з оптовою ціною в наявності.' });
+    return 0;
+  }
+  texts.forEach(function (text) { tg_(token, 'sendMessage', { chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true }); });
+  return texts.length;
+}
+
+/** Кнопка «Надіслати прайс у чат» в магазине: только оптовику, не чаще 3 раз в час. */
+function handleWhPricelist_(body) {
+  var who = whUser_(body);
+  if (who.error) return { ok: false, error: who.error };
+  if (!isWholesaler_(who.uid)) return { ok: false, error: 'no_perm' };
+  var cache = CacheService.getScriptCache();
+  var n = parseInt(cache.get('whpl_' + who.uid), 10) || 0;
+  if (n >= 3) return { ok: false, error: 'rate_limit' };
+  cache.put('whpl_' + who.uid, String(n + 1), 3600);
+  return { ok: true, n: sendWhPricelist_(who.token, who.uid, body.lang === 'ru') };
+}
+
+/** Меню PAMIR → «Етап 8.3: створити листи й колонки (опт, розсилка)». Можно запускать повторно: существующие данные не трогает. */
+function setupWave2b() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var done = [];
+  [[SHEET_WH_APPS, WH_APP_HEAD], [SHEET_WH_CLIENTS, WH_CLIENT_HEAD]].forEach(function (s) {
+    if (!ss.getSheetByName(s[0])) { ensureWhSheet_(s[0], s[1]); done.push('лист «' + s[0] + '»'); }
+  });
+  if (!ss.getSheetByName(SHEET_MAIL)) { ensureMailSheet_(); done.push('лист «' + SHEET_MAIL + '»'); }
+  var products = ss.getSheetByName(SHEET_PRODUCTS);
+  if (products) {
+    var pcol = mapHeaders_(headRow_(products), PRODUCT_COLS);
+    [['whMinKg', 'Опт: мін, кг'], ['compUa', 'Склад (UA)'], ['compRu', 'Состав (RU)']].forEach(function (c) {
+      if (pcol[c[0]] >= 0) return;
+      products.getRange(1, products.getLastColumn() + 1).setValue(c[1]).setFontWeight('bold');
+      done.push('колонка «' + c[1] + '» у «Товари»');
+    });
+  }
+  var orders = ensureOrdersSheet_();
+  if (orderCols_(orders).paid < 0) {
+    orders.getRange(1, orders.getLastColumn() + 1).setValue(PAID_HEAD).setFontWeight('bold');
+    done.push('колонка «' + PAID_HEAD + '» у «Замовлення»');
+  }
+  clearCatalogCache_();
+  var text = done.length ? 'Готово, створено:\n• ' + done.join('\n• ') : 'Усе вже створено раніше, нічого не змінено.';
+  console.log(text);
+  try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }
+  return done;
+}
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2б · Б1: рассылка                                           */
+/* ======================================================================== */
+/*
+ * Получатели — лист «Клієнти». Порядок жёсткий и проверяется на сервере: черновик → «Надіслати тільки мені» →
+ * подтверждение → отправка. Отправка идёт порциями по триггеру mailJob: после обрыва продолжается с того же места,
+ * каждому получателю отметка ставится ДО отправки — второго сообщения он не получит.
+ * Отписавшимся и тем, кто заблокировал бота, рассылка не уходит. Сервисные сообщения о заказах отписка не трогает.
+ */
+
+var SHEET_MAIL = 'Розсилки';
+var MAIL_HEAD = ['ID', 'Створено', 'Хто створив', 'Статус', 'Сегмент', 'Текст (UA)', 'Текст (RU)', 'Фото', 'Кнопка', 'Заплановано (Київ)', 'Хто надіслав',
+  'Отримувачів', 'Надіслано', 'Помилки', 'Блокування', 'Пропущено (частота)', 'Натиснули кнопку', 'Замовили за 3 дні', 'Службове'];
+var ML = { id: 0, created: 1, by: 2, status: 3, seg: 4, ua: 5, ru: 6, photo: 7, btn: 8, at: 9, sender: 10, total: 11, sent: 12, err: 13, blocked: 14, skipped: 15, clicks: 16, orders: 17, svc: 18 };
+var ML_NEW = 'створена', ML_PLAN = 'запланована', ML_RUN = 'йде', ML_DONE = 'завершена', ML_STOP = 'скасована';
+var MAIL_SEGMENTS = { all: 'усі клієнти', cat: 'купували категорію', prod: 'купували товар', idle: 'не замовляли 30+ днів', wh: 'оптовики', sub: 'чекають на товар' };
+var MAIL_BUTTONS = { none: '', shop: 'Відкрити магазин', prod: 'Відкрити товар', cat: 'Відкрити категорію' };
+var MAIL_IDLE_DAYS = 30;
+var MAIL_BATCH = 120;          // сообщений за один запуск триггера
+var MAIL_RUN_MS = 4 * 60 * 1000; // запуск триггера работает не дольше (лимит Apps Script — 6 минут)
+var MAIL_PAUSE_MS = 60;        // пауза между сообщениями: не больше ~15 в секунду, с запасом к лимиту Telegram
+var MAIL_ORDER_DAYS = 3;
+
+function ensureMailSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_MAIL);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_MAIL);
+    sheet.getRange(1, 1, 1, MAIL_HEAD.length).setValues([MAIL_HEAD]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.hideColumns(MAIL_HEAD.length);
+  }
+  return sheet;
+}
+
+function mailRows_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MAIL);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, MAIL_HEAD.length).getValues();
+}
+
+function mailSvc_(row) {
+  try { return JSON.parse(String(row[ML.svc] || '{}')) || {}; } catch (err) { return {}; }
+}
+
+/** Время по Киеву «2026-11-12T10:30» → миллисекунды. Часовой пояс проекта может быть любым: считаем явно в Europe/Kiev. */
+function kyivToMs_(text) {
+  var m = String(text || '').match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$/);
+  if (!m) return 0;
+  var want = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  var t = want - 2 * 3600 * 1000;
+  for (var i = 0; i < 4; i++) { // подбираем момент, который в Киеве показывает нужные дату и время (учитывает летнее и зимнее время)
+    var p = Utilities.formatDate(new Date(t), 'Europe/Kiev', 'yyyy-MM-dd-HH-mm').split('-');
+    var shown = Date.UTC(+p[0], +p[1] - 1, +p[2], +p[3], +p[4]);
+    if (shown === want) break;
+    t += want - shown;
+  }
+  return t;
+}
+
+function kyivText_(ms) {
+  return ms > 0 ? Utilities.formatDate(new Date(ms), 'Europe/Kiev', 'dd.MM.yyyy HH:mm') : '';
+}
+
+/** Отпечаток содержимого: «тільки мені» действует только для того текста, фото, кнопки и сегмента, которые проверяли. */
+function mailHash_(m) {
+  var s = [m.ua, m.ru, m.photo, m.btn.k, m.btn.v, m.seg.k, m.seg.v].join('\u0001');
+  var h = 0;
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return String(h) + ':' + s.length;
+}
+
+function mailFromRow_(row) {
+  var svc = mailSvc_(row);
+  return { id: String(row[ML.id]).trim(), status: String(row[ML.status]).trim() || ML_NEW, ua: String(row[ML.ua] || ''), ru: String(row[ML.ru] || ''),
+    photo: String(row[ML.photo] || '').trim(), btn: svc.btn || { k: 'none', v: '' }, seg: svc.seg || { k: 'all', v: '' }, at: Number(svc.at) || 0, svc: svc,
+    by: String(row[ML.by] || ''), sender: String(row[ML.sender] || ''),
+    total: toNum_(row[ML.total]), sent: toNum_(row[ML.sent]), err: toNum_(row[ML.err]), blocked: toNum_(row[ML.blocked]), skipped: toNum_(row[ML.skipped]),
+    clicks: toNum_(row[ML.clicks]), orders: toNum_(row[ML.orders]) };
+}
+
+function mailPublic_(m, row) {
+  var d = row[ML.created];
+  var isDate = Object.prototype.toString.call(d) === '[object Date]' && !isNaN(d.getTime());
+  return { id: m.id, status: m.status, ua: m.ua, ru: m.ru, photo: m.photo, btn: m.btn, seg: m.seg, at: m.at ? kyivText_(m.at) : '',
+    created: isDate ? Utilities.formatDate(d, 'Europe/Kiev', 'dd.MM.yyyy HH:mm') : '', by: m.by, sender: m.sender, tested: m.svc.test === mailHash_(m) ? 1 : 0,
+    total: m.total, sent: m.sent, err: m.err, blocked: m.blocked, skipped: m.skipped, clicks: m.clicks, orders: m.orders };
+}
+
+function listMail_() {
+  var rows = mailRows_();
+  var list = rows.slice(-50).reverse().map(function (row) { return mailPublic_(mailFromRow_(row), row); });
+  var st = readSettings_();
+  return { ok: true, mails: list, every: Math.round(toNum_(st.mail_every_days)), trigger: mailTriggerOn_() ? 1 : 0 };
+}
+
+function mailTriggerOn_() {
+  try { return ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'mailJob'; }); } catch (err) { return false; }
+}
+
+function ensureMailTrigger_() {
+  try {
+    if (mailTriggerOn_()) return true;
+    ScriptApp.newTrigger('mailJob').timeBased().everyMinutes(10).create();
+    return true;
+  } catch (err) {
+    console.warn('mail trigger: ' + err);
+    return false;
+  }
+}
+
+/* ---- Получатели ---- */
+
+/** Кто что покупал и когда: { uid: { last: мс последнего заказа, ids: {id:1}, cats: {код:1} } }. Тестовые и отменённые заказы не считаются. */
+function mailBuyers_() {
+  var out = {};
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
+  if (!sheet) return out;
+  var all = sheet.getDataRange().getValues();
+  if (all.length < 2) return out;
+  var col = orderCols_(sheet, all[0]);
+  if (col.uid < 0) return out;
+  var catOf = {};
+  try { JSON.parse(getCatalogJson_()).products.forEach(function (p) { catOf[p.id] = p.c; }); } catch (err) { /* без категорий */ }
+  for (var r = 1; r < all.length; r++) {
+    var row = all[r];
+    var uid = String(row[col.uid]).trim();
+    var status = cell_(row, col.status);
+    if (!/^\d+$/.test(uid) || cell_(row, col.source).indexOf('test') >= 0 || status === 'скасовано' || status === 'немає в наявності') continue;
+    var b = out[uid] || (out[uid] = { last: 0, ids: {}, cats: {} });
+    var d = col.date >= 0 ? row[col.date] : '';
+    if (Object.prototype.toString.call(d) === '[object Date]' && d.getTime() > b.last) b.last = d.getTime();
+    try {
+      (JSON.parse(cell_(row, col.svc) || '{}').i || []).forEach(function (it) {
+        var id = String(it[0]);
+        b.ids[id] = 1;
+        if (catOf[id]) b.cats[catOf[id]] = 1;
+      });
+    } catch (err) { /* служебная ячейка испорчена */ }
+  }
+  return out;
+}
+
+/**
+ * Клиенты, подходящие под сегмент. Возвращает { list: [{ uid, lang, row, mailId, mailAt }], cols }.
+ * Отписавшиеся и заблокировавшие бота не попадают никогда.
+ */
+function mailAudience_(seg) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_CLIENTS);
+  if (!sheet || sheet.getLastRow() < 2) return { list: [], col: null, sheet: sheet };
+  var values = sheet.getDataRange().getValues();
+  var col = mapHeaders_(values[0], CLIENT_COLS);
+  if (col.id < 0) return { list: [], col: col, sheet: sheet };
+  var k = seg && MAIL_SEGMENTS[seg.k] ? seg.k : 'all', v = String((seg && seg.v) || '').trim();
+  var buyers = k === 'cat' || k === 'prod' || k === 'idle' ? mailBuyers_() : null;
+  var set = null;
+  if (k === 'wh') {
+    set = {};
+    whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length).forEach(function (row) { if (String(row[WC.status]).trim().toLowerCase() === WC_ON) set[String(row[WC.uid]).trim()] = 1; });
+  } else if (k === 'sub') {
+    set = {};
+    var subs = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SUBS);
+    if (subs && subs.getLastRow() > 1) {
+      subs.getRange(2, 1, subs.getLastRow() - 1, SUB_HEADERS.length).getValues().forEach(function (row) {
+        if (String(row[4]).trim() !== SUB_WAIT) return;
+        if (!v || String(row[2]).trim().toUpperCase() === v.toUpperCase()) set[String(row[1]).trim()] = 1;
+      });
+    }
+  }
+  var now = Date.now(), list = [], seen = {};
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var uid = cell_(row, col.id);
+    if (!/^\d+$/.test(uid) || seen[uid]) continue;
+    seen[uid] = 1;
+    if (cell_(row, col.unsub) || cell_(row, col.blocked)) continue;
+    var b = buyers ? buyers[uid] : null;
+    if (k === 'cat' && !(b && b.cats[v])) continue;
+    if (k === 'prod' && !(b && b.ids[v.toUpperCase()])) continue;
+    if (k === 'idle' && !(b && b.last > 0 && now - b.last >= MAIL_IDLE_DAYS * 24 * 3600 * 1000)) continue; // заказывали раньше, но не в последние 30 дней
+    if (set && !set[uid]) continue;
+    var at = col.mailAt >= 0 ? row[col.mailAt] : '';
+    list.push({ uid: uid, lang: cell_(row, col.lang) === 'ru' ? 'ru' : 'ua', row: r + 1, mailId: cell_(row, col.mailId),
+      mailAt: Object.prototype.toString.call(at) === '[object Date]' ? at.getTime() : 0 });
+  }
+  return { list: list, col: col, sheet: sheet };
+}
+
+/** Сколько человек получит рассылку сейчас и сколько пропустим из-за лимита частоты. */
+function mailCount_(seg, mailId) {
+  var every = Math.round(toNum_(readSettings_().mail_every_days)) * 24 * 3600 * 1000;
+  var now = Date.now(), n = 0, skip = 0;
+  mailAudience_(seg).list.forEach(function (c) {
+    if (mailId && c.mailId === mailId) return; // уже получил эту рассылку
+    if (every > 0 && c.mailAt > 0 && now - c.mailAt < every) skip++; else n++;
+  });
+  return { n: n, skip: skip };
+}
+
+/* ---- Черновик, проверка, запуск ---- */
+
+function mailInput_(body) {
+  var btnK = MAIL_BUTTONS[body.btn && body.btn.k] !== undefined ? String(body.btn.k) : 'none';
+  var segK = MAIL_SEGMENTS[body.seg && body.seg.k] ? String(body.seg.k) : 'all';
+  var m = { ua: multiline_(body.ua, 3500), ru: multiline_(body.ru, 3500), photo: clean_(body.photo, 200),
+    btn: { k: btnK, v: btnK === 'prod' || btnK === 'cat' ? clean_(body.btn.v, 40).toUpperCase() : '' },
+    seg: { k: segK, v: segK === 'cat' || segK === 'prod' || segK === 'sub' ? clean_(body.seg.v, 40).toUpperCase() : '' } };
+  if (!m.ua && !m.ru) return { error: 'bad_form' };
+  if (m.photo && Math.max(m.ua.length, m.ru.length) > 1000) return { error: 'too_long' }; // подпись к фото в Telegram — до 1024 знаков
+  if (m.photo && !/^https:\/\//i.test(m.photo) && !/^[A-Za-z0-9_-]{20,200}$/.test(m.photo)) return { error: 'bad_photo' };
+  if ((m.btn.k === 'prod' || m.btn.k === 'cat') && !m.btn.v) return { error: 'bad_form' };
+  if ((m.seg.k === 'cat' || m.seg.k === 'prod') && !m.seg.v) return { error: 'bad_form' };
+  return { m: m };
+}
+
+function nextMailId_(rows) {
+  var max = 0;
+  rows.forEach(function (row) { var x = String(row[ML.id]).match(/^M-(\d+)$/); if (x) max = Math.max(max, parseInt(x[1], 10)); });
+  var n = String(max + 1);
+  while (n.length < 4) n = '0' + n;
+  return 'M-' + n;
+}
+
+function mailSegText_(seg) { return MAIL_SEGMENTS[seg.k] + (seg.v ? ': ' + seg.v : ''); }
+function mailBtnText_(btn) { return btn.k === 'none' ? '' : MAIL_BUTTONS[btn.k] + (btn.v ? ': ' + btn.v : ''); }
+
+/** Находит рассылку. Возвращает { rows, r, m } или null. */
+function findMail_(id) {
+  var rows = mailRows_();
+  for (var r = rows.length - 1; r >= 0; r--) if (String(rows[r][ML.id]).trim() === id) return { rows: rows, r: r, m: mailFromRow_(rows[r]) };
+  return null;
+}
+
+function writeMailSvc_(sheet, r, svc) { sheet.getRange(r + 2, ML.svc + 1).setValue(JSON.stringify(svc)); }
+
+/** Создать черновик или изменить его. Менять можно только рассылку, которая ещё не запущена. */
+function saveMail_(body) {
+  var inp = mailInput_(body);
+  if (inp.error) return { ok: false, error: inp.error };
+  var m = inp.m;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = ensureMailSheet_();
+    var id = String(body.id || '').trim();
+    if (id) {
+      var f = findMail_(id);
+      if (!f) return { ok: false, error: 'not_found' };
+      if (f.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+      var svc = f.m.svc;
+      svc.btn = m.btn; svc.seg = m.seg; // отметка «проверено на себе» остаётся, только если содержимое не изменилось (сверяется по отпечатку)
+      sheet.getRange(f.r + 2, ML.seg + 1, 1, 5).setValues([[mailSegText_(m.seg), safeCell_(m.ua), safeCell_(m.ru), safeCell_(m.photo), mailBtnText_(m.btn)]]);
+      writeMailSvc_(sheet, f.r, svc);
+    } else {
+      id = nextMailId_(mailRows_());
+      var row = [];
+      for (var i = 0; i < MAIL_HEAD.length; i++) row.push('');
+      row[ML.id] = id; row[ML.created] = new Date(); row[ML.by] = safeCell_(clean_(actor_ ? actor_.name : '', 80)); row[ML.status] = ML_NEW;
+      row[ML.seg] = mailSegText_(m.seg); row[ML.ua] = safeCell_(m.ua); row[ML.ru] = safeCell_(m.ru); row[ML.photo] = safeCell_(m.photo); row[ML.btn] = mailBtnText_(m.btn);
+      row[ML.svc] = JSON.stringify({ btn: m.btn, seg: m.seg });
+      sheet.appendRow(row);
+      sheet.getRange(sheet.getLastRow(), ML.created + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+      logAction_('Розсилка: створено', id, '', mailSegText_(m.seg));
+    }
+    SpreadsheetApp.flush();
+    var saved = findMail_(id);
+    var count = mailCount_(saved.m.seg, id);
+    return { ok: true, mail: mailPublic_(saved.m, saved.rows[saved.r]), n: count.n, skip: count.skip };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Клавиатура сообщения рассылки: кнопка действия (если есть) и «Не надсилати мені розсилки». */
+function mailKeyboard_(m, ru, webapp) {
+  var kb = [];
+  if (m.btn.k !== 'none' && /^https:\/\//.test(webapp || '')) {
+    var q = 'm=' + encodeURIComponent(m.id);
+    if (m.btn.k === 'prod') q += '&p=' + encodeURIComponent(m.btn.v);
+    if (m.btn.k === 'cat') q += '&cat=' + encodeURIComponent(m.btn.v);
+    var label = m.btn.k === 'prod' ? (ru ? '🛒 Открыть товар' : '🛒 Відкрити товар') : m.btn.k === 'cat' ? (ru ? '🛒 Открыть категорию' : '🛒 Відкрити категорію')
+      : (ru ? '🛒 Открыть магазин' : '🛒 Відкрити магазин');
+    kb.push([{ text: label, web_app: { url: appUrl_(webapp, q) } }]);
+  }
+  kb.push([{ text: ru ? 'Не присылать мне рассылки' : 'Не надсилати мені розсилки', callback_data: 'mu' }]);
+  return { inline_keyboard: kb };
+}
+
+/** Одно сообщение рассылки одному человеку на его языке; пустой текст на его языке — берётся второй язык. */
+function mailSendOne_(token, m, chatId, lang, webapp) {
+  var ru = lang === 'ru';
+  var text = (ru ? m.ru : m.ua) || m.ua || m.ru;
+  var markup = mailKeyboard_(m, ru, webapp);
+  return m.photo
+    ? tg_(token, 'sendPhoto', { chat_id: chatId, photo: m.photo, caption: text.slice(0, 1024), reply_markup: markup })
+    : tg_(token, 'sendMessage', { chat_id: chatId, text: text.slice(0, 4000), disable_web_page_preview: true, reply_markup: markup });
+}
+
+/** «Надіслати тільки мені»: обязательный шаг. Автор получает оба языка, как их увидят клиенты. */
+function testMail_(id, me, token) {
+  var f = findMail_(id);
+  if (!f) return { ok: false, error: 'not_found' };
+  if (f.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+  var webapp = scriptProps_().getProperty('WEBAPP_URL');
+  var langs = [];
+  if (f.m.ua) langs.push('ua');
+  if (f.m.ru && f.m.ru !== f.m.ua) langs.push('ru');
+  var okAll = true, why = '';
+  langs.forEach(function (lang) {
+    var res = mailSendOne_(token, f.m, me.id, lang, webapp);
+    if (!res.ok) { okAll = false; why = String(res.description || ''); }
+  });
+  if (!okAll) return { ok: false, error: 'send_failed', why: clean_(why, 200) }; // например, неверный код фото
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var again = findMail_(id);
+    if (!again || again.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+    var svc = again.m.svc;
+    svc.test = mailHash_(again.m);
+    writeMailSvc_(ensureMailSheet_(), again.r, svc);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  var count = mailCount_(f.m.seg, id);
+  return { ok: true, n: count.n, skip: count.skip, sent: langs.length };
+}
+
+/**
+ * Запуск: сразу (at пусто) или в назначенное время по Киеву. Без шага «тільки мені» для этого же содержимого — отказ.
+ * Сам запуск только ставит рассылку в очередь; сообщения отправляет mailJob.
+ */
+function startMail_(id, atText, token) {
+  var out;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var f = findMail_(id);
+    if (!f) return { ok: false, error: 'not_found' };
+    if (f.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+    if (f.m.svc.test !== mailHash_(f.m)) return { ok: false, error: 'need_test' };
+    var at = 0;
+    if (atText) {
+      at = kyivToMs_(atText);
+      if (!(at > Date.now() + 60 * 1000) || at > Date.now() + 60 * 24 * 3600 * 1000) return { ok: false, error: 'bad_time' };
+    }
+    var count = mailCount_(f.m.seg, id);
+    if (!count.n) return { ok: false, error: 'no_recipients', skip: count.skip };
+    var sheet = ensureMailSheet_();
+    var svc = f.m.svc;
+    svc.at = at || Date.now();
+    var who = safeCell_(clean_(actor_ ? actor_.name : '', 80));
+    sheet.getRange(f.r + 2, ML.status + 1).setValue(ML_PLAN);
+    sheet.getRange(f.r + 2, ML.at + 1, 1, 7).setValues([[kyivText_(svc.at), who, count.n, 0, 0, 0, count.skip]]);
+    writeMailSvc_(sheet, f.r, svc);
+    SpreadsheetApp.flush();
+    logAction_(at ? 'Розсилка: заплановано' : 'Розсилка: надіслано', id, mailSegText_(f.m.seg), 'отримувачів: ' + count.n + (at ? ' · ' + kyivText_(at) + ' (Київ)' : ''));
+    out = { ok: true, n: count.n, skip: count.skip, at: at ? kyivText_(at) : '', trigger: ensureMailTrigger_() ? 1 : 0 };
+  } finally {
+    lock.releaseLock();
+  }
+  if (!atText) { // «надіслати зараз»: первая порция уходит сразу, остальное — по триггеру
+    try { mailRun_(token, 25, 15000); } catch (err) { console.error('mail first batch: ' + (err && err.stack || err)); }
+  }
+  var fresh = findMail_(id);
+  if (fresh) out.mail = mailPublic_(fresh.m, fresh.rows[fresh.r]);
+  return out;
+}
+
+/** Отмена: до старта — рассылка не уйдёт; во время отправки — остановится, уже отправленное не вернуть. */
+function cancelMail_(id) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var f = findMail_(id);
+    if (!f) return { ok: false, error: 'not_found' };
+    if (f.m.status !== ML_PLAN && f.m.status !== ML_RUN) return { ok: false, error: 'locked' };
+    ensureMailSheet_().getRange(f.r + 2, ML.status + 1).setValue(ML_STOP);
+    SpreadsheetApp.flush();
+    logAction_('Розсилка: скасовано', id, f.m.status, ML_STOP + (f.m.sent ? ' · уже надіслано: ' + f.m.sent : ''));
+    var again = findMail_(id);
+    return { ok: true, mail: mailPublic_(again.m, again.rows[again.r]) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ---- Отправка порциями ---- */
+
+/** Триггер раз в 10 минут: отправляет очередную порцию и считает итоги завершённых рассылок. */
+function mailJob() {
+  var token = scriptProps_().getProperty('BOT_TOKEN');
+  if (!token) return;
+  try { mailRun_(token, MAIL_BATCH, MAIL_RUN_MS); } catch (err) { console.error('mailJob: ' + (err && err.stack || err)); }
+  try { mailFreezeStats_(); } catch (err) { console.error('mail stats: ' + (err && err.stack || err)); }
+}
+
+/**
+ * Одна порция: не больше limit сообщений и не дольше maxMs. Возвращает число отправленных.
+ * Два запуска одновременно не работают (блокировка). Отметка получателю ставится до отправки: при обрыве он не получит дубль.
+ */
+function mailRun_(token, limit, maxMs) {
+  var started = Date.now(), done = 0;
+  // Общую блокировку скрипта на время отправки не держим: иначе заказы ждали бы минутами. Вместо неё — флажок в кэше:
+  // под короткой блокировкой проверяем, что другая порция не идёт, и ставим флажок на время работы.
+  var cache = CacheService.getScriptCache();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return 0;
+  try {
+    if (cache.get('mail_run')) return 0;
+    cache.put('mail_run', '1', Math.ceil(maxMs / 1000) + 90);
+  } finally {
+    lock.releaseLock();
+  }
+  try {
+    var rows = mailRows_();
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MAIL);
+    var webapp = scriptProps_().getProperty('WEBAPP_URL');
+    var every = Math.round(toNum_(readSettings_().mail_every_days)) * 24 * 3600 * 1000;
+    for (var r = 0; r < rows.length && done < limit; r++) {
+      var m = mailFromRow_(rows[r]);
+      if (m.status !== ML_RUN && !(m.status === ML_PLAN && m.at > 0 && m.at <= Date.now())) continue;
+      if (m.svc.wait && m.svc.wait > Date.now()) continue; // Telegram попросил подождать
+      if (m.status === ML_PLAN) { m.status = ML_RUN; sheet.getRange(r + 2, ML.status + 1).setValue(ML_RUN); SpreadsheetApp.flush(); }
+      var aud = mailAudience_(m.seg);
+      var col = aud.col;
+      if (col && col.mailId < 0) { col.mailId = aud.sheet.getLastColumn(); aud.sheet.getRange(1, col.mailId + 1).setValue('Остання розсилка').setFontWeight('bold'); }
+      if (col && col.mailAt < 0) { col.mailAt = aud.sheet.getLastColumn(); aud.sheet.getRange(1, col.mailAt + 1).setValue('Дата останньої розсилки').setFontWeight('bold'); }
+      var sent = m.sent, err = m.err, blocked = m.blocked, left = 0, stop = false;
+      for (var i = 0; i < aud.list.length; i++) {
+        var c = aud.list[i];
+        if (c.mailId === m.id) continue;                                            // эту рассылку он уже получил (или отметка поставлена перед отправкой)
+        if (every > 0 && c.mailAt > 0 && Date.now() - c.mailAt < every) continue;    // лимит частоты: недавно получал другую рассылку
+        if (stop || done >= limit || Date.now() - started > maxMs) { left++; continue; }
+        // Отметка — до отправки и сразу в таблицу: если запуск оборвётся, второго сообщения человек не получит.
+        aud.sheet.getRange(c.row, col.mailId + 1).setValue(m.id);
+        aud.sheet.getRange(c.row, col.mailAt + 1).setValue(new Date());
+        SpreadsheetApp.flush();
+        var res = mailSendOne_(token, m, c.uid, c.lang, webapp);
+        if (!res.ok && res.error_code === 429) { // лимит Telegram: ждём, сколько он просит
+          var wait = Number(res.parameters && res.parameters.retry_after) || 5;
+          if (wait <= 20) { Utilities.sleep(wait * 1000); res = mailSendOne_(token, m, c.uid, c.lang, webapp); }
+          if (!res.ok && res.error_code === 429) { // всё ещё нельзя — снимаем отметку и продолжим в следующий запуск
+            aud.sheet.getRange(c.row, col.mailId + 1).setValue(c.mailId);
+            aud.sheet.getRange(c.row, col.mailAt + 1).setValue(c.mailAt ? new Date(c.mailAt) : '');
+            m.svc.wait = Date.now() + Math.min(wait, 600) * 1000;
+            stop = true; left++;
+            continue;
+          }
+        }
+        done++;
+        if (res.ok) sent++;
+        else if (res.error_code === 403) blocked++; // «Заблокував бота» в листе «Клієнти» ставит tg_
+        else err++;
+        Utilities.sleep(MAIL_PAUSE_MS);
+      }
+      if (!stop) delete m.svc.wait;
+      var finished = left === 0;
+      if (finished) m.svc.end = Date.now();
+      sheet.getRange(r + 2, ML.sent + 1, 1, 3).setValues([[sent, err, blocked]]);
+      if (finished) sheet.getRange(r + 2, ML.status + 1).setValue(ML_DONE);
+      writeMailSvc_(sheet, r, m.svc);
+      SpreadsheetApp.flush();
+      if (finished) { var keep = actor_; actor_ = null; logAction_('Розсилка: завершено', m.id, '', 'надіслано: ' + sent + ', помилок: ' + err + ', блокувань: ' + blocked); actor_ = keep; }
+    }
+  } finally {
+    cache.remove('mail_run');
+  }
+  return done;
+}
+
+/** Итоги рассылки: кто нажал кнопку (событие mail в листе «Події») и кто заказал в течение 3 дней. Считаются на момент запроса. */
+function mailStats_(m) {
+  var clicks = {}, orders = 0;
+  var ev = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+  if (ev && ev.getLastRow() > 1) {
+    ev.getRange(2, 1, ev.getLastRow() - 1, EVENT_HEADERS.length).getValues().forEach(function (row) {
+      if (String(row[3]) === 'mail' && String(row[4]).trim() === m.id) clicks[String(row[1])] = 1;
+    });
+  }
+  var got = {};
+  mailAudience_({ k: 'all' }).list.forEach(function (c) { if (c.mailId === m.id && c.mailAt > 0) got[c.uid] = c.mailAt; });
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
+  if (sheet && Object.keys(got).length) {
+    var all = sheet.getDataRange().getValues();
+    var col = orderCols_(sheet, all[0]);
+    var counted = {};
+    for (var r = 1; r < all.length; r++) {
+      var uid = String(all[r][col.uid]).trim();
+      var d = col.date >= 0 ? all[r][col.date] : '';
+      if (!got[uid] || counted[uid] || Object.prototype.toString.call(d) !== '[object Date]' || cell_(all[r], col.source).indexOf('test') >= 0) continue;
+      var dt = d.getTime() - got[uid];
+      if (dt >= 0 && dt <= MAIL_ORDER_DAYS * 24 * 3600 * 1000) { counted[uid] = 1; orders++; }
+    }
+  }
+  return { clicks: Object.keys(clicks).length, orders: orders };
+}
+
+/** Через 3 дня после завершения итоги записываются в лист «Розсилки» насовсем (позже отметки у клиентов займёт следующая рассылка). */
+function mailFreezeStats_() {
+  var rows = mailRows_();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MAIL);
+  rows.forEach(function (row, r) {
+    var m = mailFromRow_(row);
+    if (m.status !== ML_DONE || m.svc.fz || !(m.svc.end > 0)) return;
+    var s = mailStats_(m);
+    sheet.getRange(r + 2, ML.clicks + 1, 1, 2).setValues([[s.clicks, s.orders]]);
+    if (Date.now() - m.svc.end > MAIL_ORDER_DAYS * 24 * 3600 * 1000) { m.svc.fz = 1; writeMailSvc_(sheet, r, m.svc); }
+  });
+}
+
+/** «Не надсилати мені розсилки»: действует сразу. Сообщения о заказах приходят как раньше. */
+function mailUnsubscribe_(uid) {
+  uid = String(uid);
+  if (!/^\d+$/.test(uid)) return false;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = ensureClientsSheet_();
+    var values = sheet.getDataRange().getValues();
+    var col = mapHeaders_(values[0], CLIENT_COLS);
+    if (col.id < 0 || col.unsub < 0) return false;
+    for (var r = 1; r < values.length; r++) {
+      if (cell_(values[r], col.id) !== uid) continue;
+      sheet.getRange(r + 1, col.unsub + 1).setValue('так');
+      return true;
+    }
+    var row = [];
+    for (var b = 0; b < sheet.getLastColumn(); b++) row.push('');
+    row[col.id] = '\'' + uid; row[col.unsub] = 'так';
+    if (col.first >= 0) row[col.first] = new Date();
+    sheet.appendRow(row);
+    return true;
+  } finally {
+    lock.releaseLock();
   }
 }
