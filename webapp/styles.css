@@ -960,3 +960,17 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .my__paid { margin: 0; }
 .pay__acts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin-bottom: var(--space-3); }
 .pay__acts .btn { padding: 0 var(--space-2); font-size: 13px; line-height: 16px; }
+
+/* ---------- Б4. Подборка «Спеції від батька» и состав ---------- */
+.father {
+  position: relative; overflow: hidden; display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-3) 0 var(--space-3); margin-bottom: var(--space-4);
+  border: 1px solid var(--line); border-radius: 20px;
+  background: linear-gradient(135deg, var(--pistachio-soft), var(--surface-raised) 72%);
+}
+.father > :not(.orn) { position: relative; }
+.father .orn { -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 55%); mask-image: linear-gradient(200deg, #000 0%, transparent 55%); }
+.father__head { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-3); }
+.father .feature__text { -webkit-line-clamp: 4; }
+.father .rail__list { margin: 0; padding: 0 var(--space-3); }
+.sheet__comp { margin: 0; font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }

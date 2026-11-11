@@ -1180,6 +1180,88 @@ const smallTargets = page => page.evaluate(() => {
     await c.page.context().close(); st.server.close();
   }
 
+  console.log('Волна 2б · Б4: специи и смеси отца');
+  {
+    const st = await start(8822, undefined, s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], head = rows[0];
+      head.push('Склад (UA)', 'Состав (RU)');
+      rows.slice(1).forEach(r => { r.push('', ''); });
+      const row = id => rows.find(r => r[0] === id);
+      row('SPC-001')[head.indexOf('Фасування')] = '50 г / 100 г / 250 г';
+      row('SPC-004')[head.indexOf('Склад (UA)')] = 'Зіра, барбарис, паприка, куркума';
+      row('SPC-004')[head.indexOf('Состав (RU)')] = 'Зира, барбарис, паприка, куркума';
+      s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис'], ['feature_id', 'DRY-039', ''], ['father_ids', 'SPC-001, SPC-004, SPC-005, NOPE-1', ''], ['father_text_ua', 'Суміші, які батько складає сам.', '']];
+    });
+    const g = st.gas;
+    const { page, errors } = await open(browser, st.url, { uid: 670 });
+    await page.waitForSelector('.father');
+    ok(await page.evaluate(() => { const a = document.querySelector('.feature'), b = document.querySelector('.father'); return !!a && !!b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) > 0; }), 'подборка стоит сразу после «Наша курага»');
+    ok(/Спеції від батька/.test(await text(page, '.father .feature__title')) && /Суміші, які батько складає сам/.test(await text(page, '.father')) && await count(page, '.father .mini') === 3, 'заголовок, текст и три товара в наличии (несуществующий ID пропущен)', await text(page, '.father'));
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'главная с подборкой: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.locator('.father').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: OUT + '/71-father.png' });
+    // фасовка 50 г
+    await page.locator('.father .mini[data-id="SPC-001"]').click();
+    await page.waitForSelector('.sheet [data-vi]');
+    ok((await page.locator('.sheet [data-vi]').allInnerTexts()).map(s => s.split('\n')[0].replace(/\s+/g, ' ').trim()).join('|') === '50 г|100 г|250 г', 'у специи фасовки 50 г / 100 г / 250 г', await page.locator('.sheet [data-vi]').allInnerTexts());
+    ok(/Додати в кошик · 63/.test(await text(page, '[data-action="add"]')) && await count(page, '.sheet__comp') === 0, '50 г зиры по 1255 ₴/кг = 63 ₴; у товара без состава строки «Склад» нет', await text(page, '[data-action="add"]'));
+    await page.locator('.sheet [data-step="1"]').click();
+    await page.click('[data-action="add"]');
+    await page.waitForSelector('#toast:not([hidden])');
+    ok(/126/.test(await text(page, '.tabbar [data-go="cart"] .tabbar__label')), 'в корзине 2 × 50 г = 126 ₴');
+    // состав
+    await page.locator('.father .mini[data-id="SPC-004"]').click();
+    await page.waitForSelector('.sheet__comp');
+    ok((await text(page, '.sheet__comp')).trim() === 'Склад: Зіра, барбарис, паприка, куркума', 'строка «Склад: …» на странице товара', await text(page, '.sheet__comp'));
+    await page.screenshot({ path: OUT + '/72-comp.png' });
+    await page.click('.sheet__close');
+    // заказ с 50 г проходит через сервер
+    await page.click('.tabbar [data-go="cart"]');
+    await page.waitForSelector('.line');
+    ok(/50\sг/.test(await text(page, '.line')) && /126/.test(await text(page, '.line')), 'строка корзины: 50 г × 2 = 126 ₴', await text(page, '.line'));
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close();
+
+    // RU и тёмная тема
+    const r = await open(browser, st.url, { uid: 671, lc: 'ru', theme: 'dark' });
+    await r.page.waitForSelector('.father');
+    ok(/Специи от отца/.test(await text(r.page, '.father .feature__title')), 'RU: «Специи от отца»');
+    await r.page.locator('.father .mini[data-id="SPC-004"]').click();
+    await r.page.waitForSelector('.sheet__comp');
+    ok((await text(r.page, '.sheet__comp')).trim() === 'Состав: Зира, барбарис, паприка, куркума' && await noOverflow(r.page), 'RU: «Состав: …»', await text(r.page, '.sheet__comp'));
+    await r.page.screenshot({ path: OUT + '/73-comp-dark.png' });
+    ok(r.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', r.errors);
+    await r.page.context().close();
+
+    // все товары подборки «немає» — блока нет; панель редактирует подборку
+    ['SPC-001', 'SPC-004', 'SPC-005'].forEach(id => g.post({ action: 'admin.product', initData: g.initData({ id: 900, first_name: 'В' }), id, patch: { stock: false } }));
+    const e = await open(browser, st.url, { uid: 672 });
+    await e.page.waitForSelector('.feature');
+    ok(await count(e.page, '.father') === 0, 'все товары подборки «немає» — блока нет');
+    await e.page.context().close();
+    const a = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await a.page.waitForSelector('.ord');
+    await a.page.locator('[data-tab="settings"]').click();
+    await a.page.waitForSelector('#a-father_ids');
+    ok(await a.page.inputValue('#a-father_ids') === 'SPC-001, SPC-004, SPC-005, NOPE-1' && await a.page.inputValue('#a-father_title_ua') === 'Спеції від батька', 'подборка редактируется в панели → Налаштування');
+    await a.page.fill('#a-father_ids', '');
+    await a.page.click('[data-action="adm-save"]');
+    await a.page.waitForSelector('[data-action="adm-save"].is-saved');
+    ok(!g.get({ action: 'catalog' }).shop.father, 'список очищен в панели — подборка выключена');
+    await a.page.locator('[data-tab="products"]').click();
+    await a.page.waitForSelector('.prod');
+    await a.page.fill('#admPQ', 'SPC-005');
+    await a.page.locator('[data-edit="SPC-005"]').click();
+    await a.page.waitForSelector('#a-cUa');
+    await a.page.fill('#a-cUa', 'Сумах мелений');
+    await a.page.click('[data-action="adm-save"]');
+    await a.page.waitForSelector('.prod');
+    ok(g.get({ action: 'catalog' }).products.find(p => p.id === 'SPC-005').cu === 'Сумах мелений', 'состав товара вписывается в карточке товара в панели');
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (админ)', a.errors);
+    await a.page.context().close(); st.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);

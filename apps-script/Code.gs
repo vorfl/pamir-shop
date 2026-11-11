@@ -60,7 +60,10 @@ var PRODUCT_COLS = {
   fresh:   ['свіжа поставка'],
   hint:    ['підказка до ваги'],
   hintRu:  ['подсказка к весу'],
-  packPrices: ['ціни фасувань', 'ціна фасування']
+  packPrices: ['ціни фасувань', 'ціна фасування'],
+  // Волна 2б: состав специй и смесей. Необязательные колонки.
+  compUa:  ['склад (ua)', 'склад'],
+  compRu:  ['состав (ru)', 'состав']
 };
 
 /** Бейдж товара: в таблице пишется словом, витрина получает код. */
@@ -345,6 +348,10 @@ function readProducts_(ss, categories) {
     var hint = cell_(row, col.hint), hintRu = cell_(row, col.hintRu);
     if (hint) p.h = hint;
     if (hintRu && hintRu !== hint) p.hr = hintRu;
+    // «Склад»: только то, что написано в таблице.
+    var compUa = cell_(row, col.compUa), compRu = cell_(row, col.compRu);
+    if (compUa) p.cu = compUa;
+    if (compRu && compRu !== compUa) p.cr = compRu;
     products.push(p);
   }
   return products;
@@ -1648,7 +1655,8 @@ function adminProduct_(row, col) {
     wh: toNum_(col.whPrice >= 0 ? row[col.whPrice] : 0), wm: cell_(row, col.whMin),
     badge: badgeCode_(cell_(row, col.badge)), old: toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : 0),
     qty: (function () { var q = col.qty >= 0 ? leftQty_(row[col.qty]) : null; return q === null ? '' : String(q).replace('.', ','); })(),
-    end: (function () { var e = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], 'Europe/Kiev') : null; return e ? e.day : ''; })()
+    end: (function () { var e = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], 'Europe/Kiev') : null; return e ? e.day : ''; })(),
+    cUa: cell_(row, col.compUa), cRu: cell_(row, col.compRu)
   };
 }
 
@@ -1770,6 +1778,11 @@ function updateProduct_(id, patch, create) {
       ensureCol('qty', 'Залишок');
       set(col.qty, patch.qty === '' ? '' : Math.round(toNum_(patch.qty) * 1000) / 1000);
     }
+    [['cUa', 'compUa', 'Склад (UA)'], ['cRu', 'compRu', 'Состав (RU)']].forEach(function (c) { // колонка создаётся, только когда состав впервые вписали
+      if (typeof patch[c[0]] !== 'string' || (!patch[c[0]].trim() && col[c[1]] < 0)) return;
+      ensureCol(c[1], c[2]);
+      set(col[c[1]], safeCell_(multiline_(patch[c[0]], 400)));
+    });
     if (patch.end !== undefined && (patch.end !== '' || col.saleEnd >= 0)) {
       ensureCol('saleEnd', 'Акція до');
       // Текстом ДД.ММ.РРРР: так дата не зависит от часового пояса таблицы.
@@ -1965,11 +1978,17 @@ var SETTINGS_DEF = [
   ['story_text_ua', 'Сторінка «Від саду до столу»: текст (UA), кожен абзац з нового рядка. Порожньо — сторінки немає', 'Наш сад — в Ісфарі, на півночі Таджикистану. Тут наша родина вирощує абрикоси.\nКоли абрикоси достигають, ми збираємо врожай і сушимо його — так виходить курага.\nКурагу привозимо до Харкова, на Центральний ринок. Тут ми зустрічаємо покупців на наших точках.\nЗапитуйте про сад і курагу — розповімо з радістю.'],
   ['story_text_ru', 'Страница «От сада до стола»: текст (RU), каждый абзац с новой строки', 'Наш сад — в Исфаре, на севере Таджикистана. Здесь наша семья выращивает абрикосы.\nКогда абрикосы созревают, мы собираем урожай и сушим его — так получается курага.\nКурагу привозим в Харьков, на Центральный рынок. Здесь мы встречаем покупателей на наших точках.\nСпрашивайте про сад и курагу — расскажем с радостью.'],
   ['story_photos', 'Сторінка «Від саду до столу»: посилання на фото (https://…), кожне з нового рядка', ''],
+  ['father_ids', 'Добірка «Спеції від батька» на головній: ID товарів через кому (наприклад SPC-001, SPC-004). Порожньо — без блоку', ''],
+  ['father_title_ua', 'Добірка «Спеції від батька»: заголовок (UA)', 'Спеції від батька'],
+  ['father_title_ru', 'Подборка «Специи от отца»: заголовок (RU)', 'Специи от отца'],
+  ['father_text_ua', 'Добірка «Спеції від батька»: текст під заголовком (UA). Порожньо — без тексту', ''],
+  ['father_text_ru', 'Подборка «Специи от отца»: текст под заголовком (RU)', ''],
   ['remind_text_ru', 'Текст напоминания (RU)', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.']
 ];
 var SETTINGS_NUM = { min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72 };
 var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'feature_id', 'gift_text_ua', 'gift_text_ru', 'loyal_text_ua', 'loyal_text_ru',
-  'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos'];
+  'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos',
+  'father_ids', 'father_text_ua', 'father_text_ru'];
 var settingsMemo_ = null;
 
 function isYes_(v) {
@@ -2011,6 +2030,7 @@ function saveSettings_(values) {
     if (k.indexOf('pay_') === 0) next[k] = values[k] === true || isYes_(values[k]) ? 'так' : 'ні';
     else if (SETTINGS_NUM[k]) next[k] = String(Math.max(0, Math.min(SETTINGS_NUM[k], Math.round(toNum_(values[k])))));
     else if (k === 'feature_id') next[k] = clean_(values[k], 20).toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9-]/g, '');
+    else if (k === 'father_ids') next[k] = idList_(values[k], 20).join(', ');
     else if (k === 'theme') next[k] = /^(newyear|navruz)$/.test(String(values[k]).trim().toLowerCase()) ? String(values[k]).trim().toLowerCase() : '';
     else next[k] = multiline_(values[k], k.indexOf('story_') === 0 ? 3000 : 500);
   });
@@ -2507,7 +2527,7 @@ var ADMIN_COLS = (function () {
 })();
 /** Какое право нужно, чтобы изменить поле товара. */
 var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', img: 'photo',
-  ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text',
+  ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
   price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', packs: 'price', t: 'price' };
 var INVITE_TTL_MS = 24 * 3600 * 1000;
 var LOG_HEAD = ['Час', 'Хто', 'Chat id', 'Дія', 'Об\'єкт', 'Було', 'Стало'];
@@ -2706,7 +2726,7 @@ function listLog_() {
 /** Что изменилось в товаре: сравниваем то, что видит панель, до и после. */
 var PRODUCT_LOG_NAMES = { cat: 'категорія', ua: 'назва (UA)', ru: 'назва (RU)', t: 'тип', packs: 'фасування', price: 'ціна', stock: 'наявність',
   hidden: 'приховано', img: 'фото', dUa: 'опис (UA)', dRu: 'опис (RU)', wh: 'опт ціна', wm: 'опт мін. обсяг', badge: 'бейдж', old: 'стара ціна',
-  qty: 'залишок', end: 'акція до' };
+  qty: 'залишок', end: 'акція до', cUa: 'склад (UA)', cRu: 'состав (RU)' };
 function logProductDiff_(before, after) {
   Object.keys(PRODUCT_LOG_NAMES).forEach(function (k) {
     var a = before ? before[k] : '', b = after[k];
@@ -3228,7 +3248,26 @@ function svcTtn_(svcText) {
 /* ------------------------------ Настройки витрины этапа 8 ------------------------------ */
 
 /** Дополняет «shop» в каталоге: точки, страница «Від саду до столу», сезонная тема, контакт, подсказки НП. */
+/** «SPC-001, spc-004; SPC-001» → ['SPC-001', 'SPC-004']: ID через запятую, пробел или с новой строки, без повторов. */
+function idList_(text, max) {
+  var out = [];
+  String(text === null || text === undefined ? '' : text).toUpperCase().split(/[\s,;]+/).forEach(function (s) {
+    s = s.replace(/[^A-ZА-ЯІЇЄҐ0-9_-]/g, '');
+    if (s && out.indexOf(s) < 0 && out.length < (max || 50)) out.push(s);
+  });
+  return out;
+}
+
 function shopExtras8_(shop, st) {
+  // Волна 2б: подборка «Спеції від батька» — товары и тексты из настроек. Пусто — блока нет.
+  var fatherIds = idList_(st.father_ids, 20);
+  if (fatherIds.length) {
+    shop.father = {
+      ids: fatherIds,
+      title: { ua: st.father_title_ua || st.father_title_ru, ru: st.father_title_ru || st.father_title_ua },
+      text: { ua: st.father_text_ua || st.father_text_ru, ru: st.father_text_ru || st.father_text_ua }
+    };
+  }
   try {
     var points = readPoints_();
     if (points.length) shop.points = points;

@@ -895,5 +895,49 @@ console.log('Волна 2б · Б3: оплата');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+console.log('Волна 2б · Б4: специи и смеси отца');
+{
+  const g = fresh();
+  const P = g.sheets['Товари'].rows, head = P[0], set = (id, name, v) => { P.find(r => r[0] === id)[head.indexOf(name)] = v; };
+  // фасовка 50 г: цена за 1 кг × 0,05, округление до гривны
+  set('SPC-001', 'Фасування', '50 г / 100 г / 250 г');   // 1255 ₴/кг
+  set('SPC-002', 'Фасування', '50 г / 100 г');           // 480 ₴/кг
+  set('SPC-003', 'Фасування', '100 г / 250 г / 500 г');  // 360 ₴/кг
+  g.clearCache();
+  const by = {}; g.get({ action: 'catalog' }).products.forEach(p => { by[p.id] = p; });
+  ok(JSON.stringify(by['SPC-001'].v) === '[[50,63],[100,126],[250,314]]', '50 г / 100 г / 250 г при 1255 ₴/кг: 63, 126 и 314 ₴ (62,75 → 63)', by['SPC-001'].v);
+  ok(JSON.stringify(by['SPC-002'].v) === '[[50,24],[100,48]]' && JSON.stringify(by['SPC-003'].v) === '[[100,36],[250,90],[500,180]]', 'остальные фасовки специй считаются так же', [by['SPC-002'].v, by['SPC-003'].v]);
+  ok(order(g, U(42), [{ id: 'SPC-001', g: 50, q: 3 }, { id: 'SPC-002', g: 50, q: 1 }], 63 * 3 + 24).ok, 'заказ с фасовкой 50 г: сервер считает 3 × 63 + 24');
+  ok(order(g, U(42), [{ id: 'SPC-001', g: 50, q: 1 }], 62).error === 'changed' && order(g, U(42), [{ id: 'SPC-003', g: 50, q: 1 }], 18).error === 'changed', 'неверная сумма и фасовка 50 г у товара без неё отклоняются');
+  ok(/Зіра ціла 50 г × 3 = 189 ₴/.test(g.sheets['Замовлення'].rows.slice(-1)[0][12]), 'в заказе записано «50 г × 3 = 189 ₴»', g.sheets['Замовлення'].rows.slice(-1)[0][12]);
+
+  // подборка «Спеції від батька»
+  ok(!g.get({ action: 'catalog' }).shop.father, 'пока в настройках нет товаров, подборки нет');
+  const f = adm(g, 900, 'admin.settings').fields;
+  ok(f.find(x => x.k === 'father_ids').v === '' && f.find(x => x.k === 'father_title_ua').v === 'Спеції від батька' && f.find(x => x.k === 'father_title_ru').v === 'Специи от отца' && f.find(x => x.k === 'father_text_ua').v === '', 'настройки подборки: заголовки по умолчанию, товары и текст пустые');
+  settings(g, { father_ids: ' spc-001, SPC-004;spc-001\nNOPE-9 ' });
+  const sh = g.get({ action: 'catalog' }).shop;
+  ok(sh.father && sh.father.ids.join() === 'SPC-001,SPC-004,NOPE-9' && sh.father.title.ua === 'Спеції від батька' && sh.father.title.ru === 'Специи от отца' && !sh.father.text.ua, 'подборка в каталоге: ID приведены к виду, без повторов; текст пустой', sh.father);
+  ok(g.sheets['Налаштування'].rows.find(r => r[0] === 'father_ids')[1] === 'SPC-001, SPC-004, NOPE-9' && /Спеції від батька/.test(g.sheets['Налаштування'].rows.find(r => r[0] === 'father_ids')[2]), 'ключ создан в листе «Налаштування» с описанием на украинском');
+  settings(g, { father_text_ua: 'Суміші, які батько складає сам.', father_title_ru: 'Смеси отца' });
+  const sh2 = g.get({ action: 'catalog' }).shop.father;
+  ok(sh2.text.ua === 'Суміші, які батько складає сам.' && sh2.text.ru === 'Суміші, які батько складає сам.' && sh2.title.ru === 'Смеси отца', 'текст и заголовок редактируются в панели; пустой язык берёт второй', sh2);
+  addAdmin(g, 780, 'manager', ['stock']);
+  ok(adm(g, 780, 'admin.settingsSave', { values: { father_ids: 'X-1' } }).error === 'no_perm', 'без права «Налаштування» подборку не изменить');
+  settings(g, { father_ids: '' });
+  ok(!g.get({ action: 'catalog' }).shop.father, 'очистили список — подборки нет');
+
+  // «Склад»: необязательные колонки
+  ok(by['SPC-004'].cu === undefined && adm(g, 900, 'admin.products').products.find(p => p.id === 'SPC-004').cUa === '' && head.indexOf('Склад (UA)') < 0, 'без колонок «Склад» поля нет, всё работает как раньше');
+  ok(adm(g, 780, 'admin.product', { id: 'SPC-004', patch: { cUa: 'зіра' } }).error === 'no_perm', 'состав меняет только тот, у кого право «Тексти товарів»');
+  const saved = adm(g, 900, 'admin.product', { id: 'SPC-004', patch: { cUa: 'Зіра, барбарис, паприка, куркума', cRu: 'Зира, барбарис, паприка, куркума' } });
+  ok(saved.ok && saved.product.cUa === 'Зіра, барбарис, паприка, куркума' && head.indexOf('Склад (UA)') > 0 && head.indexOf('Состав (RU)') > 0, 'состав сохранён из панели, колонки «Склад (UA)» и «Состав (RU)» появились', head.slice(-3));
+  const c4 = g.get({ action: 'catalog' }).products.find(p => p.id === 'SPC-004'), c5 = g.get({ action: 'catalog' }).products.find(p => p.id === 'SPC-005');
+  ok(c4.cu === 'Зіра, барбарис, паприка, куркума' && c4.cr === 'Зира, барбарис, паприка, куркума' && c5.cu === undefined && c5.cr === undefined, 'состав уходит на витрину только у товара, где он заполнен', [c4.cu, c5.cu]);
+  ok(logRows(g, 'Товар: склад (UA)').length === 1, 'изменение состава записано в «Журнал»');
+  ok(!/СЕКРЕТ|do-smaku|33%/.test(JSON.stringify(g.get({ action: 'catalog' }))), 'служебные колонки по-прежнему не уходят');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

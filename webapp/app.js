@@ -1010,7 +1010,7 @@
         railHtml(t('secPop'), '', popular(10).list);
       return;
     }
-    var html = home ? featureHtml() + perksHtml() + homeRails() : '';
+    var html = home ? featureHtml() + fatherHtml() + perksHtml() + homeRails() : '';
     // Список листается страницами по PAGE_SIZE товаров; номер страницы живёт в flt.page.
     flt.page = clampPage(flt.page, list.length, PAGE_SIZE);
     var from = (flt.page - 1) * PAGE_SIZE;
@@ -1179,7 +1179,7 @@
 
     var d = desc(p);
     if (d) body += '<p class="sheet__desc">' + esc(d) + '</p>';
-    body += passportHtml(p);
+    body += compHtml(p) + passportHtml(p);
 
     if (p.a) {
       if (p.t === 'w') {
@@ -2175,7 +2175,7 @@
   var STATUS_BTNS = [['c', 'stC', 'підтверджено'], ['n', 'stN', 'немає в наявності'], ['s', 'stS', 'відправлено'], ['d', 'stD', 'виконано']];
   var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats', 'cats'], ['settings', 'admSettings', 'settings'], ['reviews', 'admReviews', 'reviews'], ['admins', 'admAdmins', 'admins']];
   /** Какое право нужно, чтобы менять поле товара (то же самое проверяет сервер). */
-  var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text',
+  var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
     price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', packs: 'price', t: 'price' };
   var CAT_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
@@ -2518,7 +2518,8 @@
   function productFormHtml() {
     var isNew = adm.edit === '+';
     var p = isNew
-      ? { id: '', cat: adm.cats && adm.cats[0] ? adm.cats[0].ua : '', t: 'w', ua: '', ru: '', packs: '100 г / 250 г / 500 г / 1 кг', price: '', stock: 1, hidden: 0, img: '', dUa: '', dRu: '', wh: '', wm: '', badge: '', old: '', qty: '', end: '' }
+      ? { id: '', cat: adm.cats && adm.cats[0] ? adm.cats[0].ua : '', t: 'w', ua: '', ru: '', packs: '100 г / 250 г / 500 г / 1 кг', price: '', stock: 1, hidden: 0, img: '', dUa: '', dRu: '', wh: '', wm: '', badge: '', old: '', qty: '', end: '',
+        cUa: adm.products && adm.products[0] && adm.products[0].cUa !== undefined ? '' : undefined, cRu: '' }
       : adminProduct(adm.edit);
     if (!p) return '';
     var cats = (adm.cats || []).map(function (c) { return [c.ua, c.ua]; });
@@ -2546,6 +2547,7 @@
       fArea('dUa', t('admDescUa'), p.dUa) + fArea('dRu', t('admDescRu'), p.dRu) +
       fRow('wh', t('admWh'), p.wh || '', 'type="text" inputmode="decimal" maxlength="9"') +
       fRow('wm', t('admWm'), p.wm, 'type="text" maxlength="40"') +
+      (p.cUa === undefined ? '' : fArea('cUa', t('admCompUa'), p.cUa, 400) + fArea('cRu', t('admCompRu'), p.cRu, 400)) +
       fCheck('stock', t('admStock'), p.stock) + fCheck('hidden', t('admHidden'), p.hidden) + saveBtn() +
       (isNew ? '' : '<div class="field"><label class="label" for="a-link">' + esc(t('admLink')) + '</label>' +
         '<input class="input" id="a-link" type="text" readonly value="' + esc(productLink(p.id)) + '">' +
@@ -2576,6 +2578,7 @@
     var next = { cat: fVal('cat'), t: fVal('t'), ua: fVal('ua'), ru: fVal('ru'), packs: fVal('packs'), wm: fVal('wm'), dUa: fVal('dUa'), dRu: fVal('dRu'),
       price: fNum('price'), wh: fNum('wh'), old: fNum('old'), badge: fVal('badge'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0,
       qty: fVal('qty').replace(/\s/g, ''), end: fVal('end') };
+    if (document.getElementById('a-cUa')) { next.cUa = fVal('cUa'); next.cRu = fVal('cRu'); } // поля есть только с новым бэкендом
     if (next.qty && !/^\d+([.,]\d+)?$/.test(next.qty)) { fErr('admErrPrice'); return; }
     if (!next.ua) { fErr('admErrName'); return; }
     if (!(next.price >= 0) || !(next.wh >= 0) || !(next.old >= 0)) { fErr('admErrPrice'); return; }
@@ -2852,6 +2855,7 @@
       if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
       if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
       if (/^(gift|loyal)_text_/.test(f.k)) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
+      if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
       if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
       return fArea(f.k, f.label, f.v, 500);
     }).join('') + saveBtn() + '</form>';
@@ -3941,17 +3945,37 @@
     ua: {
       payState: 'Оплата', pay_unpaid: 'не оплачено', pay_paid: 'оплачено', pay_refund: 'повернено', payMark: 'Оплачено', payRefund: 'Повернено',
       payUndo: 'Не оплачено', payRefundTitle: 'Позначити повернення оплати?', payRefundText: 'Замовлення {num}: статус оплати стане «повернено». Клієнту повідомлення не надсилається.',
-      payRefundOk: 'Повернено: {num}'
+      payRefundOk: 'Повернено: {num}',
+      compTitle: 'Склад', admCompUa: 'Склад (UA)', admCompRu: 'Состав (RU)', fatherTitle: 'Спеції від батька'
     },
     ru: {
       payState: 'Оплата', pay_unpaid: 'не оплачено', pay_paid: 'оплачено', pay_refund: 'возвращено', payMark: 'Оплачено', payRefund: 'Возвращено',
       payUndo: 'Не оплачено', payRefundTitle: 'Отметить возврат оплаты?', payRefundText: 'Заказ {num}: статус оплаты станет «возвращено». Клиенту сообщение не отправляется.',
-      payRefundOk: 'Возвращено: {num}'
+      payRefundOk: 'Возвращено: {num}',
+      compTitle: 'Состав', admCompUa: 'Склад (UA)', admCompRu: 'Состав (RU)', fatherTitle: 'Специи от отца'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_2B[lang]).forEach(function (k) { I18N[lang][k] = I18N_2B[lang][k]; });
   });
+
+  /* ---- Б4. Специи и смеси отца ---- */
+  /** Подборка на главной сразу после «Наша курага», в том же стиле. Товары и тексты — из настроек; нет товаров в наличии — блока нет. */
+  function fatherHtml() {
+    var f = shopInfo().father;
+    if (!f || !Array.isArray(f.ids)) return '';
+    var list = inStockList(f.ids).slice(0, 12);
+    if (!list.length) return '';
+    var text = loc(f.text);
+    return '<section class="father">' + ORN + '<div class="father__head"><h2 class="feature__title">' + esc(loc(f.title) || t('fatherTitle')) + '</h2>' +
+      (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') + '</div>' +
+      '<div class="rail__list">' + list.map(function (p) { return miniHtml(p); }).join('') + '</div></section>';
+  }
+  /** «Склад: …» в карточке товара — только если состав вписан в таблицу. */
+  function compHtml(p) {
+    var text = state.lang === 'ru' ? (p.cr || p.cu) : (p.cu || p.cr);
+    return text ? '<p class="sheet__comp"><b>' + esc(t('compTitle')) + ':</b> ' + esc(text) + '</p>' : '';
+  }
 
   /* ---- Б3. Оплата заказа ---- */
   /** Статус оплаты и кнопки в карточке заказа. Старый бэкенд статус не присылает — тогда блока нет. */
