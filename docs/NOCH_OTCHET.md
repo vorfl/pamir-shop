@@ -80,7 +80,7 @@
 | Ветка | От чего | PR | Что внутри |
 |---|---|---|---|
 | `stage8-wave2b` | `main` | https://github.com/vorfl/pamir-shop/pull/6 | выпуск 2б: Б1–Б4 |
-| `stage8-wave2c` | `stage8-wave2b` | см. ссылку в `docs/NOCH_STATUS.md` | выпуск 2в: В1–В3 |
+| `stage8-wave2c` | `stage8-wave2b` | https://github.com/vorfl/pamir-shop/pull/7 | выпуск 2в: В1–В3 |
 | `perf-admin-marks` | `main` | — | только замер; не трогал и в 2б не вливал |
 
 Порядок выкладки: сначала 2б, потом 2в. Можно выложить сразу 2в — она включает 2б; тогда PR #6 сливать не нужно.
