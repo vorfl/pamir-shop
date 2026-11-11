@@ -22,13 +22,13 @@ var LAUNCH_RUN_MS = 4 * 60 * 1000;               // одно нажатие ра
 var LAUNCH_ARCHIVE_CHUNK = 60;                   // товаров в архив за одну порцию
 var LAUNCH_MIN_KNOWN = 20;                       // защита от запуска не в той таблице: столько из 50 ID должно уже быть в «Товари»
 var LAUNCH_PHASES = ['cols', 'fix', 'archive', 'add', 'products', 'recipes', 'settings', 'points', 'testdata', 'finish'];
-var LAUNCH_PHASE_UA = { cols: 'колонки й листи', fix: 'тестові рядки', archive: 'архів', add: 'нові рядки спецій', products: '50 позицій',
+var LAUNCH_PHASE_UA = { cols: 'колонки й листи', fix: 'тестові рядки', archive: 'архів', add: 'нові рядки спецій', products: '49 позицій',
   recipes: 'рецепти', settings: 'налаштування', points: 'точки', testdata: 'тестові дані', finish: 'статистика' };
 /** Необязательные колонки «Товари», которые создаются, если их нет. Заголовки — те, что ищет Code.gs (PRODUCT_COLS). */
-var LAUNCH_NEW_COLS = [['whPrice', 'Опт: ціна за 1 кг / уп., ₴'], ['whMinKg', 'Опт: мін, кг'], ['howUa', 'Як їсти (UA)'], ['howRu', 'Как есть (RU)'], ['tags', 'Теги']];
+var LAUNCH_NEW_COLS = [['whPrice', 'Опт: ціна за 1 кг / уп., ₴'], ['whMinKg', 'Опт: мін, кг'], ['compUa', 'Склад (UA)'], ['compRu', 'Состав (RU)'], ['howUa', 'Як їсти (UA)'], ['howRu', 'Как есть (RU)'], ['tags', 'Теги']];
 var LAUNCH_FIELD_UA = { nameUa: 'Назва (UA)', nameRu: 'Название (RU)', type: 'Тип', packs: 'Фасування', pKg: 'Ціна за 1 кг', pUnit: 'Ціна за упаковку',
   p100: 'Ціна за 100 г', packKg: 'Вага упаковки', descUa: 'Опис (UA)', descRu: 'Описание (RU)', whPrice: 'Опт: ціна', whMinKg: 'Опт: мін, кг', whMin: 'Опт: мін. обсяг',
-  howUa: 'Як їсти (UA)', howRu: 'Как есть (RU)', tags: 'Теги', packPrices: 'Ціни фасувань', badge: 'Бейдж', oldPrice: 'Стара ціна', saleEnd: 'Акція до' };
+  howUa: 'Як їсти (UA)', howRu: 'Как есть (RU)', compUa: 'Склад (UA)', compRu: 'Состав (RU)', stock: 'Наявність', tags: 'Теги', packPrices: 'Ціни фасувань', badge: 'Бейдж', oldPrice: 'Стара ціна', saleEnd: 'Акція до' };
 
 /* ================================ Меню ================================ */
 
@@ -64,8 +64,8 @@ function menuLaunchApply() {
   var head = state.phase > 0 ? 'Продовжуємо з кроку «' + LAUNCH_PHASE_UA[LAUNCH_PHASES[state.phase]] + '».\n\n' : '';
   var done = String(props.getProperty(PROP_LAUNCH_DONE) || '');
   if (done && !(state.phase > 0)) {
-    head = 'УВАГА. Підготовку вже застосовано ' + done + '. Повторний запуск знову відправить в архів усі товари, яких немає у списку 50, ' +
-      'і поверне ціни та тексти 50 позицій до значень із підготовки.\n\n';
+    head = 'УВАГА. Підготовку вже застосовано ' + done + '. Повторний запуск знову відправить в архів усі товари, яких немає у списку 49, ' +
+      'і поверне ціни та тексти 49 позицій до значень із підготовки, а спеціям і ходовим позиціям знову поставить «є».\n\n';
   }
   var answer = ui.alert('Застосувати підготовку до запуску?', head + launchSummaryText_(plan) + '\n\nРезервна копія за сьогодні є. Продовжити?', ui.ButtonSet.YES_NO);
   if (answer !== ui.Button.YES) return;
@@ -181,12 +181,14 @@ function launchArchiveIds_(ss) {
 }
 
 /**
- * Что должно стоять в строке одной из 50 позиций: { поле: значение }. Поля, которых здесь нет, не трогаются
+ * Что должно стоять в строке одной из 49 позиций: { поле: значение }. Поля, которых здесь нет, не трогаются
  * (наличие, фото, категория, остаток, «паспорт товара», служебные колонки).
  */
 function launchWanted_(p, row, col) {
   var want = { nameUa: p.ua, nameRu: p.ru, type: 'вагова', pKg: p.price, descUa: p.dUa, descRu: p.dRu, tags: p.tags };
   if (p.howUa) { want.howUa = p.howUa; want.howRu = p.howRu || ''; }
+  if (p.compUa) { want.compUa = p.compUa; want.compRu = p.compRu || ''; } // состав смеси — только тот, что назвал отец
+  if (p.setStock) want.stock = p.setStock;                                 // наличие, подтверждённое родителями
   var wasWeight = cell_(row, col.type).toLowerCase().indexOf('ваг') === 0;
   // Фасовку меняем, только если строка была «упаковка» с чужого сайта или фасовка не читается; свою рабочую фасовку не трогаем.
   if (!wasWeight || !parsePacks_(cell_(row, col.packs)).length) want.packs = p.packs;
@@ -279,6 +281,10 @@ function launchPlan_() {
       continue;
     }
     have[id] = true;
+    if (p.freshId && name !== p.ua) {
+      plan.fatal = 'ID ' + id + ' уже зайнятий іншим товаром («' + name + '»). Для нової позиції «' + p.ua + '» потрібен інший ID — напишіть про це Claude. Нічого не робимо.';
+      return plan;
+    }
     if (!p.isNew) known++;
     plan.sum.keep++;
     var want = launchWanted_(p, row, col);
@@ -289,16 +295,26 @@ function launchPlan_() {
       add(SHEET_PRODUCTS, id, LAUNCH_FIELD_UA[d.k] || d.k, d.was, d.now, '');
     });
     launchPriceWarnings_(plan, p, row, col, wh);
-    if (!isInStock_(cell_(row, col.stock))) plan.info.push(id + ' ' + p.ua + ': зараз «' + (cell_(row, col.stock) || 'порожньо') + '» — на вітрині буде сірим.');
+    if (!isInStock_(want.stock || cell_(row, col.stock))) plan.info.push(id + ' ' + p.ua + ': зараз «' + (cell_(row, col.stock) || 'порожньо') + '» — на вітрині буде сірим.');
     // Чужая марка не должна остаться ни в одном видимом поле (после замены названий и описаний).
-    var visible = [p.ua, p.ru, p.dUa, p.dRu, p.howUa || '', p.howRu || '', p.tags];
-    ['sort', 'harvest', 'origin', 'hint', 'hintRu', 'compUa', 'compRu'].forEach(function (k) { visible.push(cell_(row, col[k])); });
+    var visible = [p.ua, p.ru, p.dUa, p.dRu, p.howUa || '', p.howRu || '', p.tags, p.compUa || '', p.compRu || ''];
+    ['sort', 'harvest', 'origin', 'hint', 'hintRu'].concat(p.compUa ? [] : ['compUa', 'compRu']).forEach(function (k) { visible.push(cell_(row, col[k])); });
     if (!want.packs) visible.push(cell_(row, col.packs));
     var hit = visible.join(' | ').match(brandRe);
     if (hit) plan.warn.push(id + ': у видимому полі лишається чужа марка «' + hit[0] + '» — виправте вручну.');
   }
 
   var archived = launchArchiveIds_(ss);
+  // Новый ID не должен совпасть с архивным или удалённым навсегда товаром: по ID работают статистика и «Повторити замовлення».
+  var gone = deletedIdSet_();
+  LAUNCH_PRODUCTS.forEach(function (p) {
+    if (!p.freshId || have[p.id] || plan.fatal) return;
+    var m = p.id.match(/^([A-Z0-9]+)-(\d+)$/);
+    if (archived[p.id] || gone[p.id] || (m && reservedIdMax_(m[1]) >= parseInt(m[2], 10))) {
+      plan.fatal = 'ID ' + p.id + ' для нової позиції «' + p.ua + '» уже використовувався (товар в архіві або видалений). Потрібен інший ID — напишіть про це Claude. Нічого не робимо.';
+    }
+  });
+  if (plan.fatal) return plan;
   LAUNCH_PRODUCTS.forEach(function (p) {
     if (have[p.id]) return;
     if (archived[p.id]) { plan.warn.push(p.id + ' ' + p.ua + ': лежить в архіві. Відновіть у панелі (Товари → Архів) і запустіть перевірку ще раз.'); return; }
@@ -427,31 +443,35 @@ function launchPointsCtx_(ss) {
 }
 
 /** Что должно стоять в строке точки: { поле: значение }. */
-function launchPointWant_() {
+function launchPointWant_(index) {
   var want = { addrUa: LAUNCH_POINTS.addrUa, addrRu: LAUNCH_POINTS.addrRu };
   LAUNCH_POINTS.hours.forEach(function (h, d) { want['d' + d] = h; });
   LAUNCH_POINTS.clear.forEach(function (k) { want[k] = ''; });
+  if (LAUNCH_POINTS.tel) want.tel = LAUNCH_POINTS.tel;
+  var own = (LAUNCH_POINTS.rows || [])[index]; // «як знайти» — своё у каждой точки, по порядку строк
+  if (own) Object.keys(own).forEach(function (k) { want[k] = own[k]; });
   return want;
 }
 
 function launchPlanPoints_(ss, plan, add) {
   var ctx = launchPointsCtx_(ss);
   if (!ctx) { plan.warn.push('Аркуша «Точки» немає або він порожній — точки не змінюються (вітрина показує адресу з налаштувань).'); return; }
-  var want = launchPointWant_(), n = 0;
+  var n = 0;
   for (var r = 1; r < ctx.values.length; r++) {
     var name = cell_(ctx.values[r], ctx.col.ua);
     if (!name) continue;
+    var want = launchPointWant_(n);
     n++;
     var changed = false;
     Object.keys(want).forEach(function (k) {
       var c = ctx.col[k];
       if (c < 0 || launchText_(ctx.values[r][c]) === want[k]) return;
       changed = true;
-      add(SHEET_POINTS, name, String(ctx.values[0][c]), launchText_(ctx.values[r][c]), want[k] || '(очистити)', want[k] ? '' : 'там був приклад; справжні дані впишете самі');
+      add(SHEET_POINTS, name, String(ctx.values[0][c]), launchText_(ctx.values[r][c]), want[k] || '(очистити)', want[k] ? '' : 'там був приклад');
     });
     if (changed) plan.sum.points++;
   }
-  if (n !== 2) plan.warn.push('На аркуші «Точки» рядків із назвою: ' + n + ' (очікувалось 2). Адресу й години записано в усі.');
+  if (n !== 2) plan.warn.push('На аркуші «Точки» рядків із назвою: ' + n + ' (очікувалось 2). Адресу, години й телефон записано в усі; «як знайти» — лише в перші дві.');
 }
 
 function launchOrderNum_(v) {
@@ -516,7 +536,7 @@ function launchPlanAdmins_(ss, plan) {
 function launchSummaryLines_(plan) {
   var s = plan.sum;
   var lines = [
-    'Залишається на вітрині: ' + s.keep + ' позицій (з них нових рядків спецій: ' + s.add + ')',
+    'Залишається на вітрині: ' + s.keep + ' позицій (з них нових рядків: ' + s.add + ')',
     'В архів: ' + s.archive + ' товарів',
     'Видалити назавжди: ' + s.purge + ' тестових рядків',
     'Позицій зі змінами: ' + s.changed + ', з них змінюється ціна: ' + s.prices,
@@ -725,7 +745,7 @@ var launchPhase_ = {
     return true;
   },
 
-  /** Всё, чего нет в списке 50, переносится в «Архів товарів» порциями: сначала строка появляется в архиве, потом исчезает из «Товари». */
+  /** Всё, чего нет в списке 49, переносится в «Архів товарів» порциями: сначала строка появляется в архиве, потом исчезает из «Товари». */
   archive: function (run) {
     var keep = launchKeep_();
     var arch = ensureArchiveSheet_();
@@ -776,7 +796,7 @@ var launchPhase_ = {
     }
   },
 
-  /** Строки специй SPS-001 … SPS-020, которых ещё нет: добавляются в конец «Товари». Остальные поля заполнит шаг «50 позицій». */
+  /** Новые строки (специи и новая позиция), которых ещё нет: добавляются в конец «Товари». Остальные поля заполнит шаг «50 позицій». */
   add: function (run) {
     var ctx = launchProducts_(run.ss), col = ctx.col, sheet = ctx.sheet;
     var have = {};
@@ -801,7 +821,7 @@ var launchPhase_ = {
     return true;
   },
 
-  /** 50 позиций: названия, описания, цены, опт, теги, «Як їсти»; тип «вагова»; чужие «Ціни фасувань», бейджи и старые цены убираются. */
+  /** 49 позиций: названия, описания, цены, опт, теги, «Як їсти»; тип «вагова»; чужие «Ціни фасувань», бейджи и старые цены убираются. */
   products: function (run) {
     var ctx = launchProducts_(run.ss), col = ctx.col, sheet = ctx.sheet, values = ctx.values;
     var keep = launchKeep_(), seen = {}, changes = [], log = [];
@@ -893,19 +913,20 @@ var launchPhase_ = {
     return true;
   },
 
-  /** Точки: адрес и часы; ряд, место, «як знайти» и телефон очищаются (там были примеры). */
+  /** Точки: адрес, часы, телефон и «як знайти»; ряд и место очищаются (там были примеры). */
   points: function (run) {
     var ctx = launchPointsCtx_(run.ss);
     if (!ctx) return true;
-    var want = launchPointWant_(), changes = [], log = [];
+    var changes = [], log = [], n = 0;
     for (var r = 1; r < ctx.values.length; r++) {
       var name = cell_(ctx.values[r], ctx.col.ua);
       if (!name) continue;
+      var want = launchPointWant_(n++);
       var fields = [];
       Object.keys(want).forEach(function (k) {
         var c = ctx.col[k];
         if (c < 0 || launchText_(ctx.values[r][c]) === want[k]) return;
-        changes.push({ r: r + 1, c: c + 1, v: want[k] });
+        changes.push({ r: r + 1, c: c + 1, v: safeCell_(want[k]) }); // телефон «+380…» пишется как текст, иначе таблица сделает из него число
         fields.push(String(ctx.values[0][c]));
       });
       if (fields.length) log.push(['Запуск: точку оновлено', name, '', fields.join(', ')]);

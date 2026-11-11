@@ -43,7 +43,7 @@ console.log('1. Перевірити (сухой прогон)');
   const plan = g.call('launchCheck_');
   ok(snap(g, [REPORT]) === before, 'сухой прогон ничего не меняет: снимок всех листов до и после совпадает');
   ok(JSON.stringify(g.props) === beforeProps, 'и свойства скрипта не меняет');
-  ok(!plan.fatal && plan.sum.keep === 50 && plan.sum.add === 20 && plan.sum.archive === 142 && plan.sum.purge === 4, 'сводка: 50 остаётся (20 новых), 142 в архив, 4 удалить навсегда', plan.sum);
+  ok(!plan.fatal && plan.sum.keep === 49 && plan.sum.add === 19 && plan.sum.archive === 142 && plan.sum.purge === 4, 'сводка: 49 остаётся (19 новых строк), 142 в архив, 4 удалить навсегда', plan.sum);
   ok(plan.sum.prices === 30 && plan.sum.changed === 30, 'у всех 30 существующих позиций меняется цена', plan.sum);
   ok(plan.sum.recipes === 7 && plan.sum.orders === 14 && plan.sum.carts === 2 && plan.sum.events === 3 && plan.sum.points === 2, 'рецепты, тестовые заказы, корзины, события, точки посчитаны', plan.sum);
   ok(plan.sum.nextOrder === 'P-0015', 'следующий настоящий заказ — P-0015 (нумерация продолжается)', plan.sum.nextOrder);
@@ -59,7 +59,9 @@ console.log('1. Перевірити (сухой прогон)');
   ok(!plan.warn.some(w => /NUT-047.*конкурент/.test(w)), 'отличие меньше 30 % — без предупреждения');
   ok(!plan.warn.some(w => /чужа марка/.test(w)), 'после замены названий чужих марок в 50 позициях не остаётся');
   ok(plan.info.some(t => /Адміни \(2\).*БЕЗ ІМЕНІ.*Без імені: 1/.test(t)), 'отчёт перечисляет админов и говорит, у кого нет имени', plan.info.filter(t => /Адміни/.test(t)));
-  ok(plan.info.some(t => /DRY-073.*немає/.test(t)) && plan.info.some(t => /SPS-004.*немає/.test(t)), 'отчёт называет позиции, которые будут «немає»');
+  ok(plan.info.some(t => /NUT-040.*немає/.test(t)) && !plan.info.some(t => /DRY-073|SPS-/.test(t) && /сірим|«немає»/.test(t)), 'отчёт называет позиции, которые останутся «немає»', plan.info);
+  ok(rep.some(r => r[1] === 'DRY-073' && r[2] === 'Наявність' && r[3] === 'немає' && r[4] === 'є') && !rep.some(r => r[1] === 'NUT-040' && r[2] === 'Наявність'), 'в отчёте: ходовая позиция «немає» → «є»; у остальных наличие не меняется');
+  ok(rep.some(r => r[1] === 'CND-088' && /додати: Асорті сухофруктів у глазурі, 460 ₴\/кг, наявність «є»/.test(r[4])) && !rep.some(r => r[1] === 'SPS-004' || r[1] === 'SPS-005'), 'в отчёте: новая позиция CND-088; смесей для лагмана и мантов нет');
   g.call('menuLaunchCheck');
   ok(/нічого не змінено/.test(g.ui.alerts.pop()), 'окно после проверки говорит, что ничего не изменено');
 }
@@ -126,7 +128,7 @@ console.log('Результат на стенде');
 {
   const g = G;
   const list = ids(g, 'Товари');
-  ok(list.length === 50 && list.every(id => KEEP[id]) && new Set(list).size === 50, 'в «Товари» ровно 50 строк — те самые ID', list.length);
+  ok(list.length === 49 && list.every(id => KEEP[id]) && new Set(list).size === 49 && list.includes('CND-088') && !list.includes('SPS-004') && !list.includes('SPS-005'), 'в «Товари» ровно 49 строк — те самые ID', list.length);
   const arch = ids(g, 'Архів товарів');
   ok(arch.length === 142 && new Set(arch).size === 142 && arch.includes('DRY-030') && arch.includes('NUT-006'), 'архив содержит остальные 142 товара без дублей (DRY-030 и NUT-006 тоже там)', arch.length);
   ok(DATA.del.every(id => !list.includes(id) && !arch.includes(id)) && DATA.del.every(id => g.props.DELETED_IDS.split(',').includes(id)), 'тестовые строки удалены навсегда, их ID запомнены', g.props.DELETED_IDS);
@@ -146,20 +148,28 @@ console.log('Результат на стенде');
   const text = JSON.stringify(g.get({ action: 'catalog' }));
   const cat = JSON.parse(text);
   const by = {}; cat.products.forEach(p => { by[p.id] = p; });
-  ok(cat.products.length === 50 && cat.products.every(p => KEEP[p.id]), 'на витрине ровно 50 товаров', cat.products.length);
+  ok(cat.products.length === 49 && cat.products.every(p => KEEP[p.id]), 'на витрине ровно 49 товаров', cat.products.length);
   const grey = cat.products.filter(p => !p.a).map(p => p.id);
-  ok(grey.length === 18 && grey.includes('DRY-073') && grey.includes('SPS-004') && !grey.includes('SPS-001') && !grey.includes('SPS-003'),
-    'заказать можно 32; серые — DRY-073 («немає» в таблице) и 17 неподтверждённых специй', grey);
+  ok(grey.join() === 'NUT-040', 'заказать можно 48; серая — только NUT-040 («немає» в таблице); все специи и ходовые позиции «є»', grey);
+  const nw = by['CND-088'];
+  ok(nw && nw.c === 'CND' && nw.ua === 'Асорті сухофруктів у глазурі' && nw.ru === 'Ассорти сухофруктов в глазури' && nw.k === 460 && nw.a === 1 && nw.v.map(v => v.join(':')).join() === '250:115,500:230,1000:460' &&
+    nw.tg.join(', ') === 'до чаю, солодке, подарунок' && !nw.wb && !nw.dUa, 'новая позиция CND-088: категория, названия, 460 ₴/кг, фасовки как у CND-016, без опта и без выдуманного описания', nw);
   ok(cat.products.every(p => p.t === 'w' && p.ua === KEEP[p.id].ua && (p.ru || p.ua) === KEEP[p.id].ru && p.k === KEEP[p.id].price), 'у всех 50: тип «вагова», наши названия и наши цены за 1 кг');
-  ok(cat.products.every(p => p.dUa === KEEP[p.id].dUa && p.dRu === KEEP[p.id].dRu) && !/УТОЧНИТЬ/.test(text), 'описания из файла ассортимента; пометок «уточнить» на витрине нет');
-  ok(cat.products.every(p => !p.cu && !p.cr), '«Склад» у смесей отца не заполнен');
+  ok(cat.products.every(p => (p.dUa || '') === KEEP[p.id].dUa && (p.dRu || '') === KEEP[p.id].dRu) && !/УТОЧНИТЬ/.test(text), 'описания из файла ассортимента; пометок «уточнить» на витрине нет');
+  ok(by['SPS-001'].cu === 'зіра, барбарис, коріандр, паприка солодка, перець червоний гострий, куркума' && by['SPS-001'].cr === 'зира, барбарис, кориандр, паприка сладкая, перец красный острый, куркума' &&
+    by['SPS-002'].cu === 'зіра, коріандр, перець чорний, паприка солодка, сушений кріп' && /сушёный укроп$/.test(by['SPS-002'].cr) &&
+    by['SPS-003'].cu === 'зіра, коріандр, перець чорний, паприка солодка, перець червоний гострий' && /перец красный острый$/.test(by['SPS-003'].cr), '«Склад» трёх смесей отца заполнен, UA и RU');
+  ok(cat.products.filter(p => p.cu || p.cr).length === 3, 'у остальных позиций состава нет');
+  ok(by['SPS-001'].eu === '1 ст. л. на 500 г рису. Додавайте в зірвак разом із сіллю.' && by['SPS-002'].eu === '1 ст. л. на 3 л бульйону, за 10 хвилин до готовності.' &&
+    by['SPS-003'].eu === '1–1,5 ст. л. на 1 кг м’яса. Змішайте з цибулею та сіллю, маринуйте від 4 годин.' && /^1–1,5 ст\. л\. на 1 кг мяса\./.test(by['SPS-003'].er), '«Як їсти» у смесей — с дозировкой от отца');
   ok(cat.products.every(p => !p.b && !p.o && !p.e), 'бейджей, старых цен и акций нет ни у кого');
   ok(by['SWT-054'].v.map(v => v[0]).join() === '250,500,1000' && by['CND-016'].v.length === 3 && rowOf(g, 'Товари', 'SWT-054')[head.indexOf('Ціна за упаковку / шт, ₴')] === '',
     'халва и конфеты: были «упаковка», стали «вагова» с фасовками от цены за 1 кг', by['SWT-054']);
   ok(by['NUT-047'].v.every(v => v[1] === Math.round(380 * v[0] / 1000)) && rowOf(g, 'Товари', 'NUT-047')[head.indexOf('Ціни фасувань')] === '', '«Ціни фасувань» очищены: фасовки считаются от цены за 1 кг');
   ok(rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Ціна за 100 г, ₴')] === 44 && rowOf(g, 'Товари', 'SPS-007')[head.indexOf('Ціна за 100 г, ₴')] === 120, '«Ціна за 100 г» пересчитана от новой цены');
   ok(rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Конкурент, ₴')] === 380 && rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Закупка, ₴')] === 400, 'служебные колонки («Конкурент», «Закупка») не изменились');
-  ok(rowOf(g, 'Товари', 'DRY-073')[head.indexOf('Наявність')] === 'немає' && rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Наявність')] === 'є', 'наличие существующих позиций не тронуто');
+  ok(rowOf(g, 'Товари', 'DRY-073')[head.indexOf('Наявність')] === 'є' && rowOf(g, 'Товари', 'NUT-040')[head.indexOf('Наявність')] === 'немає' && rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Наявність')] === 'є',
+    'ходовая позиция стала «є»; наличие остальных существующих позиций не тронуто');
 
   // Цены фасовок: витрина и сервер.
   let packsOk = true, n50 = 0;
@@ -169,7 +179,7 @@ console.log('Результат на стенде');
   const o1 = g.post({ action: 'order', initData: g.initData(U(42)), items: [{ id: 'SPS-001', g: 100, q: 1 }, { id: 'DRY-039', g: 250, q: 2 }], total: 68 + 220, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'l1' });
   ok(o1.ok && o1.number === 'P-0015', 'сервер принимает заказ по ценам витрины; первый настоящий заказ — P-0015', o1);
   ok(g.post({ action: 'order', initData: g.initData(U(42)), items: [{ id: 'SPS-001', g: 100, q: 1 }], total: 54, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'l2' }).error === 'changed', 'обычный клиент не может заказать по оптовой цене');
-  ok(g.post({ action: 'order', initData: g.initData(U(42)), items: [{ id: 'SPS-006', g: 50, q: 1 }], total: 34, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'l3' }).error === 'changed', 'товар «немає» заказать нельзя');
+  ok(g.post({ action: 'order', initData: g.initData(U(42)), items: [{ id: 'NUT-040', g: 500, q: 1 }], total: 280, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'l3' }).error === 'changed', 'товар «немає» заказать нельзя');
   g.sheets['Товари'].rows.forEach(r => { if (/^SPS-/.test(r[0])) r[head.indexOf('Наявність')] = 'є'; });
   g.clearCache();
   let spiceOk = true;
@@ -185,7 +195,7 @@ console.log('Результат на стенде');
   const whNums = Object.keys(TEST_WHOLESALE).map(k => TEST_WHOLESALE[k][0]);
   ok(!whNums.some(n => new RegExp('[^0-9]' + n + '[^0-9]').test(text)), 'в каталоге обычного клиента нет ни одной оптовой цены');
   ok(!/СЕКРЕТ|do-smaku|33%/.test(text) && !/[^0-9]400[^0-9]/.test(JSON.stringify(by['DRY-039'])), 'служебные колонки R–X (примітка, закупка, маржа, джерело) не уходят клиенту');
-  const allowed = ['id', 'c', 'ua', 'ru', 't', 'k', 'v', 'a', 'dUa', 'dRu', 'wb', 'eu', 'er', 'tg', 'n', 'r', 'q', 'img', 'hw'];
+  const allowed = ['id', 'c', 'ua', 'ru', 't', 'k', 'v', 'a', 'dUa', 'dRu', 'wb', 'eu', 'er', 'tg', 'n', 'r', 'q', 'img', 'hw', 'cu', 'cr'];
   ok(cat.products.every(p => Object.keys(p).every(k => allowed.includes(k))), 'в товаре каталога только клиентские поля', cat.products.map(p => Object.keys(p).filter(k => !allowed.includes(k))).filter(a => a.length)[0]);
   ok(cat.products.filter(p => p.wb).map(p => p.id).sort().join() === Object.keys(TEST_WHOLESALE).sort().join(), 'отметка «есть оптовая цена» — только у товаров из оптовой таблицы');
   const whRow = rowOf(g, 'Товари', 'DRY-039'), whNo = rowOf(g, 'Товари', 'NUT-036');
@@ -217,7 +227,8 @@ console.log('Рецепты');
   ok(cat.recipes.length === 7 && cat.recipes.every(r => !r.img && r.tUa && r.tRu && r.items.length), 'на витрине 7 рецептов: тексты UA и RU, фото нет');
   ok(cat.recipes.map(r => r.items[0]).join() === 'DRY-068,SPS-001,SPS-002,SPS-003,DRY-039,DRY-071,DRY-086', 'главный ингредиент — первый в списке товаров');
   const plov = cat.recipes.find(r => r.id === 'REC-002');
-  ok(/спеції для плову — за смаком/.test(plov.tUa) && !/спеції для плову — \d/.test(plov.tUa) && /барбарис — 1 ч\. л\./.test(plov.tUa), 'дозировка смеси отца не указана («за смаком»), остальное количество — в тексте');
+  ok(/спеції для плову — 1 ст\. л\./.test(plov.tUa) && /специи для плова — 1 ст\. л\./.test(plov.tRu) && /барбарис — 1 ч\. л\./.test(plov.tUa) && /спеції для шашлику — 2 ст\. л\./.test(cat.recipes.find(r => r.id === 'REC-004').tUa) &&
+    /спеції для шурпи — 1 ст\. л\./.test(cat.recipes.find(r => r.id === 'REC-003').tUa), 'количество смесей в рецептах — как сказал отец');
   ok(cat.recipes.every(r => r.items.every(id => KEEP[id])), 'ингредиенты рецептов — только из 50 позиций');
   const head = g.sheets['Товари'].rows[0], sc = head.indexOf('Наявність');
   rowOf(g, 'Товари', 'DRY-068')[sc] = 'немає';
@@ -242,7 +253,7 @@ console.log('Настройки, приветствие, точки');
   ok(st.min_order === '250' && st.remind_days === '14' && st.contact === '@pamir_test', 'min_order, remind_days и остальные настройки не тронуты');
   ok(shop.feature.id === 'DRY-039' && shop.feature.title.ua === 'Наша курага' && /абрикосовою кислинкою/.test(shop.feature.text.ua) && /абрикосовой кислинкой/.test(shop.feature.text.ru), 'блок «Наша курага»');
   ok(shop.hours.ua === 'вівторок–неділя, 8:00–16:00; понеділок — санітарний день' && /понедельник — санитарный день/.test(shop.hours.ru), 'часы работы');
-  ok(shop.father.ids.join() === 'SPS-001,SPS-002,SPS-003,SPS-004,SPS-005' && shop.father.title.ua === 'Спеції від батька' && /лагману й мантів/.test(shop.father.text.ua) && shop.father.title.ru === 'Специи от отца', 'подборка «Спеції від батька» видна: 5 смесей, заголовок и текст');
+  ok(shop.father.ids.join() === 'SPS-001,SPS-002,SPS-003' && shop.father.title.ua === 'Спеції від батька' && shop.father.text.ua === 'Ці суміші батько збирає сам — для плову, шурпи й шашлику.' && shop.father.text.ru === 'Эти смеси отец собирает сам — для плова, шурпы и шашлыка.' && shop.father.title.ru === 'Специи от отца', 'подборка «Спеції від батька» видна: 3 смеси, заголовок и текст');
   ok(shop.min === 250, 'минимальная сумма заказа осталась 250 ₴');
   const send = (uid, lang) => { g.post({ update_id: 7000 + uid, message: { message_id: 1, chat: { id: uid, type: 'private' }, from: { id: uid, first_name: 'Олена', language_code: lang }, text: '/start' } }, { src: 'tg', key: 'whsec' }); return g.sent.filter(m => String(m.payload.chat_id) === String(uid)).pop(); };
   const hi = send(4242, 'uk');
@@ -255,9 +266,12 @@ console.log('Настройки, приветствие, точки');
 
   ok(shop.points.length === 2 && shop.points.every(p => p.a.ua === 'Центральний ринок, вул. Різдвяна, 33, критий павільйон' && p.a.ru === 'Центральный рынок, ул. Рождественская, 33, крытый павильон'), 'у обеих точек новый адрес UA и RU');
   ok(shop.points.every(p => p.h.join() === ',08:00-16:00,08:00-16:00,08:00-16:00,08:00-16:00,08:00-16:00,08:00-16:00'), 'часы точек: понедельник — выходной, вт–нд 8:00–16:00', shop.points[0].h);
-  ok(shop.points.every(p => !p.pl && !p.how && !p.tel), 'ряд, место, «як знайти» и телефон очищены и на витрину не уходят');
+  ok(shop.points.every(p => !p.pl && p.tel === '+380637213060'), 'ряд и место очищены; телефон обеих точек +380637213060');
+  ok(shop.points[0].how.ua === 'Головний вхід, перша точка зліва' && shop.points[0].how.ru === 'Главный вход, первая точка слева' && shop.points[1].how.ua === 'Головний вхід, п’ята точка справа' && shop.points[1].how.ru === 'Главный вход, пятая точка справа', '«як знайти» — своё у каждой точки, UA и RU', shop.points.map(p => p.how));
+  const telCol = g.sheets['Точки'].rows[0].indexOf('Телефон');
+  ok(g.call('safeCell_', '+380637213060') === "'+380637213060" && g.sheets['Точки'].rows[1][telCol] === '+380637213060', 'телефон записан в таблицу как текст (с апострофом), а не как число');
   const msg = g.call('pointsMessage_', g.call('readSettings_'), false, 'https://example.test/webapp/', true).text;
-  ok(!/Ряд|📞|місце/.test(msg) && /Пн: вихідний, Вт–Нд: 08:00–16:00/.test(msg), 'бот в ответе «Наші точки» не показывает пустых строк', msg);
+  ok(!/Ряд|місце|\n\n\n|\n📞 \n/.test(msg) && /Головний вхід, перша точка зліва\n🕒 Пн: вихідний, Вт–Нд: 08:00–16:00/.test(msg) && /📞 \+380637213060/.test(msg), 'бот в ответе «Наші точки»: «як знайти», часы и телефон, без пустых строк', msg);
 }
 
 console.log('Тестовые данные');
@@ -294,17 +308,19 @@ console.log('Повторное «Застосувати»');
   const c1 = counts();
   const res = g.call('launchApply_');
   ok(res.ok && res.done && snap(g, [REPORT, 'Журнал', 'Статистика']) === before, 'повторный запуск ничего не меняет', res);
-  ok(counts().join() === c1.join() && ids(g, 'Товари').filter(id => /^SPS-/.test(id)).length === 20 && new Set(ids(g, 'Рецепти')).size === 7, 'нет дублей рецептов, строк SPS и настроек', counts());
+  ok(counts().join() === c1.join() && ids(g, 'Товари').filter(id => /^SPS-/.test(id)).length === 18 && ids(g, 'Товари').filter(id => id === 'CND-088').length === 1 && new Set(ids(g, 'Рецепти')).size === 7, 'нет дублей рецептов, строк SPS и настроек', counts());
   ok(JSON.stringify(g.sheets['Події'].rows) === eventsBefore && JSON.stringify(g.sheets['Кошики'].rows) === cartsBefore, 'настоящие «Події» и «Кошики» повторный запуск не стирает');
   g.ui.answer = 'NO';
   g.call('menuLaunchApply');
   ok(/УВАГА\. Підготовку вже застосовано \d\d\.\d\d\.\d{4}/.test(g.ui.alerts.pop()), 'меню предупреждает, что подготовка уже применена');
   // Правка руками сохраняется, а данные из подготовки возвращаются.
   const head = g.sheets['Товари'].rows[0];
-  rowOf(g, 'Товари', 'SPS-004')[head.indexOf('Наявність')] = 'є';
+  rowOf(g, 'Товари', 'NUT-047')[head.indexOf('Наявність')] = 'немає';
+  rowOf(g, 'Товари', 'SPS-010')[head.indexOf('Наявність')] = 'немає';
   rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Теги')] = 'зіпсовано';
   g.call('launchApply_');
-  ok(rowOf(g, 'Товари', 'SPS-004')[head.indexOf('Наявність')] === 'є' && rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Теги')] === KEEP['DRY-039'].tags, 'наличие, поставленное руками, не сбрасывается; теги из подготовки возвращаются');
+  ok(rowOf(g, 'Товари', 'NUT-047')[head.indexOf('Наявність')] === 'немає' && rowOf(g, 'Товари', 'DRY-039')[head.indexOf('Теги')] === KEEP['DRY-039'].tags, 'наличие обычной позиции, поставленное руками, не сбрасывается; теги из подготовки возвращаются');
+  ok(rowOf(g, 'Товари', 'SPS-010')[head.indexOf('Наявність')] === 'є', 'у специй и ходовых позиций повторный запуск возвращает «є» (так подтвердили родители)');
 }
 
 console.log('Обрыв между записью в архив и удалением');
@@ -334,15 +350,31 @@ console.log('Варианты таблицы');
   g2.sheets['Рецепти'].rows.push(['REC-001', 'Стара назва', '', 'https://example.test/uzvar.jpg', 'старий текст', '', 'DRY-068', 'ні'], ['MY-1', 'Свій рецепт', '', '', 'текст', '', 'DRY-039', 'так']);
   g2.sheets['Товари'].rows.push(g2.sheets['Товари'].rows[0].map((h, i) => (i === 0 ? 'SPS-001' : i === 3 ? 'Суміш для плову (стара)' : i === 5 ? 'упаковка' : i === 6 ? '50 г' : i === 10 ? 45 : i === 11 ? 'немає' : '')));
   const p2 = g2.call('launchCheck_');
-  ok(p2.sum.add === 19, 'строка SPS, которая уже есть, второй раз не добавляется', p2.sum.add);
+  ok(p2.sum.add === 18, 'строка SPS, которая уже есть, второй раз не добавляется', p2.sum.add);
   applyAll(g2);
   const r = g2.sheets['Рецепти'].rows;
   ok(r.length === 9 && r[1][1] === 'Узвар з урюка' && r[1][3] === 'https://example.test/uzvar.jpg' && r[1][7] === 'ні' && r[2][0] === 'MY-1' && r[2][1] === 'Свій рецепт',
     'существующий рецепт обновлён по ID (фото и «Показувати» не тронуты), чужой рецепт остался', r.slice(1, 3).map(x => [x[0], x[1], x[7]]));
   const sps = g2.sheets['Товари'].rows.filter(x => x[0] === 'SPS-001');
   const h2 = g2.sheets['Товари'].rows[0];
-  ok(sps.length === 1 && sps[0][3] === KEEP['SPS-001'].ua && sps[0][5] === 'вагова' && sps[0][h2.indexOf('Ціна за 1 кг, ₴')] === 680 && sps[0][h2.indexOf('Наявність')] === 'немає' && sps[0][6] === '100 г / 250 г / 500 г',
-    'существующая строка SPS-001 обновлена: тип, фасовка, цена; наличие не тронуто', sps[0]);
+  ok(sps.length === 1 && sps[0][3] === KEEP['SPS-001'].ua && sps[0][5] === 'вагова' && sps[0][h2.indexOf('Ціна за 1 кг, ₴')] === 680 && sps[0][h2.indexOf('Наявність')] === 'немає' && sps[0][6] === '100 г / 250 г / 500 г' && /^зіра, барбарис/.test(sps[0][h2.indexOf('Склад (UA)')]),
+    'существующая строка SPS-001 обновлена: тип, фасовка, цена, состав; наличие не тронуто', sps[0]);
+
+  // Смеси для лагмана и мантов, если они уже есть в таблице, уходят в архив; занятый ID новой позиции останавливает подготовку.
+  const g3 = fresh();
+  const blank = (id, name) => g3.sheets['Товари'].rows[0].map((h, i) => (i === 0 ? id : i === 3 ? name : i === 5 ? 'вагова' : i === 6 ? '100 г' : i === 9 ? 640 : i === 11 ? 'є' : ''));
+  g3.sheets['Товари'].rows.push(blank('SPS-004', 'Спеції для лагману'), blank('SPS-005', 'Спеції для мантів'));
+  applyAll(g3);
+  ok(['SPS-004', 'SPS-005'].every(id => !ids(g3, 'Товари').includes(id) && ids(g3, 'Архів товарів').includes(id)) && ids(g3, 'Товари').length === 49, 'SPS-004 и SPS-005 из таблицы уходят в архив');
+  const g4 = fresh();
+  g4.sheets['Товари'].rows.push(g4.sheets['Товари'].rows[0].map((h, i) => (i === 0 ? 'CND-088' : i === 3 ? 'Чужий товар' : i === 5 ? 'вагова' : i === 9 ? 100 : i === 11 ? 'є' : '')));
+  const before4 = snap(g4, [REPORT, 'Журнал']);
+  const p4 = g4.call('launchCheck_');
+  g4.call('launchBackup_');
+  ok(/ID CND-088 уже зайнятий іншим товаром/.test(p4.fatal) && g4.call('launchApply_').error === 'fatal' && snap(g4, [REPORT, 'Журнал']) === before4, 'ID новой позиции занят другим товаром — подготовка останавливается, таблица не тронута', p4.fatal);
+  const g5 = fresh();
+  g5.props.DELETED_IDS = 'CND-088';
+  ok(/ID CND-088[\s\S]*уже використовувався/.test(g5.call('launchPlan_').fatal), 'ID новой позиции принадлежал удалённому товару — подготовка останавливается');
   ok(g2.sandbox.__errors.length === 0 && g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g2.sandbox.__errors.concat(g.sandbox.__errors));
 }
 
@@ -359,10 +391,10 @@ console.log('Настоящий файл оптовых цен (если он е
     const wh = g.sandbox.LAUNCH_WHOLESALE;
     const text = JSON.stringify(g.get({ action: 'catalog' }));
     const cat = JSON.parse(text);
-    ok(Object.keys(wh).length === 14 && Object.keys(wh).every(id => KEEP[id] && wh[id][0] < KEEP[id].price && wh[id][1] > 0), '14 оптовых цен, каждая ниже розничной, минимальный объём задан');
-    ok(cat.products.filter(p => p.wb).length === 14 && cat.products.every(p => !('wh' in p) && !('wp' in p)), 'в каталоге обычного клиента только отметка «есть опт», самих оптовых цен нет');
+    ok(Object.keys(wh).length === 12 && Object.keys(wh).every(id => KEEP[id] && wh[id][0] < KEEP[id].price && wh[id][1] > 0), '12 оптовых цен, каждая ниже розничной, минимальный объём задан');
+    ok(cat.products.filter(p => p.wb).length === 12 && !cat.products.find(p => p.id === 'CND-088').wb && cat.products.every(p => !('wh' in p) && !('wp' in p)), 'в каталоге обычного клиента только отметка «есть опт», самих оптовых цен нет');
     const biz = g.post({ action: 'wh.prices', initData: g.initData(U(555)) });
-    ok(Object.keys(biz.prices).length === 14 && Object.keys(wh).every(id => biz.prices[id][0] === wh[id][0] && biz.prices[id][1] === wh[id][1]), 'одобренный оптовик видит все 14 оптовых цен');
+    ok(Object.keys(biz.prices).length === 12 && Object.keys(wh).every(id => biz.prices[id][0] === wh[id][0] && biz.prices[id][1] === wh[id][1]), 'одобренный оптовик видит все 12 оптовых цен');
     const o = g.post({ action: 'order', initData: g.initData(U(555)), items: [{ id: 'DRY-039', g: 1000, q: 5 }], total: wh['DRY-039'][0] * 5, name: 'Оксана', phone: '+380501110000', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'w1' });
     ok(o.ok, 'оптовик заказывает 5 кг кураги по оптовой цене', o);
   }

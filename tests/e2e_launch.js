@@ -48,7 +48,7 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
     await page.waitForSelector('.card');
     ok(await count(page, '.feature') === 1 && /Наша курага/.test(await text(page, '.feature__title')) && /абрикосовою кислинкою/.test(await text(page, '.feature__text')), 'блок «Наша курага» с текстом из настроек');
     const father = await text(page, '.father');
-    ok(/Спеції від батька/.test(father) && /Ці суміші батько збирає сам/.test(father) && await count(page, '.father .mini') === 3, 'подборка «Спеції від батька» видна: заголовок, текст и три смеси, которые «є»', await count(page, '.father .mini'));
+    ok(/Спеції від батька/.test(father) && /Ці суміші батько збирає сам — для плову, шурпи й шашлику\./.test(father) && await count(page, '.father .mini') === 3, 'подборка «Спеції від батька» видна: заголовок, текст и три смеси', await count(page, '.father .mini'));
     ok(await count(page, '.perk') === 0, 'шуточных подарков на главной нет');
     ok(await count(page, '.recs__item') === 7 && /Плов з урюком/.test(await text(page, '.recs')), 'блок «Рецепти»: 7 рецептов');
     ok(await count(page, '.bizline--quiz') === 1, 'кнопка «Підібрати смаколики» есть');
@@ -62,13 +62,13 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
       total += await count(page, '#grid .card');
       names = names.concat(await page.locator('#grid .card .card__name').allInnerTexts());
     }
-    ok(chips.join() === 'DRY,NUT,SWT,CND,SPS' && total === 50, 'на витрине ровно 50 товаров в 5 категориях', [chips, total]);
-    ok(!/Amanti|King|Grunwerk|Стара назва/i.test(names.join(' | ')) && names.includes('Халва тахінна') && names.includes('Курага з нашого саду (Ісфара)'), 'в названиях нет чужих марок и старых названий');
+    ok(chips.join() === 'DRY,NUT,SWT,CND,SPS' && total === 49, 'на витрине ровно 49 товаров в 5 категориях', [chips, total]);
+    ok(!/Amanti|King|Grunwerk|Стара назва/i.test(names.join(' | ')) && names.includes('Халва тахінна') && names.includes('Курага з нашого саду (Ісфара)') && names.includes('Асорті сухофруктів у глазурі') && !/лагману|мантів/.test(names.join(' | ')), 'в названиях нет чужих марок и старых названий');
     const gridText = names.join(' | ');
     ok(!/Хіт|Новинка|Знижка|Набір/.test(gridText) && await count(page, '#grid .card__old, #grid s') === 0, 'бейджей «хіт», «новинка», «знижка» и зачёркнутых цен нет', (gridText.match(/.{0,40}(Хіт|Новинка|Знижка|Набір).{0,40}/) || [])[0]);
     await page.click('.chip[data-cat="SPS"]');
     await page.waitForTimeout(80);
-    ok(await count(page, '#grid .card') === 20 && await noOverflow(page) && (await smallTargets(page)).length === 0, 'категория «Спеції»: 20 позиций, кнопки ≥ 44 px', await smallTargets(page));
+    ok(await count(page, '#grid .card') === 18 && await count(page, '#grid .card .btn[disabled]') === 0 && await noOverflow(page) && (await smallTargets(page)).length === 0, 'категория «Спеції»: 18 позиций, все можно заказать, кнопки ≥ 44 px', await smallTargets(page));
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close();
   }
@@ -88,14 +88,22 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
     const b = await open(browser, st.url, { uid: 4203, start: 'SPS-001' });
     await b.page.waitForSelector('.sheet__title');
     const s2 = await text(b.page, '#sheet');
-    ok(/Спеції для плову — родинний рецепт/.test(s2) && /Суміш для плову, яку наш батько складає сам\./.test(s2) && /Додавайте в зірвак/.test(s2) && /Плов з урюком/.test(s2), 'карточка смеси для плова: описание, «Як їсти», рецепт');
-    ok(await count(b.page, '.sheet__comp') === 0 && !/УТОЧНИТЬ|Склад:/.test(s2), 'состава смеси нет (его знает только отец) — блок скрыт');
+    ok(/Спеції для плову — родинний рецепт/.test(s2) && /Суміш для плову, яку наш батько складає сам\./.test(s2) && /1 ст\. л\. на 500 г рису\. Додавайте в зірвак разом із сіллю\./.test(s2) && /Плов з урюком/.test(s2), 'карточка смеси для плова: описание, «Як їсти» с дозировкой, рецепт');
+    ok(await count(b.page, '.sheet__comp') === 1 && /Склад:\s*зіра, барбарис, коріандр, паприка солодка, перець червоний гострий, куркума/.test(await text(b.page, '.sheet__comp')) && !/УТОЧНИТЬ/.test(s2), 'состав смеси показан');
+    const n = await open(browser, st.url, { uid: 4209, start: 'CND-088' });
+    await n.page.waitForSelector('.sheet__title');
+    const s3 = (await text(n.page, '#sheet')).replace(/ /g, ' ');
+    ok(/Асорті сухофруктів у глазурі/.test(s3) && /460 ₴ за 1 кг/.test(s3) && /115 ₴/.test(s3) && await count(n.page, '.sheet__comp') === 0 && await count(n.page, '.sheet .how') === 0 && await noOverflow(n.page) && n.errors.length === 0,
+      'новая позиция «Асорті сухофруктів у глазурі»: 460 ₴ за кг, 250 г = 115 ₴; пустых блоков (описание, состав, «Як їсти») нет', s3.slice(0, 200));
+    await n.page.screenshot({ path: SHOTS + '/7-glaze-light-ua.png' });
+    await n.page.context().close();
     ok(await noOverflow(b.page) && (await smallTargets(b.page)).length === 0 && b.errors.length === 0, 'карточка смеси: вёрстка в порядке, ошибок нет', (await smallTargets(b.page)).concat(b.errors));
     await b.page.context().close();
   }
 
   console.log('Рецепты');
   {
+    setStock('SPS-007', 'немає'); // барбариса временно нет
     const { page, errors } = await open(browser, st.url, { uid: 4204, query: '?rec=REC-002' });
     await page.waitForSelector('.rec__p');
     ok(/Плов з урюком/.test(await text(page, '.page__title')) && await count(page, '.rec__p') === 9 && await count(page, '.page .story__img') === 0, 'рецепт плова: название, 9 абзацев, фото нет — пустого места под фото тоже нет');
@@ -107,6 +115,7 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
       '«Додати інгредієнти в кошик»: только то, что «є»; про барбарис («немає») — сообщение', [await cartIds(), await text(page, '.page .note')]);
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close();
+    setStock('SPS-007', 'є');
 
     setStock('SPS-002', 'немає'); // главный ингредиент шурпы
     const h = await open(browser, st.url, { uid: 4205 });
@@ -120,7 +129,7 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
     await c.page.route(/\/api\?.*action=catalog/, async route => {
       const res = await route.fetch();
       const body = await res.json();
-      body.recipes.push({ id: 'X1', ua: 'Тест: головного немає', tUa: 'текст', items: ['SPS-004', 'DRY-039'] }, { id: 'X2', ua: 'Тест: головний є', tUa: 'текст', items: ['DRY-039', 'SPS-004'] });
+      body.recipes.push({ id: 'X1', ua: 'Тест: головного немає', tUa: 'текст', items: ['NUT-040', 'DRY-039'] }, { id: 'X2', ua: 'Тест: головний є', tUa: 'текст', items: ['DRY-039', 'NUT-040'] });
       await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: JSON.stringify(body) });
     });
     await c.page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); }); // иначе витрина покажет каталог из своей памяти
@@ -138,8 +147,9 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
     const pts = await text(page, '.page');
     ok(await count(page, '.point') === 2 && /Центральний ринок, вул\. Різдвяна, 33, критий павільйон/.test(pts) && /Пн: вихідний/.test(pts), 'две точки: новый адрес и часы');
     const facts = await page.locator('.point .facts p').allInnerTexts();
-    ok(await count(page, '.point a[href^="tel:"]') === 0 && !/Ряд|місце|Від входу|фонтан/.test(pts) && facts.every(f => f.trim().length > 3) && facts.length === 4,
-      'пустые поля точки не показываются: нет строк «Ряд», «як знайти» и кнопки телефона', facts);
+    ok(await count(page, '.point a[href="tel:+380637213060"]') === 2 && /Головний вхід, перша точка зліва/.test(pts) && /Головний вхід, п’ята точка справа/.test(pts), '«як знайти» у каждой точки своё; кнопка звонка на +380637213060');
+    ok(!/Ряд|місце|Від входу|фонтан/.test(pts) && facts.every(f => f.trim().length > 3 && !/,\s*$/.test(f.trim())) && facts.length === 6,
+      'пустые поля точки не показываются: строки «Ряд і місце» нет, висящих запятых нет', facts);
     ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'экран точек: вёрстка в порядке', await smallTargets(page));
     await page.screenshot({ path: SHOTS + '/points-light-ua.png', fullPage: true });
 
@@ -169,7 +179,7 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
     await page.locator('.quiz__opt').last().click();
     await page.waitForSelector('#quizGrid .card');
     const got = await page.evaluate(() => [].map.call(document.querySelectorAll('#quizGrid .card'), c => c.getAttribute('data-id')).sort().join());
-    ok(got === 'DRY-086,SPS-003' && /Ось що вам підійде/.test(await text(page, '.quiz__q')), 'квиз «До м’яса»: чернослив и смесь для шашлыка (то, что «є»)', got);
+    ok(got.split(',').length === 6 && got.split(',').every(id => KEEP[id].tags.indexOf("до м'яса") >= 0) && /Ось що вам підійде/.test(await text(page, '.quiz__q')), 'квиз «До м’яса»: шесть товаров с этим тегом', got);
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close();
 
