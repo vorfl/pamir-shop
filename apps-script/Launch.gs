@@ -161,6 +161,43 @@ function launchProducts_(ss) {
   return { sheet: sheet, values: values, col: col };
 }
 
+/**
+ * Цена конкурента за 1 кг из служебной колонки «Конкурент». В ней текст с фасовками:
+ *   «100 г — 52 ₴ / 1 кг — 520 ₴» → 520 (есть цена за 1 кг: exact);
+ *   «250 г — 73 ₴»                → 292 (пересчитано с самой крупной фасовки: calc);
+ *   число или «520 ₴» без веса     → цена в единицах строки: за 1 кг у весового товара, за упаковку (делится на её вес) у остальных;
+ *   пусто → нет данных; остальное → bad (сравнивать не с чем).
+ * Возвращает { kg, exact, calc, bad }.
+ */
+function launchComp_(v, isWeight, packKg) {
+  var out = { kg: 0, exact: false, calc: false, bad: false };
+  if (v === '' || v === null || v === undefined) return out;
+  var text = String(v).replace(/[  ]/g, ' ').trim();
+  if (!text) return out;
+  if (typeof v === 'number' || /^\d[\d ]*(?:[.,]\d+)?\s*(?:₴|грн\.?)?$/i.test(text)) {
+    var n = toNum_(v);
+    if (!(n > 0)) { out.bad = true; return out; }
+    if (isWeight) { out.kg = n; out.exact = true; }
+    else if (packKg > 0) { out.kg = Math.round(n / packKg * 100) / 100; out.calc = true; }
+    else out.bad = true;
+    return out;
+  }
+  var best = null; // самая крупная фасовка: [граммы, цена]
+  text.split(/[\/;\n|]+/).forEach(function (part) {
+    var m = part.match(/(\d+(?:[.,]\d+)?)\s*(кг|kg|гр|г|g)(?![a-zа-яіїєґ])\.?\s*[—–\-:=]+\s*(\d[\d ]*(?:[.,]\d+)?)/i);
+    if (!m) return;
+    var w = parseFloat(m[1].replace(',', '.'));
+    var grams = /^(кг|kg)$/i.test(m[2]) ? w * 1000 : w;
+    var price = toNum_(m[3]);
+    if (!(grams > 0) || !(price > 0)) return;
+    if (!best || Math.abs(grams - 1000) < Math.abs(best[0] - 1000)) best = [grams, price];
+  });
+  if (!best) { out.bad = true; return out; }
+  if (best[0] === 1000) { out.kg = best[1]; out.exact = true; }
+  else { out.kg = Math.round(best[1] * 1000 / best[0]); out.calc = true; }
+  return out;
+}
+
 function launchKeep_() {
   var map = {};
   LAUNCH_PRODUCTS.forEach(function (p) { map[p.id] = p; });
@@ -269,10 +306,10 @@ function launchPlan_() {
       if (p) plan.warn.push(id + ': на аркуші «Товари» є другий рядок із цим ID — він піде в архів.');
       plan.sum.archive++;
       if (reset[id]) {
-        var compPrice = col.comp >= 0 ? toNum_(row[col.comp]) : 0;
-        var priceCol = cell_(row, col.type).toLowerCase().indexOf('ваг') === 0 ? col.pKg : col.pUnit;
-        if (compPrice > 0 && priceCol >= 0 && toNum_(row[priceCol]) !== compPrice) add(SHEET_PRODUCTS, id, 'ціна', launchText_(row[priceCol]), compPrice, 'тестова правка: ціну повернуто з колонки «Конкурент»');
-        if (!(compPrice > 0)) plan.warn.push(id + ': не знайдено ціну в колонці «Конкурент» — ціна перед архівацією не змінюється.');
+        // Цена возвращается, только если в «Конкурент» разобрана цена именно за 1 кг; иначе строка уходит в архив с той ценой, что есть.
+        var back = launchResetPrice_(row, col);
+        if (back > 0 && toNum_(row[col.pKg]) !== back) add(SHEET_PRODUCTS, id, 'ціна', launchText_(row[col.pKg]), back, 'тестова правка: ціну за 1 кг повернуто з колонки «Конкурент»');
+        if (!(back > 0)) plan.warn.push(id + ': у колонці «Конкурент» не знайдено ціну за 1 кг («' + launchText_(col.comp >= 0 ? row[col.comp] : '').slice(0, 60) + '») — ціна перед архівацією не змінюється.');
         ['badge', 'oldPrice', 'saleEnd'].forEach(function (k) {
           if (col[k] >= 0 && launchText_(row[col[k]]) !== '') add(SHEET_PRODUCTS, id, LAUNCH_FIELD_UA[k], launchText_(row[col[k]]), '', 'тестова правка');
         });
@@ -351,22 +388,31 @@ function launchBrandRe_() {
   return new RegExp('(^|[^A-Za-zА-Яа-яІіЇїЄєҐґ0-9])(' + parts.join('|') + ')(?![A-Za-zА-Яа-яІіЇїЄєҐґ0-9])', 'i');
 }
 
+/** Цена за 1 кг для тестовой строки (NUT-006): только точная цена за 1 кг из «Конкурент» у весового товара; иначе 0 — цену не трогаем. */
+function launchResetPrice_(row, col) {
+  if (col.comp < 0 || col.pKg < 0 || cell_(row, col.type).toLowerCase().indexOf('ваг') !== 0) return 0;
+  var c = launchComp_(row[col.comp], true, 0);
+  return c.exact ? c.kg : 0;
+}
+
 /** Предупреждения о ценах: маржа (если заполнена закупка) и отличие от цены конкурента больше чем на 30 %. Цены не меняются. */
 function launchPriceWarnings_(plan, p, row, col, wh) {
   var buy = col.buy >= 0 ? toNum_(row[col.buy]) : 0;
-  var comp = col.comp >= 0 ? toNum_(row[col.comp]) : 0;
   var isWeight = cell_(row, col.type).toLowerCase().indexOf('ваг') === 0;
   var packKg = col.packKg >= 0 ? toNum_(row[col.packKg]) : 0;
-  if (!isWeight) { // у строки «упаковка» закупка и конкурент записаны за упаковку: приводим к 1 кг, если известен вес
-    if (packKg > 0) { buy = buy / packKg; comp = comp / packKg; }
-    else { if (buy > 0 || comp > 0) plan.info.push(p.id + ': закупка й ціна конкурента були за упаковку невідомої ваги — не порівнюю.'); buy = 0; comp = 0; }
+  var c = launchComp_(col.comp >= 0 ? row[col.comp] : '', isWeight, packKg);
+  var comp = c.kg;
+  if (c.bad) plan.warn.push(p.id + ' ' + p.ua + ': ціну конкурента не вдалося розібрати («' + launchText_(row[col.comp]).slice(0, 60) + '») — не порівнюю.');
+  if (!isWeight) { // у строки «упаковка» закупка записана за упаковку: приводим к 1 кг, если известен вес
+    if (packKg > 0) buy = buy / packKg;
+    else { if (buy > 0) plan.info.push(p.id + ': закупка була за упаковку невідомої ваги — маржу не перевіряю.'); buy = 0; }
   }
   if (buy > 0 && p.price < buy * 1.35) plan.warn.push(p.id + ' ' + p.ua + ': мала маржа — роздріб ' + p.price + ' ₴ менший за закупку × 1,35.');
   var w = wh ? wh[p.id] : null;
   if (buy > 0 && w && w[0] < buy * 1.15) plan.warn.push(p.id + ' ' + p.ua + ': мала маржа — опт ' + w[0] + ' ₴ менший за закупку × 1,15.');
   if (comp > 0 && Math.abs(p.price - comp) / comp > 0.3) {
     var pct = Math.round((p.price - comp) / comp * 100);
-    plan.warn.push(p.id + ' ' + p.ua + ': сильно відрізняється від конкурента — наша ціна ' + p.price + ' ₴, у конкурента ' + Math.round(comp) + ' ₴ (' + (pct > 0 ? '+' : '') + pct + ' %).');
+    plan.warn.push(p.id + ' ' + p.ua + ': сильно відрізняється від конкурента — наша ціна ' + p.price + ' ₴/кг, у конкурента ' + Math.round(comp) + ' ₴/кг' + (c.calc ? ' (перераховано з фасування)' : '') + ' (' + (pct > 0 ? '+' : '') + pct + ' %).');
   }
 }
 
@@ -719,12 +765,11 @@ var launchPhase_ = {
       var row = ctx.values[r], id = cell_(row, col.id);
       if (del[id]) { rowsToDelete.push(r + 1); log.push(['Запуск: видалено назавжди', id + ' ' + cell_(row, col.nameUa), 'на вітрині', 'видалено']); continue; }
       if (!reset[id]) continue;
-      var comp = col.comp >= 0 ? toNum_(row[col.comp]) : 0;
-      var isWeight = cell_(row, col.type).toLowerCase().indexOf('ваг') === 0;
-      var pc = isWeight ? col.pKg : col.pUnit;
-      if (comp > 0 && pc >= 0 && toNum_(row[pc]) !== comp) {
+      var comp = launchResetPrice_(row, col); // только точная цена за 1 кг; иначе цену не трогаем
+      var pc = col.pKg;
+      if (comp > 0 && toNum_(row[pc]) !== comp) {
         changes.push({ r: r + 1, c: pc + 1, v: comp });
-        if (isWeight && col.p100 >= 0 && !sheet.getRange(r + 1, col.p100 + 1).getFormula()) changes.push({ r: r + 1, c: col.p100 + 1, v: Math.round(comp) / 10 });
+        if (col.p100 >= 0 && !sheet.getRange(r + 1, col.p100 + 1).getFormula()) changes.push({ r: r + 1, c: col.p100 + 1, v: Math.round(comp) / 10 });
         log.push(['Запуск: ціну повернуто', id, launchText_(row[pc]), comp]);
       }
       ['badge', 'oldPrice', 'saleEnd'].forEach(function (k) {

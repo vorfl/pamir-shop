@@ -40,7 +40,8 @@ function launchSeed(opts) {
     const kg = o.kg === undefined ? 300 : o.kg;
     r[8] = kg ? kg / 10 : ''; r[9] = kg || ''; r[10] = o.unit || ''; r[11] = o.stock || 'є';
     r[15] = o.wh || ''; r[16] = o.wm || '';
-    r[17] = o.comp === undefined ? (kg || o.unit || '') : o.comp; r[18] = 'СЕКРЕТ-примітка'; r[19] = o.buy || ''; r[20] = 'СЕКРЕТ-маржа'; r[21] = '33%'; r[22] = 'do-smaku.com.ua';
+    // «Конкурент» — текст с фасовками, как в настоящей таблице: «100 г — 52 ₴ / 1 кг — 520 ₴» или одна упаковка «500 г — 90 ₴».
+    r[17] = o.comp !== undefined ? o.comp : kg ? '100 г — ' + Math.round(kg / 10) + ' ₴ / 1 кг — ' + kg + ' ₴' : o.unit ? r[6] + ' — ' + o.unit + ' ₴' : ''; r[18] = 'СЕКРЕТ-примітка'; r[19] = o.buy || ''; r[20] = 'СЕКРЕТ-маржа'; r[21] = '33%'; r[22] = 'do-smaku.com.ua';
     r[24] = o.badge || ''; r[25] = o.old || ''; r[27] = o.end || ''; r[28] = o.packPrices || '';
     rows.push(r);
   }
@@ -49,11 +50,14 @@ function launchSeed(opts) {
   data.products.filter(p => !p.isNew).forEach((p, i) => {
     const c = CAT[p.id.slice(0, 3)];
     const o = { kg: 205 + i * 10 };
-    if (p.id === 'SWT-054') Object.assign(o, { type: 'упаковка', packs: '5 кг', packKg: 5, kg: 0, unit: 1500, comp: 1500 }); // оптовый блок чужой марки
-    if (p.id === 'CND-016') Object.assign(o, { type: 'упаковка', packs: '1 кг', packKg: 1, kg: 0, unit: 480, comp: 480 });
+    if (p.id === 'SWT-054') Object.assign(o, { type: 'упаковка', packs: '5 кг', packKg: 5, kg: 0, unit: 1500 }); // оптовый блок чужой марки
+    if (p.id === 'CND-016') Object.assign(o, { type: 'упаковка', packs: '1 кг', packKg: 1, kg: 0, unit: 480 });
     if (p.id === 'DRY-039') Object.assign(o, { kg: 380, wh: 320, wm: 'від 5 кг', badge: 'хіт', buy: 400 });   // закупка 400: розница 440 < 400 × 1,35
-    if (p.id === 'NUT-047') Object.assign(o, { kg: 300, old: 360, end: '31.12.2099', packPrices: '1 кг = 280' });
-    if (p.id === 'NUT-014') Object.assign(o, { kg: 1500 });  // наша 980 против 1500 у конкурента: −35 %
+    if (p.id === 'NUT-047') Object.assign(o, { kg: 300, old: 360, end: '31.12.2099', packPrices: '1 кг = 280', comp: '250 г — 130 ₴ / 1 кг — 520 ₴' }); // наша 480: −8 %
+    if (p.id === 'NUT-014') Object.assign(o, { kg: 1000 });  // наша 1490 против 1000 у конкурента: +49 %
+    if (p.id === 'DRY-071') Object.assign(o, { comp: '250 г — 73 ₴' });   // только мелкая фасовка: 292 ₴/кг, наша 180 — −38 %
+    if (p.id === 'DRY-086') Object.assign(o, { comp: 'за запитом' });      // не разобрать
+    if (p.id === 'NUT-048') Object.assign(o, { comp: 265 });               // просто число: цена за 1 кг
     if (p.id === 'DRY-073') Object.assign(o, { stock: 'немає' }); // ходовая позиция: родители подтвердили, что есть — станет «є»
     if (p.id === 'NUT-040') Object.assign(o, { stock: 'немає' }); // обычная позиция: наличие не трогается
     const brand = p.id === 'SWT-054' ? ' Amanti 5 кг' : p.id === 'CND-016' ? ' King 1 кг' : p.id === 'NUT-036' ? ' Grunwerk' : '';
@@ -67,7 +71,7 @@ function launchSeed(opts) {
     // У конфет номера как в настоящей таблице — не больше CND-087: следующий свободный ID для новой позиции — CND-088.
     add(pre + '-' + String(pre === 'CND' ? 20 + (i - 3) / 4 : 500 + i).padStart(3, '0'), c[0], c[1], 'Чужий товар Amanti ' + i, 'Чужой товар Amanti ' + i, i % 7 === 0 ? { type: 'упаковка', packs: '500 г', kg: 0, unit: 90 + i } : { kg: 150 + i });
   }
-  add('NUT-006', 'Горіхи', 'Орехи', 'Арахіс зі смаком сметани', 'Арахис со вкусом сметаны', { kg: 70, comp: 240, badge: 'знижка', old: 240, end: '31.12.2099' }); // тестовая правка
+  add('NUT-006', 'Горіхи', 'Орехи', 'Арахіс зі смаком сметани', 'Арахис со вкусом сметаны', { kg: 70, comp: '100 г — 18 ₴ / 1 кг — 180 ₴', badge: 'знижка', old: 240, end: '31.12.2099' }); // тестовая правка
   add('DRY-030', 'Сухофрукти', 'Сухофрукты', 'Кизил сушений', 'Кизил сушёный', { kg: 0, comp: '' });
   ['NUT-068', 'NUT-069', 'NUT-070', 'DRY-088'].forEach((id, i) => add(id, 'Горіхи', 'Орехи', 'Тест ' + (i + 1), 'Тест ' + (i + 1), { kg: 10 }));
 
