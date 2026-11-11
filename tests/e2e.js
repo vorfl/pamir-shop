@@ -234,7 +234,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(await count(page, '.line') === 2 && /493/.test(await text(page, '.sum .total')), '«Повторити замовлення» собирает корзину заново');
     await page.locator('[data-action="clear-cart"]').click();
     await page.waitForSelector('.state__title');
-    ok(/Кошик порожній/.test(await text(page, '.state__title')) && await tg(() => window.__tg.calls.some(c => c[0] === 'showConfirm')), 'очистка корзины спрашивает подтверждение');
+    ok(/Тут поки порожньо/.test(await text(page, '.state__title')) && await tg(() => window.__tg.calls.some(c => c[0] === 'showConfirm')), 'очистка корзины спрашивает подтверждение');
     await page.click('.page [data-lang], .tabbar [data-go="orders"]');
     await page.locator('.merow [data-lang="ru"]').click();
     ok(/Профиль/.test(await text(page, '.page__title')) && /Корзина/.test(await text(page, '.tabbar [data-go="cart"]')), 'переключение языка в профиле: интерфейс на русском');
@@ -480,7 +480,7 @@ const smallTargets = page => page.evaluate(() => {
     // пустой поиск
     await page.fill('#search', 'zzzzzz');
     await page.waitForSelector('.state .art');
-    ok(/Не знайшли\? Напишіть нам/.test(await text(page, '.state')), 'пустой поиск: иллюстрация и «Не знайшли? Напишіть нам»');
+    ok(/Напишіть нам — підкажемо, чи є це на прилавку/.test(await text(page, '.state')), 'пустой поиск: иллюстрация и «Напишіть нам — підкажемо, чи є це на прилавку»');
     await page.click('.state [data-w1="contact"]');
     ok(await tg(() => window.__tg.calls.some(c => c[0] === 'openTelegramLink' && c[1] === 'https://t.me/pamir_help')), 'кнопка «Написати нам» открывает чат из настроек');
     await page.fill('#search', '');

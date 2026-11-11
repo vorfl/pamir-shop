@@ -31,3 +31,7 @@ npm-debug.log*
 # --- Система / редакторы ---
 .DS_Store
 Thumbs.db
+
+# --- Данные запуска: рабочие xlsx и оптовые цены — только локально (репозиторий публичный) ---
+docs/data/*.xlsx
+apps-script/LaunchWholesale.gs

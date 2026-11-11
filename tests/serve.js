@@ -8,8 +8,8 @@ const ROOT = path.join(__dirname, '..', 'webapp');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg' };
 
 function start(port, codePath, tweak) {
-  const s = seed();
-  if (tweak) tweak(s);
+  let s = seed();
+  if (tweak) s = tweak(s) || s; // tweak может поправить стандартную таблицу или вернуть свою (например таблицу «перед запуском»)
   // PAMIR_CODE_GS — путь к другому Code.gs: так проверяется, что новая витрина работает со старым бэкендом и наоборот
   const gas = createGas(codePath || process.env.PAMIR_CODE_GS || path.join(__dirname, '..', 'apps-script', 'Code.gs'), s);
   const log = []; // запросы к API — тесты смотрят, что и сколько раз вызывалось

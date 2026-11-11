@@ -175,7 +175,10 @@ function buildCatalog_() {
   };
   // Рецепты (волна 2в): лист необязательный; нет листа или показываемых рецептов — поля нет.
   try {
-    var recipes = readRecipes_(ss);
+    // Рецепт виден, только когда его главный ингредиент (первый в колонке «Товари») есть на витрине и «є».
+    var onSale = {};
+    products.forEach(function (p) { if (p.a) onSale[p.id] = true; });
+    var recipes = readRecipes_(ss).filter(function (rec) { return !rec.items || onSale[rec.items[0]]; });
     if (recipes.length) out.recipes = recipes;
   } catch (err) {
     console.warn('recipes: ' + err);
@@ -596,7 +599,8 @@ function clearCatalogCache_() {
 /* ====================== Меню в таблице (для удобства) ====================== */
 
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('PAMIR')
+  var ui = SpreadsheetApp.getUi();
+  var menu = ui.createMenu('PAMIR')
     .addItem('Оновити каталог у магазині зараз', 'menuRefreshCatalog')
     .addItem('Перевірити каталог', 'menuCheckCatalog')
     .addItem('Оновити статистику продажів', 'menuStats')
@@ -608,8 +612,10 @@ function onOpen() {
     .addItem('Етап 8: створити листи й колонки', 'setupStage8')
     .addItem('Етап 8.2: створити листи «Архів товарів» і «Клієнти»', 'setupWave2a')
     .addItem('Етап 8.3: створити листи й колонки (опт, розсилка, оплата)', 'setupWave2b')
-    .addItem('Етап 8.4: створити лист «Рецепти» і колонки (як їсти, теги)', 'setupWave2c')
-    .addToUi();
+    .addItem('Етап 8.4: створити лист «Рецепти» і колонки (як їсти, теги)', 'setupWave2c');
+  // «Підготовка до запуску» (Launch.gs): перевірка, резервна копія, застосування.
+  if (typeof launchMenu_ === 'function') menu.addSeparator().addSubMenu(launchMenu_(ui));
+  menu.addToUi();
 }
 
 /** Сбрасывает кэш: изменения в таблице видны в магазине сразу, а не через 5 минут. */
@@ -1051,9 +1057,16 @@ function orderCols_(sheet, headers) {
   return col;
 }
 
+/**
+ * Номер следующего заказа: на единицу больше самого большого номера в листе.
+ * ORDER_NUM_FLOOR (свойство скрипта, не секрет) — номер, ниже которого уже не опускаемся: после удаления тестовых заказов
+ * новый заказ не получит номер старого, и старые кнопки в чате админов не попадут на чужой заказ.
+ */
+var PROP_ORDER_FLOOR = 'ORDER_NUM_FLOOR';
 function nextOrderNumber_(sheet, col) {
   var last = sheet.getLastRow();
   var max = 0;
+  try { max = Math.max(0, parseInt(scriptProps_().getProperty(PROP_ORDER_FLOOR), 10) || 0); } catch (err) { max = 0; }
   if (last > 1) {
     sheet.getRange(2, col.num + 1, last - 1, 1).getValues().forEach(function (r) {
       var m = String(r[0]).match(/^P-(\d+)$/);
