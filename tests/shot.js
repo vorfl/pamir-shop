@@ -31,7 +31,7 @@ if (require.main === module) (async () => {
     const rows = s.sheets['Товари'], pc = rows[0].indexOf('Фото (посилання)');
     rows.slice(1).forEach((r, i) => { if (i % 4 !== 3) r[pc] = 'https://img.test/' + r[0] + '.svg'; });
   });
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] });
+  const browser = await chromium.launch({ channel: process.env.BROWSER_CHANNEL || undefined, executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] });
   const a = await open(browser, st.url, { uid: 501 });
   await a.page.screenshot({ path: OUT + '/01-home.png' });
   await a.page.screenshot({ path: OUT + '/02-home-full.png', fullPage: true });

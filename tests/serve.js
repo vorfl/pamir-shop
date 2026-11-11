@@ -12,6 +12,7 @@ function start(port, codePath, tweak) {
   if (tweak) tweak(s);
   const gas = createGas(codePath || path.join(__dirname, '..', 'apps-script', 'Code.gs'), s);
   const log = []; // запросы к API — тесты смотрят, что и сколько раз вызывалось
+  const opt = { delay: 0, failAction: '' }; // delay — задержка ответа, мс (как у настоящего Apps Script); failAction — действие, на которое стенд отвечает ошибкой
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/api') {
@@ -25,9 +26,14 @@ function start(port, codePath, tweak) {
       req.on('data', c => { body += c; });
       req.on('end', () => {
         let out;
-        try { const parsed = JSON.parse(body); log.push(parsed); out = gas.post(body); } catch (e) { out = { ok: false, error: 'server_error', detail: String(e) }; }
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify(out));
+        try {
+          const parsed = JSON.parse(body); log.push(parsed);
+          out = opt.failAction && parsed.action === opt.failAction ? { ok: false, error: 'server_error' } : gas.post(body);
+        } catch (e) { out = { ok: false, error: 'server_error', detail: String(e) }; }
+        setTimeout(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify(out));
+        }, opt.delay);
       });
       return;
     }
@@ -82,7 +88,7 @@ function start(port, codePath, tweak) {
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(full)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
     res.end(fs.readFileSync(full));
   });
-  return new Promise(resolve => server.listen(port, '127.0.0.1', () => resolve({ server, gas, log, url: 'http://127.0.0.1:' + port })));
+  return new Promise(resolve => server.listen(port, '127.0.0.1', () => resolve({ server, gas, log, opt, url: 'http://127.0.0.1:' + port })));
 }
 
 module.exports = { start };

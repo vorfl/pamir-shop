@@ -883,3 +883,30 @@ body[data-season="navruz"] .season { color: var(--pistachio); }
 .ord__body a { display: inline-flex; align-items: center; min-height: var(--tap); }
 .usual .btn { width: auto; margin: var(--space-2) var(--space-4) 0; }
 .nowrap { white-space: nowrap; }
+
+/* ================= Этап 8, волна 2а ================= */
+/* ---------- А1. Отклик кнопок ---------- */
+/* Нажатие видно сразу: кнопка заметно сжимается и темнеет. */
+.btn:active:not(:disabled), .chip:active, .toolbtn:active, .weights button:active:not(:disabled), .mini__add:active,
+.tabs button:active, .iconbtn:active, .pager button:active:not(:disabled) { transform: scale(.93); filter: brightness(.9); }
+.prod__main, .ord__head, .tabs button, .iconbtn { transition: background-color .12s, transform .12s var(--ease), filter .12s; }
+button.prod__main:active, .ord__head:active { background: var(--surface-sunken); }
+.sw:active:not(:disabled) span { width: 30px; }
+.sw[aria-checked="true"]:active:not(:disabled) span { transform: translateX(16px); }
+
+/* Кнопка ждёт ответа сервера: вращается индикатор, нажать второй раз нельзя. */
+.is-busy { pointer-events: none; }
+.btn.is-busy::after {
+  content: ''; order: -1; flex: none; width: 16px; height: 16px; box-sizing: border-box;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+.btn.is-busy .ico { display: none; }
+.btn.is-busy:disabled { opacity: .8; }
+.btn--primary.is-busy:disabled, .btn--primary.is-saved:disabled { background: var(--apricot); border-color: var(--apricot); color: var(--on-apricot); }
+.btn--danger.is-busy:disabled { background: var(--pomegranate); border-color: var(--pomegranate); color: var(--surface-raised); }
+.btn.is-saved:disabled { background: var(--pistachio-soft); border-color: var(--pistachio-soft); color: var(--pistachio); opacity: 1; }
+.sw[aria-busy="true"]:disabled { opacity: 1; }
+.sw[aria-busy="true"] span { animation: pulse .6s ease-in-out infinite alternate; }
+.check.is-busy { opacity: .6; }
+@keyframes spin { to { transform: rotate(360deg); } }

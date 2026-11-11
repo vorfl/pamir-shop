@@ -1262,9 +1262,14 @@
   }
 
   /** «Повідомити, коли з'явиться»: бот напишет клиенту, когда админ вернёт товар в наличие. */
-  function notifyMe(id) {
+  var notifying = {};
+  function notifyMe(id, btn) {
     if (!cfg.API_URL || !inTelegram) { toast(t('notifyTg')); return; }
+    if (notifying[id]) return;
+    notifying[id] = true;
+    btnBusy(btn);
     askWriteAccess().then(function () { return postApi('notify', { id: id, lang: state.lang }); }).then(function (res) {
+      notifying[id] = false; btnFree(btn);
       if (!res || !res.ok) throw new Error('fail');
       if (res.instock) { loadCatalog(); return; } // товар уже вернулся — просто обновляем витрину
       if (subs.indexOf(id) < 0) { subs.unshift(id); subs = subs.slice(0, 40); saveList(SUBS_KEY, '', subs); }
@@ -1272,7 +1277,7 @@
       track('notify', id);
       toast(t(res.dup ? 'notifyDup' : 'notifyOk'));
       if (state.sheet && state.sheet.id === id) renderSheet();
-    }).catch(function () { haptic('error'); toast(t('notifyFail')); });
+    }).catch(function () { notifying[id] = false; btnFree(btn); haptic('error'); toast(t('notifyFail')); });
   }
 
   /** Клик по карточке товара в любом месте: сердечко, быстрое «+/−» или открытие товара. */
@@ -1465,12 +1470,19 @@
     if (!inTelegram) return;
     try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) { /* нет вибрации */ }
   }
+  var hapticAt = 0; // одно нажатие — одна вибрация, даже если её просят и общий обработчик, и сама кнопка
+  function hapticOnce() {
+    var now = Date.now();
+    if (!inTelegram || now - hapticAt < 80) return false;
+    hapticAt = now;
+    return true;
+  }
   function hapticLight() {
-    if (!inTelegram) return;
+    if (!hapticOnce()) return;
     try { tg.HapticFeedback.impactOccurred('light'); } catch (e) { /* нет вибрации */ }
   }
   function hapticSelect() {
-    if (!inTelegram) return;
+    if (!hapticOnce()) return;
     try { tg.HapticFeedback.selectionChanged(); } catch (e) { /* нет вибрации */ }
   }
 
@@ -1948,6 +1960,7 @@
   function setBusy(busy) {
     sending = busy;
     el.barBtn.disabled = busy;
+    el.barBtn.classList.toggle('is-busy', busy);
     if (busy) el.barBtn.textContent = t('sending');
     if (useNativeMain) {
       try { if (busy) tg.MainButton.showProgress(false); else tg.MainButton.hideProgress(); } catch (e) { /* нет индикатора */ }
@@ -2128,7 +2141,7 @@
         (o.i ? '<button type="button" class="btn btn--soft" data-repeat="' + esc(o.num) + '">' + icon('rotate') + esc(t('repeat')) + '</button>'
              : '<span class="my__old">' + esc(t('repeatOld')) + '</span>') + '</div></li>';
     }).join('') + '</ul>' +
-      '<button type="button" class="btn btn--block" data-action="my-refresh">' + esc(t('myRefresh')) + '</button>';
+      '<button type="button" class="btn btn--block' + (my.loading ? ' is-busy" disabled aria-busy="true' : '') + '" data-action="my-refresh">' + esc(t('myRefresh')) + '</button>';
     return html;
   }
 
@@ -2174,7 +2187,7 @@
   var CAT_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
     edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false, sales: null, salesOpen: false,
-    me: null, admins: null, invites: null, permList: null, admEdit: '', invite: null, logOpen: false, log: null, reviews: null };
+    me: null, admins: null, invites: null, permList: null, admEdit: '', invite: null, logOpen: false, log: null, reviews: null, pending: {} };
 
   /** Есть ли у меня право. Пока сервер не прислал роль (или бэкенд ещё старый) — показываем всё: решает всё равно сервер. */
   function can(perm) { return !adm.me || adm.me.perms.indexOf(perm) >= 0; }
@@ -2202,6 +2215,7 @@
     renderAdminList();
     api('admin.' + kind).then(function (res) {
       adm.loading = false;
+      btnFree(document.querySelector('[data-action="adm-refresh"]'));
       if (!res || !res.ok) {
         adm.error = res && res.error === 'forbidden' ? 'admForbidden' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admError';
         if (res && res.error === 'forbidden') { store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true; }
@@ -2217,6 +2231,7 @@
       if (state.view === 'admin') renderPage();
     }).catch(function () {
       adm.loading = false; adm.error = 'admError';
+      btnFree(document.querySelector('[data-action="adm-refresh"]'));
       if (state.view === 'admin') renderAdminList();
     });
   }
@@ -2360,7 +2375,7 @@
           (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) +
           (can('st') ? '<div class="ord__acts">' + STATUS_BTNS.map(function (b) {
             return '<button type="button" class="btn' + (o.status === b[2] ? ' btn--soft' : '') + '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' +
-              (o.status === b[2] || adm.busy ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
+              (o.status === b[2] ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
           }).join('') + '</div>' : '') +
           '<button type="button" class="btn btn--block" data-chat="' + esc(o.username ? 'https://t.me/' + o.username.replace(/^@/, '') : 'https://t.me/' + o.phone) + '">' +
           esc(t('admWrite')) + '</button></div>';
@@ -2383,7 +2398,7 @@
       return '<li class="prod"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
         '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) +
         (p.hidden ? ' · ' + esc(t('admHiddenTag')) : '') + (p.img ? '' : ' · ' + esc(t('admNoPhoto'))) + '</span></button>' +
-        '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"' + (can('stock') ? '' : ' disabled') + '><span></span></button></li>';
+        '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"' + (can('stock') && !adm.pending[p.id] ? '' : ' disabled') + (adm.pending[p.id] ? ' aria-busy="true"' : '') + '><span></span></button></li>';
     }).join('') + '</ul>';
     if (list.length > 60) html += '<p class="state__text adm__msg">' + esc(t('admMore')) + '</p>';
     return html;
@@ -2484,18 +2499,22 @@
     if (next.qty && !/^\d+([.,]\d+)?$/.test(next.qty)) { fErr('admErrPrice'); return; }
     if (!next.ua) { fErr('admErrName'); return; }
     if (!(next.price >= 0) || !(next.wh >= 0) || !(next.old >= 0)) { fErr('admErrPrice'); return; }
+    var btn = saveBtnEl();
     if (isNew) {
       next.stock = !!next.stock; next.hidden = !!next.hidden;
-      adm.busy = true;
+      adm.busy = true; btnBusy(btn);
       api('admin.productAdd', { patch: next }).then(function (res) {
         adm.busy = false;
         if (!res || !res.ok) throw new Error('fail');
         adm.products.push(res.product);
-        adm.edit = res.product.id; // остаёмся в карточке: теперь можно добавить фото
         toast(t('admSaved') + ': ' + res.product.id);
         loadCatalog();
-        renderPage(); window.scrollTo(0, 0);
-      }).catch(function () { adm.busy = false; fErr('admFail'); });
+        btnSaved(btn, function () {
+          if (adm.edit !== '+') return;
+          adm.edit = res.product.id; // остаёмся в карточке: теперь можно добавить фото
+          renderPage(); window.scrollTo(0, 0);
+        });
+      }).catch(function () { adm.busy = false; btnFree(btn); fErr('admFail'); });
       return;
     }
     var patch = {};
@@ -2506,19 +2525,22 @@
     if (patch.stock !== undefined) patch.stock = !!patch.stock;
     if (patch.hidden !== undefined) patch.hidden = !!patch.hidden;
     if (!Object.keys(patch).length) { adm.edit = ''; renderPage(); return; }
+    btnBusy(btn);
     patchProduct(p, patch, function (ok) {
-      if (ok) { adm.edit = ''; renderPage(); window.scrollTo(0, 0); } else fErr('admFail');
-    });
+      if (!ok) { btnFree(btn); fErr('admFail'); return; }
+      btnSaved(btn, function () { if (adm.edit === p.id) { adm.edit = ''; renderPage(); window.scrollTo(0, 0); } });
+    }, true);
   }
 
-  function patchProduct(p, patch, done) {
+  /** quiet — без всплывающего «Збережено»: результат показывает сама кнопка. */
+  function patchProduct(p, patch, done, quiet) {
     adm.busy = true;
     api('admin.product', { id: p.id, patch: patch }).then(function (res) {
       adm.busy = false;
       if (res && res.error === 'no_perm') { toast(t('admNoPerm')); done(false); return; }
       if (!res || !res.ok) throw new Error('fail');
       Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
-      toast(t('admSaved'));
+      if (!quiet) toast(t('admSaved'));
       loadCatalog(); // витрина сразу подхватывает правку
       done(true);
     }).catch(function () { adm.busy = false; toast(t('admFail')); done(false); });
@@ -2549,6 +2571,8 @@
     var msg = document.getElementById('photoMsg');
     if (!p || !file || adm.busy) return;
     adm.busy = true;
+    var pick = document.querySelector('.photo__acts label.btn');
+    if (pick) pick.classList.add('is-busy');
     if (msg) msg.textContent = t('admPhotoUp');
     compressPhoto(file).then(function (data) {
       return api('admin.photo', { id: p.id, data: data });
@@ -2561,6 +2585,7 @@
       if (state.view === 'admin' && adm.edit === p.id) renderPage();
     }).catch(function () {
       adm.busy = false;
+      if (pick) pick.classList.remove('is-busy');
       if (msg) msg.textContent = t('admPhotoFail');
     });
   }
@@ -2600,17 +2625,16 @@
     var c = { isNew: isNew, code: isNew ? fVal('code').toUpperCase() : adm.catEdit, ua: fVal('cua'), ru: fVal('cru'), icon: fVal('icon'), order: fNum('order') || (adm.cats || []).length + 1 };
     if (isNew && !/^[A-Z]{2,5}$/.test(c.code)) { fErr('admErrCode'); return; }
     if (!c.ua) { fErr('admErrName'); return; }
-    adm.busy = true;
+    var btn = saveBtnEl();
+    adm.busy = true; btnBusy(btn);
     api('admin.category', { category: c }).then(function (res) {
       adm.busy = false;
-      if (!res || !res.ok) { fErr(res && res.error === 'exists' ? 'admErrExists' : 'admFail'); return; }
+      if (!res || !res.ok) { btnFree(btn); fErr(res && res.error === 'exists' ? 'admErrExists' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admFail'); return; }
       adm.cats = res.categories;
       adm.products = null; // названия категорий в товарах могли измениться
-      adm.catEdit = '';
-      toast(t('admSaved'));
       loadCatalog();
-      renderPage(); window.scrollTo(0, 0);
-    }).catch(function () { adm.busy = false; fErr('admFail'); });
+      btnSaved(btn, function () { if (!adm.catEdit) return; adm.catEdit = ''; renderPage(); window.scrollTo(0, 0); });
+    }).catch(function () { adm.busy = false; btnFree(btn); fErr('admFail'); });
   }
 
   /* ---- Админы и журнал (этап 8) ---- */
@@ -2679,14 +2703,15 @@
 
   function createInvite() {
     if (adm.busy) return;
-    adm.busy = true;
+    var btn = document.querySelector('[data-action="adm-invite"]');
+    adm.busy = true; btnBusy(btn);
     api('admin.adminInvite', adminFormValues()).then(function (res) {
-      adm.busy = false;
+      adm.busy = false; btnFree(btn);
       if (!res || !res.ok) { adminFormError(res); return; }
       adm.invite = 'https://t.me/' + (cfg.BOT || '') + '?start=' + res.code;
       adm.admins = null; // список ожидающих обновится при возврате
       renderPage(); window.scrollTo(0, 0);
-    }).catch(function () { adm.busy = false; fErr('admFail'); });
+    }).catch(function () { adm.busy = false; btnFree(btn); fErr('admFail'); });
   }
 
   function saveAdminForm() {
@@ -2694,15 +2719,14 @@
     if (!a || adm.busy) return;
     var v = adminFormValues();
     v.id = a.id; v.active = fOn('active');
-    adm.busy = true;
+    var btn = saveBtnEl();
+    adm.busy = true; btnBusy(btn);
     api('admin.adminSave', v).then(function (res) {
       adm.busy = false;
-      if (!res || !res.ok) { adminFormError(res); return; }
+      if (!res || !res.ok) { btnFree(btn); adminFormError(res); return; }
       adm.admins = res.admins || []; adm.invites = res.invites || [];
-      adm.admEdit = '';
-      toast(t('admSaved'));
-      renderPage(); window.scrollTo(0, 0);
-    }).catch(function () { adm.busy = false; fErr('admFail'); });
+      btnSaved(btn, function () { if (!adm.admEdit) return; adm.admEdit = ''; renderPage(); window.scrollTo(0, 0); });
+    }).catch(function () { adm.busy = false; btnFree(btn); fErr('admFail'); });
   }
 
   function loadLog() {
@@ -2753,15 +2777,15 @@
     var values = {};
     adm.settings.forEach(function (f) { values[f.k] = f.k.indexOf('pay_') === 0 ? fOn(f.k) : fVal(f.k); });
     if (!values.pay_cash && !values.pay_card) { fErr('admErrPay'); return; }
-    adm.busy = true;
+    var btn = saveBtnEl();
+    adm.busy = true; btnBusy(btn);
     api('admin.settingsSave', { values: values }).then(function (res) {
       adm.busy = false;
-      if (!res || !res.ok) { fErr(res && res.error === 'no_payment' ? 'admErrPay' : 'admFail'); return; }
+      if (!res || !res.ok) { btnFree(btn); fErr(res && res.error === 'no_payment' ? 'admErrPay' : 'admFail'); return; }
       adm.settings = res.fields;
-      toast(t('admSaved'));
       loadCatalog();
-      renderAdminList();
-    }).catch(function () { adm.busy = false; fErr('admFail'); });
+      btnSaved(btn); // форма остаётся на экране: «Збережено» видно на самой кнопке
+    }).catch(function () { adm.busy = false; btnFree(btn); fErr('admFail'); });
   }
 
   function adminClick(e) {
@@ -2781,8 +2805,8 @@
     if (st && !st.disabled) {
       var order = null;
       adm.orders.forEach(function (o) { if (o.num === st.getAttribute('data-num')) order = o; });
-      if (!order) return true;
-      adm.busy = true; renderAdminList();
+      if (!order || adm.busy) return true;
+      adm.busy = true; btnBusy(st, '.ord__acts');
       api('admin.status', { num: order.num, code: st.getAttribute('data-st') }).then(function (res) {
         adm.busy = false;
         if (res && res.error === 'no_perm') { toast(t('admNoPerm')); renderAdminList(); return; }
@@ -2800,12 +2824,8 @@
       return true;
     }
     var sw = e.target.closest('[data-stock]');
-    if (sw && !adm.busy) {
-      var p = adminProduct(sw.getAttribute('data-stock'));
-      if (!p) return true;
-      var want = !p.stock;
-      sw.setAttribute('aria-checked', String(want));
-      patchProduct(p, { stock: want }, function () { renderAdminList(); });
+    if (sw) {
+      if (!sw.disabled) toggleStock(sw);
       return true;
     }
     var ed = e.target.closest('[data-edit]');
@@ -2816,7 +2836,7 @@
     if (am) { adm.admEdit = am.getAttribute('data-adm'); adm.invite = null; renderPage(); window.scrollTo(0, 0); return true; }
     var act = e.target.closest('[data-action]');
     var name = act ? act.getAttribute('data-action') : '';
-    if (name === 'adm-refresh') { loadAdmin(true); return true; }
+    if (name === 'adm-refresh') { if (!adm.loading) { btnBusy(act); loadAdmin(true); } return true; }
     if (name === 'adm-sales') { if (!adm.salesLoading) loadSales(); return true; }
     if (name === 'adm-save') {
       if (adm.edit) saveProductForm(); else if (adm.catEdit) saveCategoryForm(); else if (adm.admEdit) saveAdminForm(); else saveSettingsForm();
@@ -2832,7 +2852,7 @@
     }
     if (name === 'adm-photo-del') {
       var pp = adminProduct(adm.edit);
-      if (pp && !adm.busy) patchProduct(pp, { img: '' }, function () { renderPage(); });
+      if (pp && !adm.busy) { btnBusy(act); patchProduct(pp, { img: '' }, function () { renderPage(); }); }
       return true;
     }
     return false;
@@ -2934,6 +2954,7 @@
     el.page.addEventListener('change', function (e) {
       if (e.target.id === 'a-role' && adm.admEdit) { var pb = document.getElementById('admPerms'); if (pb) pb.hidden = e.target.value === 'admin'; return; }
       if (e.target.id === 'a-photo' && e.target.files && e.target.files[0]) uploadPhoto(e.target.files[0]);
+      if ((e.target.id === 'a-stock' || e.target.id === 'a-hidden') && adm.edit && adm.edit !== '+') toggleInForm(e.target);
     });
     el.page.addEventListener('submit', function (e) { e.preventDefault(); });
     el.page.addEventListener('keydown', function (e) {
@@ -3073,7 +3094,7 @@
       var kind = act ? act.getAttribute('data-action') : '';
       if (kind === 'add') { addFromSheet(); return; }
       if (kind === 'share') { var sp = state.sheet && product(state.sheet.id); if (sp) shareProduct(sp); return; }
-      if (kind === 'notify') { if (!act.disabled && state.sheet) notifyMe(state.sheet.id); return; }
+      if (kind === 'notify') { if (!act.disabled && state.sheet) notifyMe(state.sheet.id, act); return; }
       if (kind === 'fil-apply') { closeSheet(); return; }
       if (kind === 'fil-reset') {
         flt.sort = ''; flt.onlyStock = false; flt.onlySale = false;
@@ -3532,8 +3553,8 @@
         '<p class="rv__text">' + esc(r.name) + ' · ' + esc(t('rvOrder')) + ' ' + esc(r.num) + (r.hasPhoto && !r.img ? ' · ' + esc(t('rvPhoto')) : '') + '</p>' +
         (r.text ? '<p class="info">' + esc(r.text) + '</p>' : '') +
         (r.img ? '<img class="rv__img" src="' + esc(r.img) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : '') +
-        '<div class="ord__acts"><button type="button" class="btn' + (r.status === 'схвалено' ? ' btn--soft' : '') + '" data-w1="rv" data-id="' + esc(r.id) + '" data-ok="1"' + (r.status === 'схвалено' || adm.busy ? ' disabled' : '') + '>' + esc(t('rvApprove')) + '</button>' +
-        '<button type="button" class="btn' + (r.status === 'приховано' ? ' btn--soft' : '') + '" data-w1="rv" data-id="' + esc(r.id) + '" data-ok="0"' + (r.status === 'приховано' || adm.busy ? ' disabled' : '') + '>' + esc(t('rvHide')) + '</button></div></li>';
+        '<div class="ord__acts"><button type="button" class="btn' + (r.status === 'схвалено' ? ' btn--soft' : '') + '" data-w1="rv" data-id="' + esc(r.id) + '" data-ok="1"' + (r.status === 'схвалено' ? ' disabled' : '') + '>' + esc(t('rvApprove')) + '</button>' +
+        '<button type="button" class="btn' + (r.status === 'приховано' ? ' btn--soft' : '') + '" data-w1="rv" data-id="' + esc(r.id) + '" data-ok="0"' + (r.status === 'приховано' ? ' disabled' : '') + '>' + esc(t('rvHide')) + '</button></div></li>';
     }).join('') + '</ul>';
   }
   /** ТТН в карточке заказа админ-панели (только для Новой почты). */
@@ -3542,7 +3563,7 @@
     var html = o.ttn ? '<p>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b></p>' : '';
     if (can('st')) {
       html += '<div class="ttnrow"><input class="input" type="text" inputmode="numeric" maxlength="24" autocomplete="off" placeholder="' + esc(t('ttnPh')) + '" aria-label="' + esc(t('ttnPh')) + '" id="ttn-' + esc(o.num) + '" value="' + esc(o.ttn || '') + '">' +
-        '<button type="button" class="btn" data-w1="ttn" data-num="' + esc(o.num) + '"' + (adm.busy ? ' disabled' : '') + '>' + esc(t('ttnSave')) + '</button></div>';
+        '<button type="button" class="btn" data-w1="ttn" data-num="' + esc(o.num) + '">' + esc(t('ttnSave')) + '</button></div>';
     }
     return html;
   }
@@ -3695,7 +3716,8 @@
       var wh = document.getElementById('f-branch');
       if (wh) { wh.value = b.getAttribute('data-val').slice(0, 30); setError('branch', ''); suggShow('whSugg', [], ''); readForm(); hapticSelect(); }
     } else if (kind === 'rv') {
-      adm.busy = true; renderAdminList();
+      if (adm.busy) return true;
+      adm.busy = true; btnBusy(b, '.ord__acts');
       api('admin.review', { id: b.getAttribute('data-id'), ok: b.getAttribute('data-ok') === '1' }).then(function (res) {
         adm.busy = false;
         if (res && res.error === 'no_perm') { toast(t('admNoPerm')); renderAdminList(); return; }
@@ -3709,7 +3731,8 @@
       var input = document.getElementById('ttn-' + num);
       var ttn = input ? input.value.replace(/[\s-]+/g, '') : '';
       if (!/^\d{10,20}$/.test(ttn)) { toast(t('ttnBad')); haptic('error'); return true; }
-      adm.busy = true; renderAdminList();
+      if (adm.busy) return true;
+      adm.busy = true; btnBusy(b);
       api('admin.ttn', { num: num, ttn: ttn }).then(function (res) {
         adm.busy = false;
         if (res && res.error === 'no_perm') { toast(t('admNoPerm')); renderAdminList(); return; }
@@ -3728,6 +3751,120 @@
     if (state.view !== 'checkout') return;
     if (e.target.name === 'city' || e.target.name === 'branch') npSuggest(e.target);
   });
+
+  /* ======================================================================== */
+  /* ЭТАП 8, волна 2а: отклик кнопок, страницы, архив и удаление                */
+  /* ======================================================================== */
+  var I18N_W2 = {
+    ua: {
+      admSwFail: 'Не вдалося зберегти — повернули, як було.'
+    },
+    ru: {
+      admSwFail: 'Не удалось сохранить — вернули, как было.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_W2[lang]).forEach(function (k) { I18N[lang][k] = I18N_W2[lang][k]; });
+  });
+
+  /* ---- А1. Отклик кнопок ---- */
+  /**
+   * Кнопка ушла на сервер: вращается индикатор, кнопка заблокирована до ответа — второй запрос не уйдёт.
+   * group — селектор блока, в котором на это время блокируются и соседние кнопки (например статусы заказа).
+   */
+  function btnBusy(btn, group) {
+    if (!btn) return;
+    btn.classList.add('is-busy');
+    btn.setAttribute('aria-busy', 'true');
+    btn.disabled = true;
+    var box = group ? btn.closest(group) : null;
+    if (box) Array.prototype.forEach.call(box.querySelectorAll('button'), function (x) { x.disabled = true; });
+  }
+  function btnFree(btn) {
+    if (!btn) return;
+    btn.classList.remove('is-busy');
+    btn.removeAttribute('aria-busy');
+    btn.disabled = false;
+  }
+  /** Сохранено: галочка и «Збережено» на самой кнопке; then — что сделать после (например вернуться к списку). */
+  function btnSaved(btn, then) {
+    haptic('success');
+    if (!btn || !document.body.contains(btn)) { if (then) then(); else toast(t('admSaved')); return; }
+    var html = btn.innerHTML;
+    btn.classList.remove('is-busy');
+    btn.removeAttribute('aria-busy');
+    btn.classList.add('is-saved');
+    btn.disabled = true;
+    btn.innerHTML = icon('check') + esc(t('admSaved'));
+    setTimeout(function () {
+      if (then) { then(); return; }
+      if (!document.body.contains(btn)) return;
+      btn.classList.remove('is-saved');
+      btn.disabled = false;
+      btn.innerHTML = html;
+    }, then ? 650 : 1600);
+  }
+  function saveBtnEl() { return document.querySelector('#page [data-action="adm-save"]'); }
+
+  /** Переключатель «в наявності» в списке товаров: меняется сразу, при ошибке возвращается назад с сообщением. */
+  function toggleStock(sw) {
+    var p = adminProduct(sw.getAttribute('data-stock'));
+    if (!p || adm.pending[p.id]) return;
+    var was = p.stock, want = !p.stock;
+    adm.pending[p.id] = true;
+    p.stock = want ? 1 : 0;
+    sw.setAttribute('aria-checked', String(want));
+    sw.setAttribute('aria-busy', 'true');
+    sw.disabled = true;
+    api('admin.product', { id: p.id, patch: { stock: want } }).then(function (res) {
+      if (!res || !res.ok) throw new Error(res && res.error === 'no_perm' ? 'admNoPerm' : 'admSwFail');
+      Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
+      delete adm.pending[p.id];
+      loadCatalog();
+      if (state.view === 'admin') renderAdminList();
+    }).catch(function (err) {
+      delete adm.pending[p.id];
+      p.stock = was;
+      haptic('error');
+      toast(t(err && err.message === 'admNoPerm' ? 'admNoPerm' : 'admSwFail'));
+      if (state.view === 'admin') renderAdminList();
+    });
+  }
+
+  /** Галочки «В наявності» и «Приховати» в карточке товара сохраняются сразу; остальные поля формы не трогаем. */
+  function toggleInForm(input) {
+    var p = adminProduct(adm.edit);
+    var key = input.id === 'a-stock' ? 'stock' : 'hidden';
+    if (!p) return;
+    var want = !!input.checked, patch = {};
+    if (!!p[key] === want) return;
+    patch[key] = want;
+    input.disabled = true;
+    var row = input.closest('.check');
+    if (row) row.classList.add('is-busy');
+    function finish() { if (document.body.contains(input)) { input.disabled = false; if (row) row.classList.remove('is-busy'); } }
+    api('admin.product', { id: p.id, patch: patch }).then(function (res) {
+      if (!res || !res.ok) throw new Error(res && res.error === 'no_perm' ? 'admNoPerm' : 'admSwFail');
+      p[key] = res.product[key]; // только это поле: остальные могли быть изменены в форме и ещё не сохранены
+      finish();
+      haptic('success');
+      toast(t('admSaved'));
+      loadCatalog();
+    }).catch(function (err) {
+      finish();
+      if (document.body.contains(input)) input.checked = !want;
+      haptic('error');
+      toast(t(err && err.message === 'admNoPerm' ? 'admNoPerm' : 'admSwFail'));
+    });
+  }
+
+  // Любое нажатие на кнопку — лёгкая вибрация; занятая кнопка нажатий не принимает.
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('button, .btn, .chip');
+    if (!b) return;
+    if (b.classList.contains('is-busy')) { e.stopPropagation(); e.preventDefault(); return; }
+    if (!b.disabled) hapticLight();
+  }, true);
 
   /* ------------------------------ Старт ------------------------------ */
   document.getElementById('searchIcon').innerHTML = icon('search');

@@ -37,7 +37,7 @@ const smallTargets = page => page.evaluate(() => {
 });
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] });
+  const browser = await chromium.launch({ channel: process.env.BROWSER_CHANNEL || undefined, executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] });
 
   /* ---------------- 1. Покупатель в Telegram: главная → товар → корзина → заказ ---------------- */
   console.log('Покупатель в Telegram (360 px, светлая тема)');
@@ -293,7 +293,7 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForSelector('#a-gift_from');
     await page.fill('#a-gift_from', '700'); await page.fill('#a-gift_text_ua', 'жменя родзинок');
     await page.click('[data-action="adm-save"]');
-    await page.waitForFunction(() => /Збережено/.test(document.getElementById('toast').textContent));
+    await page.waitForSelector('[data-action="adm-save"].is-saved'); // «Збережено» — галочкой на самой кнопке (А1)
     ok(st.gas.get({ action: 'catalog' }).shop.gift.from === 700, 'подарок от суммы настраивается из панели');
     ok(st.log.filter(x => x.action === 'ev').length === 0 || st.gas.sheets['Події'].rows.length === 6, 'действия админа не попадают в аналитику');
     // Этап 8: админы с правами и журнал
@@ -359,8 +359,9 @@ const smallTargets = page => page.evaluate(() => {
   /* ---------------- 4. Обычный браузер (?debug=1) и старый бэкенд ---------------- */
   console.log('Новая витрина со СТАРЫМ бэкендом (пока Code.gs не обновлён) и режим ?debug=1');
   {
-    const oldCode = '/tmp/Code.old.gs';
-    fs.writeFileSync(oldCode, execSync('git show HEAD:apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+    // «Старый бэкенд» — Code.gs из main (то, что сейчас работает у клиентов). Другую версию можно задать через OLD_BACKEND_REF.
+    const oldCode = path.join(require('os').tmpdir(), 'Code.old.gs');
+    fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const st = await start(8814, oldCode, s => { s.props.ALLOW_TEST_ORDERS = '1'; });
     const { page, errors } = await open(browser, st.url, { uid: 0, query: '?debug=1' });
     ok(await count(page, '.card') === 30 && /Тестовий режим/.test(await text(page, '#banner')), 'каталог со старого бэкенда загружается');
@@ -598,6 +599,84 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForFunction(() => !document.getElementById('banner').hidden);
     ok(/Немає з’єднання/.test(await text(page, '#banner')) && await count(page, '.card') === 30, 'без связи показывается сохранённый каталог и предупреждение');
     await page.context().close(); st.server.close();
+  }
+
+  /* ---------------- 6. Этап 8, волна 2а ---------------- */
+  console.log('Волна 2а · А1: отклик кнопок');
+  {
+    const st = await start(8816);
+    const n = action => st.log.filter(x => x.action === action).length;
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    st.opt.delay = 500; // ответ сервера идёт полсекунды, как у настоящего Apps Script
+
+    // статус заказа: два быстрых нажатия — один запрос
+    await page.locator('.ord__head').first().click();
+    await page.waitForSelector('[data-st="c"]:not([disabled])');
+    await page.evaluate(() => { const b = document.querySelector('[data-st="c"]:not([disabled])'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('.ord__acts .is-busy'); return !!b && b.disabled && [].every.call(document.querySelectorAll('.ord__acts button'), x => x.disabled); }), 'кнопка статуса сразу показывает индикатор, соседние кнопки заблокированы');
+    await page.locator('.ord__acts').screenshot({ path: OUT + '/50-busy-status.png' });
+    await page.waitForFunction(() => !document.querySelector('.ord__acts .is-busy'));
+    ok(n('admin.status') === 1, 'двойное нажатие на статус заказа — один запрос', n('admin.status'));
+
+    // переключатель наличия: меняется сразу, второй запрос не уходит
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('[data-stock="NUT-002"]');
+    const was = await page.getAttribute('[data-stock="NUT-002"]', 'aria-checked');
+    await page.evaluate(() => { const b = document.querySelector('[data-stock="NUT-002"]'); b.click(); b.click(); });
+    ok(await page.getAttribute('[data-stock="NUT-002"]', 'aria-checked') !== was, 'переключатель наличия меняется сразу, не дожидаясь сервера');
+    await page.waitForFunction(() => !document.querySelector('[data-stock="NUT-002"]').disabled);
+    ok(n('admin.product') === 1 && await page.getAttribute('[data-stock="NUT-002"]', 'aria-checked') !== was, 'двойное нажатие на переключатель — один запрос, значение сохранилось', n('admin.product'));
+    // ошибка сервера: переключатель возвращается назад с сообщением
+    st.opt.failAction = 'admin.product';
+    const mid = await page.getAttribute('[data-stock="NUT-003"]', 'aria-checked');
+    await page.click('[data-stock="NUT-003"]');
+    ok(await page.getAttribute('[data-stock="NUT-003"]', 'aria-checked') !== mid, 'при нажатии переключатель сразу меняется');
+    await page.waitForFunction(() => /повернули/.test(document.getElementById('toast').textContent));
+    ok(await page.getAttribute('[data-stock="NUT-003"]', 'aria-checked') === mid, 'сервер ответил ошибкой — переключатель вернулся назад, показано сообщение');
+    st.opt.failAction = '';
+
+    // сохранение товара: индикатор, один запрос, «Збережено» на кнопке
+    const before = n('admin.product');
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.waitForSelector('#a-ua');
+    await page.fill('#a-dUa', 'Перевірка відгуку кнопки');
+    await page.evaluate(() => { const b = document.querySelector('[data-action="adm-save"]'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('[data-action="adm-save"]'); return b.classList.contains('is-busy') && b.disabled; }), '«Зберегти» сразу показывает индикатор и блокируется');
+    await page.locator('[data-action="adm-save"]').screenshot({ path: OUT + '/51-busy-save.png' });
+    await page.waitForSelector('[data-action="adm-save"].is-saved');
+    ok(/Збережено/.test(await text(page, '[data-action="adm-save"]')), 'после ответа на кнопке галочка и «Збережено»');
+    await page.locator('[data-action="adm-save"]').screenshot({ path: OUT + '/52-saved.png' });
+    await page.waitForSelector('.prod');
+    ok(n('admin.product') === before + 1, 'двойное нажатие на «Зберегти» — один запрос', n('admin.product') - before);
+
+    // галочка «Приховати» в карточке товара сохраняется сразу
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.waitForSelector('#a-hidden');
+    await page.check('#a-hidden');
+    await page.waitForFunction(() => /Збережено/.test(document.getElementById('toast').textContent));
+    const hRow = st.gas.sheets['Товари'].rows.find(x => x[0] === 'NUT-004'), hCol = st.gas.sheets['Товари'].rows[0].findIndex(h => /Приховати/.test(h));
+    ok(hCol >= 0 && hRow[hCol] === 'так', '«Приховати» в карточке товара сохраняется сразу, без кнопки «Зберегти»', hRow[hCol]);
+    await page.uncheck('#a-hidden');
+    await page.waitForFunction(() => !document.getElementById('a-hidden').disabled);
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'карточка товара: кнопки не меньше 44 px, нет горизонтальной прокрутки', await smallTargets(page));
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (админ)', errors);
+    await page.context().close();
+
+    // покупатель: «Повідомити, коли з’явиться» — один запрос; нажатие даёт вибрацию
+    const c = await open(browser, st.url, { uid: 620 });
+    await c.page.waitForSelector('.card');
+    await c.page.evaluate(() => { window.__tg.calls.length = 0; });
+    await c.page.click('.chip[data-cat="DRY"]');
+    ok(await c.page.evaluate(() => window.__tg.calls.filter(x => x[0] === 'impact' || x[0] === 'select').length) === 1, 'нажатие на кнопку — одна вибрация', await c.page.evaluate(() => window.__tg.calls));
+    await c.page.locator('.card[data-id="DRY-005"] .card__name').click();
+    await c.page.waitForSelector('[data-action="notify"]');
+    await c.page.evaluate(() => { const b = document.querySelector('[data-action="notify"]'); b.click(); b.click(); });
+    ok(await c.page.evaluate(() => { const b = document.querySelector('[data-action="notify"]'); return !!b && b.classList.contains('is-busy') && b.disabled; }), '«Повідомити» показывает индикатор и блокируется');
+    await c.page.waitForFunction(() => !document.getElementById('toast').hidden);
+    ok(n('notify') === 1, 'двойное нажатие на «Повідомити» — один запрос', n('notify'));
+    ok(c.errors.length === 0, 'в консоли браузера нет ошибок (покупатель)', c.errors);
+    await c.page.context().close(); st.server.close();
   }
 
   await browser.close();
