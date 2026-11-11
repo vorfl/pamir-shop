@@ -895,7 +895,7 @@
     function perk(ico, text) { return '<p class="perk">' + icon(ico) + '<span>' + esc(text) + '</span></p>'; }
     if (s.gift) out += '<div id="homeGift" class="homegift">' + homeGiftHtml() + '</div>';
     if (s.loyal) out += perk('users', tf('loyalText', { k: s.loyal.every, g: ru ? s.loyal.ru : s.loyal.ua }));
-    return out ? '<div class="perks">' + out + '</div>' : '';
+    return (out ? '<div class="perks">' + out + '</div>' : '') + bizBannerHtml();
   }
 
   /** Кнопка под карточкой. Штучный товар кладётся в корзину сразу; у весового сначала выбирают вес. */
@@ -1207,11 +1207,7 @@
         esc(t(waiting ? 'notifyDup' : 'notifyBtn')) + '</button>';
     }
 
-    if (p.w > 0) {
-      body += '<p class="note note--opt">' + esc(t('wholesale')) + ': ' + money(p.w) + ' ' +
-        (p.t === 'w' ? esc(t('per')) + ' ' + weight(1000) : esc(t('perPack'))) +
-        (p.wm ? ' · ' + esc(p.wm) : '') + '</p>';
-    }
+    body += whSheetHtml(p); // оптовая цена видна только одобренному оптовику; остальным — ссылка на форму «Для бізнесу»
 
     var rel = relatedFor(p);
     body += reviewsHtml(p);
@@ -1304,7 +1300,10 @@
     if (!state.catalog) return { p: null, ok: true, price: l.pr, sum: l.pr * l.q };
     var p = product(l.id);
     var price = unitPrice(p, l.g);
-    return { p: p, ok: price > 0, price: price, sum: price * l.q };
+    var w = price > 0 ? whUnit(p, l.g) : 0; // оптовая цена — когда набран минимальный объём товара
+    var isWh = w > 0 && w < price;
+    if (isWh) price = w;
+    return { p: p, ok: price > 0, price: price, sum: price * l.q, wh: isWh };
   }
 
   function cartTotal() {
@@ -1525,7 +1524,7 @@
     if (state.view === 'cart' && view !== 'cart') { ackPriceChanges(); state.cartNotice = ''; state.cartNoticeInfo = false; }
     if (view === 'checkout' && !(cartTotal() > 0)) view = 'cart';
     if (state.sheet) closeSheet();
-    if ((view === 'points' || view === 'story') && state.view !== view) state.back = state.view;
+    if ((view === 'points' || view === 'story' || view === 'biz') && state.view !== view) state.back = state.view;
     var changed = state.view !== view;
     state.view = view;
     document.body.setAttribute('data-view', view);
@@ -1534,6 +1533,7 @@
     updateChrome();
     if (view === 'admin') loadAdmin(false);
     if (view === 'orders') loadMyOrders();
+    if (view === 'biz') loadWh(true);
     if (changed) {
       if (view === 'cart' && cartCount()) track('cart', '', cartTotal());
       if (view === 'checkout') track('checkout', '', cartTotal());
@@ -1554,7 +1554,7 @@
       if (reload) loadAdmin(false);
       return;
     }
-    if (state.view === 'points' || state.view === 'story') { go(state.back && state.back !== 'done' ? state.back : 'catalog'); return; }
+    if (state.view === 'points' || state.view === 'story' || state.view === 'biz') { go(state.back && state.back !== 'done' ? state.back : 'catalog'); return; }
     if (state.view !== 'catalog') go('catalog');
   }
 
@@ -1621,6 +1621,7 @@
     else if (state.view === 'fav') el.page.innerHTML = favHtml();
     else if (state.view === 'points') el.page.innerHTML = pointsHtml();
     else if (state.view === 'story') el.page.innerHTML = storyHtml();
+    else if (state.view === 'biz') el.page.innerHTML = bizHtml();
     else el.page.innerHTML = '';
   }
 
@@ -1700,7 +1701,7 @@
       html += '<li class="line' + (info.ok ? '' : ' line--out') + '">' +
         '<div class="line__img">' + (p ? photoHtml(p) : MARK) + '</div>' +
         '<div class="line__text"><p class="line__name">' + esc(p ? name(p) : l.id) + '</p>' +
-        '<p class="line__sub">' + lineLabel(l, info) + (info.ok ? ' · ' + money(info.price) : '') + '</p>' + note + '</div>' +
+        '<p class="line__sub">' + lineLabel(l, info) + (info.ok ? ' · ' + money(info.price) : '') + (info.wh ? ' <span class="badge badge--opt">' + esc(t('whTag')) + '</span>' : '') + '</p>' + note + '</div>' +
         '<button type="button" class="iconbtn iconbtn--plain" data-line-del="' + i + '" aria-label="' + esc(t('remove')) + '">' + icon('trash-2') + '</button>';
       if (info.ok) {
         html += '<div class="line__ctl"><div class="step step--sm" role="group" aria-label="' + esc(t('qty')) + '">' +
@@ -1713,7 +1714,7 @@
     });
     html += '</ul>';
     if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
-    html += cartPerksHtml();
+    html += whCartHtml() + cartPerksHtml();
     html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
     html += railHtml(t('cartMore'), '', crossSell(), true);
     html += '<button type="button" class="btn btn--ghost btn--block" data-action="clear-cart">' + icon('trash-2') + esc(t('clearCart')) + '</button>';
@@ -1993,6 +1994,7 @@
     if (code === 'changed') {
       // Сервер пересчитал заказ по таблице и получил другую сумму: показываем свежую корзину.
       state.rid = '';
+      loadWh(true); // статус оптовика мог измениться — цены в корзине пересчитаются
       loadCatalog().then(function () {
         setBusy(false);
         state.cartNoticeInfo = false; state.cartNotice = t('cartChanged');
@@ -2096,7 +2098,8 @@
     var hours = shop.hours ? (shop.hours[L] || shop.hours.ua || '') : '';
     html += '<h3 class="sec">' + esc(t('ptsTitle')) + '</h3><button type="button" class="btn btn--block" data-w1="go" data-view="points">' + icon('pin') + esc(t('ptsBtn')) + '</button>' +
       (shop.story ? '<button type="button" class="btn btn--block" data-w1="go" data-view="story">' + icon('sprout') + esc(t('storyBtn')) + '</button>' : '') +
-      (shop.contact ? '<button type="button" class="btn btn--block" data-w1="contact">' + esc(t('writeUs')) + '</button>' : '');
+      (shop.contact ? '<button type="button" class="btn btn--block" data-w1="contact">' + esc(t('writeUs')) + '</button>' : '') +
+      (bizAvailable() ? '<button type="button" class="btn btn--block" data-w1="go" data-view="biz">' + esc(t('bizBtn')) + '</button>' : '');
     if (!points().length && (addr || hours)) {
       html += '<h3 class="sec">' + esc(t('meShop')) + '</h3><div class="facts facts--card">' +
         (addr ? '<p>' + icon('pin') + '<span>' + esc(addr) + '</span></p>' : '') +
@@ -2173,10 +2176,10 @@
   var ADMIN_STATUSES = ['новий', 'підтверджено', 'відправлено', 'виконано', 'немає в наявності'];
   var STATUS_BADGE = { 'новий': 'badge--opt', 'підтверджено': 'badge--stock', 'відправлено': 'badge--ship', 'немає в наявності': 'badge--out', 'скасовано': 'badge--out' };
   var STATUS_BTNS = [['c', 'stC', 'підтверджено'], ['n', 'stN', 'немає в наявності'], ['s', 'stS', 'відправлено'], ['d', 'stD', 'виконано']];
-  var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats', 'cats'], ['settings', 'admSettings', 'settings'], ['reviews', 'admReviews', 'reviews'], ['admins', 'admAdmins', 'admins']];
+  var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats', 'cats'], ['settings', 'admSettings', 'settings'], ['reviews', 'admReviews', 'reviews'], ['wh', 'admWh', 'wh'], ['admins', 'admAdmins', 'admins']];
   /** Какое право нужно, чтобы менять поле товара (то же самое проверяет сервер). */
   var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
-    price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', packs: 'price', t: 'price' };
+    price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', whn: 'price', packs: 'price', t: 'price' };
   var CAT_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
     edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false, sales: null, salesOpen: false,
@@ -2210,10 +2213,10 @@
   var admAt = {};     // когда список получен: давно открытый обновляется в фоне
   var ADMIN_FRESH_MS = 30000;
   function adminKind() {
-    return adm.tab === 'orders' ? 'orders' : adm.tab === 'settings' ? 'settings' : adm.tab === 'admins' ? 'admins' : adm.tab === 'reviews' ? 'reviews' : 'products';
+    return adm.tab === 'orders' ? 'orders' : adm.tab === 'settings' ? 'settings' : adm.tab === 'admins' ? 'admins' : adm.tab === 'reviews' ? 'reviews' : adm.tab === 'wh' ? 'wh' : 'products';
   }
   function adminHave(kind) {
-    return kind === 'orders' ? adm.orders : kind === 'settings' ? adm.settings : kind === 'admins' ? adm.admins : kind === 'reviews' ? adm.reviews : adm.products;
+    return kind === 'orders' ? adm.orders : kind === 'settings' ? adm.settings : kind === 'admins' ? adm.admins : kind === 'reviews' ? adm.reviews : kind === 'wh' ? adm.wh : adm.products;
   }
   /** Один запрос списка панели. Данные кладутся в adm; права и подпись при каждом запросе проверяет сервер. */
   function fetchAdmin(kind) {
@@ -2228,6 +2231,7 @@
         else if (kind === 'settings') adm.settings = res.fields || [];
         else if (kind === 'reviews') adm.reviews = res.reviews || [];
         else if (kind === 'admins') { adm.admins = res.admins || []; adm.invites = res.invites || []; adm.permList = res.permList || []; }
+        else if (kind === 'wh') adm.wh = { apps: res.apps || [], clients: res.clients || [] };
         else { adm.products = res.products || []; adm.cats = res.categories || []; }
       } else if (res && res.error === 'forbidden') {
         store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true;
@@ -2397,6 +2401,7 @@
     if (adm.tab === 'cats') return catsHtml();
     if (adm.tab === 'admins') return adminsHtml();
     if (adm.tab === 'reviews') return reviewsAdminHtml();
+    if (adm.tab === 'wh') return whAdminHtml();
     return settingsHtml();
   }
 
@@ -2411,7 +2416,7 @@
       var open = adm.open === o.num;
       var html = '<li class="ord"><button type="button" class="ord__head" data-ord="' + esc(o.num) + '" aria-expanded="' + open + '">' +
         '<span class="ord__num">' + esc(o.num) + '</span><span class="badge ' + (STATUS_BADGE[o.status] || '') + '">' + esc(o.status) + '</span>' +
-        (o.test ? '<span class="badge">' + esc(t('admTest')) + '</span>' : '') +
+        (o.test ? '<span class="badge">' + esc(t('admTest')) + '</span>' : '') + (o.wh ? '<span class="badge badge--opt">' + esc(t('whOrder')) + '</span>' : '') +
         '<span class="ord__sum">' + money(o.total) + '</span>' +
         '<span class="ord__meta">' + esc(o.date) + ' · ' + esc(o.name) + '</span></button>';
       if (open) {
@@ -2546,7 +2551,8 @@
       fRow('packs', t('admPacks'), p.packs, 'type="text" maxlength="80"', t('admPacksHint')) +
       fArea('dUa', t('admDescUa'), p.dUa) + fArea('dRu', t('admDescRu'), p.dRu) +
       fRow('wh', t('admWh'), p.wh || '', 'type="text" inputmode="decimal" maxlength="9"') +
-      fRow('wm', t('admWm'), p.wm, 'type="text" maxlength="40"') +
+      fRow('wm', t('admWm'), p.wm, 'type="text" maxlength="40"', p.whn === undefined ? '' : t('admWmHint')) +
+      (p.whn === undefined ? '' : fRow('whn', t('admWhn'), p.whn, 'type="text" inputmode="decimal" maxlength="8"', t('admWhnHint'))) +
       (p.cUa === undefined ? '' : fArea('cUa', t('admCompUa'), p.cUa, 400) + fArea('cRu', t('admCompRu'), p.cRu, 400)) +
       fCheck('stock', t('admStock'), p.stock) + fCheck('hidden', t('admHidden'), p.hidden) + saveBtn() +
       (isNew ? '' : '<div class="field"><label class="label" for="a-link">' + esc(t('admLink')) + '</label>' +
@@ -2578,7 +2584,8 @@
     var next = { cat: fVal('cat'), t: fVal('t'), ua: fVal('ua'), ru: fVal('ru'), packs: fVal('packs'), wm: fVal('wm'), dUa: fVal('dUa'), dRu: fVal('dRu'),
       price: fNum('price'), wh: fNum('wh'), old: fNum('old'), badge: fVal('badge'), stock: fOn('stock') ? 1 : 0, hidden: fOn('hidden') ? 1 : 0,
       qty: fVal('qty').replace(/\s/g, ''), end: fVal('end') };
-    if (document.getElementById('a-cUa')) { next.cUa = fVal('cUa'); next.cRu = fVal('cRu'); } // поля есть только с новым бэкендом
+    if (document.getElementById('a-cUa')) { next.cUa = fVal('cUa'); next.cRu = fVal('cRu'); }
+    if (document.getElementById('a-whn')) next.whn = fVal('whn').replace(/\s/g, ''); // поля есть только с новым бэкендом
     if (next.qty && !/^\d+([.,]\d+)?$/.test(next.qty)) { fErr('admErrPrice'); return; }
     if (!next.ua) { fErr('admErrName'); return; }
     if (!(next.price >= 0) || !(next.wh >= 0) || !(next.old >= 0)) { fErr('admErrPrice'); return; }
@@ -2961,6 +2968,10 @@
     if (name === 'adm-invite-done') { goBack(); return true; }
     if (name === 'adm-log') { loadLog(); return true; }
     if (name === 'adm-arch') { loadArchive(); return true; }
+    var whD = e.target.closest('[data-wh-d]');
+    if (whD) { if (!whD.disabled) whDecide(whD.getAttribute('data-id'), whD.getAttribute('data-wh-d'), whD); return true; }
+    var whR = e.target.closest('[data-wh-revoke]');
+    if (whR) { if (!whR.disabled) whRevoke(whR.getAttribute('data-wh-revoke')); return true; }
     var payBtn = e.target.closest('[data-pay]');
     if (payBtn) { if (!payBtn.disabled) markPaid(payBtn.getAttribute('data-num'), payBtn.getAttribute('data-pay'), payBtn); return true; }
     if (name === 'adm-archive') { askArchive(adminProduct(adm.edit)); return true; }
@@ -3946,18 +3957,268 @@
       payState: 'Оплата', pay_unpaid: 'не оплачено', pay_paid: 'оплачено', pay_refund: 'повернено', payMark: 'Оплачено', payRefund: 'Повернено',
       payUndo: 'Не оплачено', payRefundTitle: 'Позначити повернення оплати?', payRefundText: 'Замовлення {num}: статус оплати стане «повернено». Клієнту повідомлення не надсилається.',
       payRefundOk: 'Повернено: {num}',
-      compTitle: 'Склад', admCompUa: 'Склад (UA)', admCompRu: 'Состав (RU)', fatherTitle: 'Спеції від батька'
+      compTitle: 'Склад', admCompUa: 'Склад (UA)', admCompRu: 'Состав (RU)', fatherTitle: 'Спеції від батька',
+      whTag: 'опт', whOrder: 'ОПТ', whLink: 'Оптові ціни — для бізнесу', whFromKg: 'Опт: від {n} кг — {p}/кг', whFromPack: 'Опт: від {n} уп. — {p}/уп.', whFromPcs: 'Опт: від {n} шт — {p}/шт',
+      whLeftKg: '«{name}»: до оптової ціни ще {n} кг', whLeftPcs: '«{name}»: до оптової ціни ще {n} шт', whOn: 'Діє оптова ціна',
+      bizBtn: 'Для бізнесу (опт)', bizTitle: 'Для бізнесу', bizBanner: 'Кафе, магазин, офіс? Оптові ціни — для бізнесу', bizIntro: 'Працюємо з кафе, магазинами та офісами. Заповніть коротку заявку — відповімо в Telegram.',
+      bizType: 'Тип бізнесу', bizT_cafe: 'Кафе', bizT_shop: 'Магазин', bizT_office: 'Офіс', bizT_other: 'Інше', bizName: 'Назва закладу або компанії', bizCity: 'Місто',
+      bizContact: 'Контактна особа', bizPhone: 'Телефон', bizCats: 'Які категорії цікавлять', bizVolume: 'Приблизний обсяг', bizVolumePh: 'наприклад: 10 кг на тиждень',
+      bizFreq: 'Як часто замовлятимете', bizFreqPh: 'наприклад: раз на тиждень', bizComment: 'Коментар', bizSend: 'Надіслати заявку', bizErr: 'Заповніть тип бізнесу, назву, місто, контактну особу й телефон.',
+      bizRate: 'Сьогодні вже надіслано три заявки. Спробуйте завтра.', bizFail: 'Не вдалося надіслати заявку. Спробуйте ще раз.', bizTg: 'Заявку можна надіслати з магазину в Telegram.',
+      bizSent: 'Заявку отримали', bizSentText: 'Відповімо вам у Telegram. Статус заявки видно на цьому екрані.', bizWork: 'Заявку взяли в роботу', bizRejected: 'Попередню заявку відхилено. Можна надіслати нову.',
+      bizYes: 'Ви — оптовий клієнт', bizYesText: 'Оптова ціна вмикається в кошику сама, щойно набрано мінімальний обсяг товару. Товарів з оптовою ціною: {n}.',
+      bizPrice: 'Надіслати прайс у чат', bizPriceOk: 'Прайс надіслано в чат із ботом', bizPriceRate: 'Прайс уже надсилали кілька разів. Спробуйте за годину.',
+      admWh: 'Опт', admWmHint: 'Наприклад: «від 5 кг», «10 уп». Текст бачить лише оптовик.', admWhn: 'Опт: мінімальний обсяг числом (кг або шт)', admWhnHint: 'Якщо заповнено — головніше за текст. Для вагового товару — кг, для решти — упаковки або штуки.',
+      whApps: 'Заявки', whClients: 'Оптові клієнти', whNoApps: 'Заявок поки немає.', whNoClients: 'Оптових клієнтів поки немає.', whTake: 'Взяти в роботу', whApprove: 'Схвалити', whReject: 'Відхилити',
+      whRevoke: 'Відкликати статус', whOff: 'статус відкликано', whActive: 'активний', whRevokeTitle: 'Відкликати статус оптовика?',
+      whRevokeText: '«{name}» одразу бачитиме роздрібні ціни. Повернути статус можна новою схваленою заявкою.', whRevokeOk: 'Відкликати: {name}', whRevoked: 'Статус відкликано',
+      whApproveTitle: 'Схвалити як оптового клієнта?', whApproveText: '«{name}» ({id}) одразу отримає оптові ціни й повідомлення в Telegram.', whApproveOk: 'Схвалити: {name}',
+      whRejectTitle: 'Відхилити заявку?', whRejectText: '«{name}» ({id}) отримає повідомлення про відмову.', whRejectOk: 'Відхилити: {name}'
     },
     ru: {
       payState: 'Оплата', pay_unpaid: 'не оплачено', pay_paid: 'оплачено', pay_refund: 'возвращено', payMark: 'Оплачено', payRefund: 'Возвращено',
       payUndo: 'Не оплачено', payRefundTitle: 'Отметить возврат оплаты?', payRefundText: 'Заказ {num}: статус оплаты станет «возвращено». Клиенту сообщение не отправляется.',
       payRefundOk: 'Возвращено: {num}',
-      compTitle: 'Состав', admCompUa: 'Склад (UA)', admCompRu: 'Состав (RU)', fatherTitle: 'Специи от отца'
+      compTitle: 'Состав', admCompUa: 'Склад (UA)', admCompRu: 'Состав (RU)', fatherTitle: 'Специи от отца',
+      whTag: 'опт', whOrder: 'ОПТ', whLink: 'Оптовые цены — для бизнеса', whFromKg: 'Опт: от {n} кг — {p}/кг', whFromPack: 'Опт: от {n} уп. — {p}/уп.', whFromPcs: 'Опт: от {n} шт — {p}/шт',
+      whLeftKg: '«{name}»: до оптовой цены ещё {n} кг', whLeftPcs: '«{name}»: до оптовой цены ещё {n} шт', whOn: 'Действует оптовая цена',
+      bizBtn: 'Для бизнеса (опт)', bizTitle: 'Для бизнеса', bizBanner: 'Кафе, магазин, офис? Оптовые цены — для бизнеса', bizIntro: 'Работаем с кафе, магазинами и офисами. Заполните короткую заявку — ответим в Telegram.',
+      bizType: 'Тип бизнеса', bizT_cafe: 'Кафе', bizT_shop: 'Магазин', bizT_office: 'Офис', bizT_other: 'Другое', bizName: 'Название заведения или компании', bizCity: 'Город',
+      bizContact: 'Контактное лицо', bizPhone: 'Телефон', bizCats: 'Какие категории интересуют', bizVolume: 'Примерный объём', bizVolumePh: 'например: 10 кг в неделю',
+      bizFreq: 'Как часто будете заказывать', bizFreqPh: 'например: раз в неделю', bizComment: 'Комментарий', bizSend: 'Отправить заявку', bizErr: 'Заполните тип бизнеса, название, город, контактное лицо и телефон.',
+      bizRate: 'Сегодня уже отправлено три заявки. Попробуйте завтра.', bizFail: 'Не удалось отправить заявку. Попробуйте ещё раз.', bizTg: 'Заявку можно отправить из магазина в Telegram.',
+      bizSent: 'Заявку получили', bizSentText: 'Ответим вам в Telegram. Статус заявки виден на этом экране.', bizWork: 'Заявку взяли в работу', bizRejected: 'Прошлую заявку отклонили. Можно отправить новую.',
+      bizYes: 'Вы — оптовый клиент', bizYesText: 'Оптовая цена включается в корзине сама, как только набран минимальный объём товара. Товаров с оптовой ценой: {n}.',
+      bizPrice: 'Отправить прайс в чат', bizPriceOk: 'Прайс отправлен в чат с ботом', bizPriceRate: 'Прайс уже отправляли несколько раз. Попробуйте через час.',
+      admWh: 'Опт', admWmHint: 'Например: «від 5 кг», «10 уп». Текст видит только оптовик.', admWhn: 'Опт: минимальный объём числом (кг или шт)', admWhnHint: 'Если заполнено — главнее текста. Для весового товара — кг, для остальных — упаковки или штуки.',
+      whApps: 'Заявки', whClients: 'Оптовые клиенты', whNoApps: 'Заявок пока нет.', whNoClients: 'Оптовых клиентов пока нет.', whTake: 'Взять в работу', whApprove: 'Одобрить', whReject: 'Отклонить',
+      whRevoke: 'Отозвать статус', whOff: 'статус отозван', whActive: 'активный', whRevokeTitle: 'Отозвать статус оптовика?',
+      whRevokeText: '«{name}» сразу будет видеть розничные цены. Вернуть статус можно новой одобренной заявкой.', whRevokeOk: 'Отозвать: {name}', whRevoked: 'Статус отозван',
+      whApproveTitle: 'Одобрить как оптового клиента?', whApproveText: '«{name}» ({id}) сразу получит оптовые цены и сообщение в Telegram.', whApproveOk: 'Одобрить: {name}',
+      whRejectTitle: 'Отклонить заявку?', whRejectText: '«{name}» ({id}) получит сообщение об отказе.', whRejectOk: 'Отклонить: {name}'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_2B[lang]).forEach(function (k) { I18N[lang][k] = I18N_2B[lang][k]; });
   });
+
+  /* ---- Б2. Опт ---- */
+  /*
+   * Оптовые цены приходят отдельным запросом и только одобренному оптовику (статус при каждом запросе проверяет сервер).
+   * В общем каталоге их нет. Цену заказа всё равно считает сервер: витрина лишь показывает то же самое.
+   */
+  var WH_KEY = 'pamir_wh';
+  var wh = { on: false, prices: {}, app: '', ok: false, loading: false, sent: false };
+  function num(n) { return String(Math.round(n * 1000) / 1000).replace('.', ','); }
+  function loadWh(force) {
+    if (!cfg.API_URL || !inTelegram || wh.loading) return;
+    var saved = String(store.get(WH_KEY) || '').split(':'); // «1» — оптовик, «0:время» — нет (перепроверяем раз в сутки и при открытии «Для бізнесу»)
+    if (!force && saved[0] === '0' && Date.now() - Number(saved[1] || 0) < 24 * 3600 * 1000) return;
+    wh.loading = true;
+    postApi('wh.prices').then(function (res) {
+      wh.loading = false;
+      if (!res || !res.ok) throw new Error('fail'); // старый бэкенд такого запроса не знает — опта просто нет
+      var was = wh.on;
+      wh.ok = true;
+      wh.on = !!res.wh;
+      wh.prices = (res.wh && res.prices) || {};
+      wh.app = res.app || '';
+      store.set(WH_KEY, wh.on ? '1' : '0:' + Date.now());
+      if (state.view === 'biz' || state.view === 'cart' || state.view === 'orders') renderPage();
+      if (was !== wh.on) { // стал или перестал быть оптовиком: строка «для бізнесу» на главной и цены в открытой карточке обновляются
+        updateChrome();
+        if (state.view === 'catalog' && state.status === 'ready' && !state.sheet) renderMain();
+        if (state.sheet) renderSheet();
+      }
+    }).catch(function () { wh.loading = false; if (state.view === 'biz') renderPage(); });
+  }
+  /** Сколько этого товара в корзине: кг для весового (все фасовки вместе), штуки для остальных. */
+  function whQty(p) {
+    return state.cart.i.reduce(function (s, l) {
+      if (l.id !== p.id || !(unitPrice(p, l.g) > 0)) return s;
+      return s + (p.t === 'w' ? l.g * l.q / 1000 : l.q);
+    }, 0);
+  }
+  /** Оптовая цена позиции или 0, если человек не оптовик или порог объёма не набран. Та же формула, что на сервере. */
+  function whUnit(p, g) {
+    var x = wh.on && p ? wh.prices[p.id] : null;
+    if (!x || (p.t === 'w') !== (x[2] === 'kg') || whQty(p) + 1e-9 < x[1]) return 0;
+    return p.t === 'w' ? Math.round(x[0] * g / 1000) : Math.round(x[0]);
+  }
+  function whSheetHtml(p) {
+    var x = wh.on ? wh.prices[p.id] : null;
+    if (x) return '<p class="note note--opt">' + esc(tf(p.t === 'w' ? 'whFromKg' : p.t === 'u' ? 'whFromPcs' : 'whFromPack', { n: num(x[1]), p: money(x[0]) })) + '</p>';
+    if (p.wb && inTelegram && !wh.on) return '<button type="button" class="linkbtn" data-w1="go" data-view="biz">' + esc(t('whLink')) + '</button>';
+    return '';
+  }
+  /** В корзине оптовика: что уже по оптовой цене и сколько не хватает до неё по остальным товарам. */
+  function whCartHtml() {
+    if (!wh.on) return '';
+    var seenId = {}, html = '';
+    state.cart.i.forEach(function (l) {
+      var p = product(l.id), x = p ? wh.prices[p.id] : null;
+      if (!p || !x || seenId[p.id] || !(unitPrice(p, l.g) > 0) || (p.t === 'w') !== (x[2] === 'kg')) return;
+      seenId[p.id] = 1;
+      var left = x[1] - whQty(p);
+      if (left > 1e-9) html += '<p class="note note--opt">' + esc(tf(p.t === 'w' ? 'whLeftKg' : 'whLeftPcs', { name: name(p), n: num(left) })) + '</p>';
+    });
+    return html;
+  }
+  function bizAvailable() {
+    return inTelegram && !!cfg.API_URL && (wh.ok || (!!state.catalog && state.catalog.products.some(function (p) { return p.wb; })));
+  }
+  /** Строка на главной — только когда в магазине есть товары с оптовой ценой и человек ещё не оптовик. */
+  function bizBannerHtml() {
+    if (!inTelegram || wh.on || !state.catalog || !state.catalog.products.some(function (p) { return p.wb; })) return '';
+    return '<button type="button" class="bizline" data-w1="go" data-view="biz">' + icon('users') + '<span>' + esc(t('bizBanner')) + '</span></button>';
+  }
+  var biz = { type: '', busy: false };
+  function bizHtml() {
+    var html = pageHead(t('bizTitle'));
+    if (!inTelegram || !cfg.API_URL) return html + '<p class="state__text adm__msg">' + esc(t('bizTg')) + '</p>';
+    if (wh.loading && !wh.ok) return html + '<div class="skeleton skeleton--row"></div>';
+    if (wh.on) {
+      return html + '<div class="bizcard"><p class="bizcard__title">' + esc(t('bizYes')) + '</p>' +
+        '<p class="bizcard__text">' + esc(tf('bizYesText', { n: Object.keys(wh.prices).length })) + '</p></div>' +
+        '<button type="button" class="btn btn--primary btn--block" data-action="biz-price">' + esc(t('bizPrice')) + '</button>' +
+        '<button type="button" class="btn btn--block" data-nav="catalog">' + esc(t('toCatalog')) + '</button>';
+    }
+    if (wh.sent || wh.app === 'нова' || wh.app === 'в роботі') {
+      return html + '<div class="bizcard"><p class="bizcard__title">' + esc(t(wh.app === 'в роботі' ? 'bizWork' : 'bizSent')) + '</p>' +
+        '<p class="bizcard__text">' + esc(t('bizSentText')) + '</p></div>' +
+        '<button type="button" class="btn btn--block" data-nav="catalog">' + esc(t('toCatalog')) + '</button>';
+    }
+    var f = state.form;
+    function inp(id, label, value, attrs, ph) {
+      return '<div class="field"><label class="label" for="b-' + id + '">' + esc(label) + '</label><input class="input" id="b-' + id + '" ' + attrs +
+        (ph ? ' placeholder="' + esc(ph) + '"' : '') + ' value="' + esc(value || '') + '"></div>';
+    }
+    return html + '<form class="form" id="bizForm" novalidate><p class="info">' + esc(t('bizIntro')) + '</p>' +
+      (wh.app === 'відхилено' ? '<p class="note note--out">' + esc(t('bizRejected')) + '</p>' : '') +
+      '<p class="form__err" id="bizErr" role="alert" hidden></p>' +
+      '<div class="field"><p class="label">' + esc(t('bizType')) + '</p><div class="chips chips--flush chips--wrap" role="group">' +
+      ['cafe', 'shop', 'office', 'other'].map(function (k) {
+        return '<button type="button" class="chip" data-biz-type="' + k + '" aria-pressed="' + (biz.type === k) + '">' + esc(t('bizT_' + k)) + '</button>';
+      }).join('') + '</div></div>' +
+      inp('name', t('bizName'), '', 'type="text" maxlength="80" autocomplete="organization"') +
+      inp('city', t('bizCity'), f.city, 'type="text" maxlength="60" autocomplete="address-level2"') +
+      inp('contact', t('bizContact'), f.name, 'type="text" maxlength="60" autocomplete="name"') +
+      inp('phone', t('bizPhone'), f.phone || '+380', 'type="tel" inputmode="tel" maxlength="17" autocomplete="tel"') +
+      '<div class="field"><p class="label">' + esc(t('bizCats')) + '</p>' + (state.catalog ? state.catalog.categories : []).map(function (c) {
+        return '<label class="check"><input type="checkbox" name="bizcat" value="' + esc(c.ua) + '"><span>' + esc(state.lang === 'ru' ? c.ru : c.ua) + '</span></label>';
+      }).join('') + '</div>' +
+      inp('volume', t('bizVolume'), '', 'type="text" maxlength="80"', t('bizVolumePh')) +
+      inp('freq', t('bizFreq'), '', 'type="text" maxlength="80"', t('bizFreqPh')) +
+      '<div class="field"><label class="label" for="b-comment">' + esc(t('bizComment')) + '</label><textarea class="input input--area" id="b-comment" rows="3" maxlength="300"></textarea></div>' +
+      '<button type="button" class="btn btn--primary btn--block" data-action="biz-send">' + esc(t('bizSend')) + '</button></form>';
+  }
+  function bizSend(btn) {
+    if (biz.busy) return;
+    function v(id) { var x = document.getElementById('b-' + id); return x ? x.value.trim() : ''; }
+    var data = { type: biz.type, name: v('name'), city: v('city'), contact: v('contact'), phone: v('phone').replace(/\s+/g, ''), volume: v('volume'), freq: v('freq'),
+      comment: v('comment'), lang: state.lang,
+      cats: Array.prototype.map.call(document.querySelectorAll('#bizForm input[name="bizcat"]:checked'), function (x) { return x.value; }) };
+    var box = document.getElementById('bizErr');
+    function fail(key) { if (box) { box.textContent = t(key); box.hidden = false; box.scrollIntoView({ block: 'center' }); } haptic('error'); }
+    if (!data.type || data.name.length < 2 || data.city.length < 2 || data.contact.length < 2 || !/^\+\d{10,15}$/.test(data.phone)) { fail('bizErr'); return; }
+    biz.busy = true; btnBusy(btn);
+    postApi('wh.apply', data).then(function (res) {
+      biz.busy = false;
+      if (!res || !res.ok) { btnFree(btn); fail(res && res.error === 'rate_limit' ? 'bizRate' : 'bizFail'); return; }
+      if (res.wh) { loadWh(true); return; }
+      wh.sent = true; wh.app = 'нова';
+      haptic('success');
+      renderPage(); window.scrollTo(0, 0);
+    }).catch(function () { biz.busy = false; btnFree(btn); fail('bizFail'); });
+  }
+  function bizPrice(btn) {
+    if (biz.busy) return;
+    biz.busy = true; btnBusy(btn);
+    postApi('wh.pricelist', { lang: state.lang }).then(function (res) {
+      biz.busy = false; btnFree(btn);
+      if (!res || !res.ok) { haptic('error'); toast(t(res && res.error === 'rate_limit' ? 'bizPriceRate' : 'bizFail')); if (res && res.error === 'no_perm') loadWh(true); return; }
+      haptic('success'); toast(t('bizPriceOk'));
+    }).catch(function () { biz.busy = false; btnFree(btn); toast(t('bizFail')); });
+  }
+  el.page.addEventListener('click', function (e) {
+    if (state.view !== 'biz') return;
+    var tp = e.target.closest('[data-biz-type]');
+    if (tp) {
+      biz.type = tp.getAttribute('data-biz-type');
+      Array.prototype.forEach.call(document.querySelectorAll('[data-biz-type]'), function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-biz-type') === biz.type)); });
+      return;
+    }
+    var act = e.target.closest('[data-action]');
+    var kind = act ? act.getAttribute('data-action') : '';
+    if (kind === 'biz-send' && !act.disabled) bizSend(act);
+    if (kind === 'biz-price' && !act.disabled) bizPrice(act);
+  });
+  el.page.addEventListener('input', function (e) {
+    if (state.view === 'biz' && e.target.id === 'b-phone') e.target.value = formatPhone(e.target.value);
+  });
+
+  /* Панель: вкладка «Опт» */
+  function whAdminHtml() {
+    var d = adm.wh || { apps: [], clients: [] };
+    var html = '<p class="label">' + esc(t('whApps')) + '</p>';
+    html += d.apps.length ? '<ul class="lines">' + d.apps.map(function (a) {
+      var done = a.status === 'схвалено' || a.status === 'відхилено';
+      var cls = a.status === 'схвалено' ? 'badge--stock' : a.status === 'відхилено' ? 'badge--out' : 'badge--opt';
+      return '<li class="my"><div class="my__head"><span class="ord__num">' + esc(a.id) + '</span><span class="badge ' + cls + '">' + esc(a.status) + '</span><span class="my__date">' + esc(a.date) + '</span></div>' +
+        '<p class="rv__who"><b>' + esc(a.name) + '</b></p>' +
+        '<p class="rv__text">' + esc(a.type) + ' · ' + esc(a.city) + ' · ' + esc(a.contact) + (a.username ? ' · ' + esc(a.username) : '') + '<br><a href="tel:' + esc(a.phone) + '">' + esc(a.phone) + '</a></p>' +
+        (a.cats || a.volume || a.freq ? '<p class="rv__text">' + [a.cats, a.volume, a.freq].filter(Boolean).map(esc).join(' · ') + '</p>' : '') +
+        (a.comment ? '<p class="info">' + esc(a.comment) + '</p>' : '') +
+        (done ? (a.by ? '<p class="prod__sub">' + esc(a.by) + '</p>' : '') : '<div class="wh__acts">' +
+          (a.status === 'нова' ? '<button type="button" class="btn" data-wh-d="t" data-id="' + esc(a.id) + '">' + esc(t('whTake')) + '</button>' : '') +
+          '<button type="button" class="btn btn--soft" data-wh-d="a" data-id="' + esc(a.id) + '">' + esc(t('whApprove')) + '</button>' +
+          '<button type="button" class="btn btn--ghost-danger" data-wh-d="r" data-id="' + esc(a.id) + '">' + esc(t('whReject')) + '</button></div>') + '</li>';
+    }).join('') + '</ul>' : '<p class="state__text adm__msg">' + esc(t('whNoApps')) + '</p>';
+    html += '<p class="label">' + esc(t('whClients')) + '</p>';
+    html += d.clients.length ? '<ul class="lines">' + d.clients.map(function (c) {
+      return '<li class="arch"><span class="prod__name">' + esc(c.name || 'id ' + c.uid) + '</span>' +
+        '<span class="prod__sub">' + esc(c.contact) + ' · ' + esc(c.city) + ' · ' + esc(c.phone) + '</span>' +
+        '<span class="prod__sub">' + esc(c.on ? t('whActive') : t('whOff')) + ' · ' + esc(c.date) + (c.by ? ' · ' + esc(c.by) : '') + '</span>' +
+        (c.on ? '<div class="arch__acts arch__acts--one"><button type="button" class="btn btn--ghost-danger" data-wh-revoke="' + esc(c.uid) + '">' + esc(t('whRevoke')) + '</button></div>' : '') + '</li>';
+    }).join('') + '</ul>' : '<p class="state__text adm__msg">' + esc(t('whNoClients')) + '</p>';
+    return html;
+  }
+  function whDecide(id, d, btn) {
+    var a = null;
+    ((adm.wh && adm.wh.apps) || []).forEach(function (x) { if (x.id === id) a = x; });
+    if (!a || adm.busy) return;
+    function send(done) {
+      adm.busy = true;
+      api('admin.whDecide', { id: id, d: d }).then(function (res) {
+        adm.busy = false;
+        if (!res || !res.ok) { var err = apiErr(res); if (done) done(err); else { btnFree(btn); haptic('error'); toast(err); renderAdminList(); } return; }
+        a.status = res.status;
+        if (done) done();
+        haptic('success');
+        toast(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''));
+        if (d === 'a') { adm.wh = null; adm.loading = false; loadAdmin(true); } else renderAdminList();
+      }).catch(function () { adm.busy = false; if (done) done(t('admFail')); else { btnFree(btn); toast(t('admFail')); renderAdminList(); } });
+    }
+    if (d === 't') { btnBusy(btn, '.wh__acts'); send(null); return; } // «в работу» — обратимо, без вопроса
+    askConfirm({ title: t(d === 'a' ? 'whApproveTitle' : 'whRejectTitle'), text: tf(d === 'a' ? 'whApproveText' : 'whRejectText', { name: a.name, id: a.id }),
+      ok: tf(d === 'a' ? 'whApproveOk' : 'whRejectOk', { name: a.name }), danger: d === 'r', run: send });
+  }
+  function whRevoke(uid) {
+    var c = null;
+    ((adm.wh && adm.wh.clients) || []).forEach(function (x) { if (x.uid === uid) c = x; });
+    if (!c) return;
+    var who = c.name || 'id ' + c.uid;
+    askConfirm({ title: t('whRevokeTitle'), text: tf('whRevokeText', { name: who }), ok: tf('whRevokeOk', { name: who }), danger: true,
+      run: function (done) {
+        api('admin.whRevoke', { uid: uid }).then(function (res) {
+          if (!res || !res.ok) { done(apiErr(res)); return; }
+          adm.wh = { apps: res.apps || [], clients: res.clients || [] };
+          done();
+          haptic('success'); toast(t('whRevoked'));
+          renderAdminList();
+        }).catch(function () { done(t('admFail')); });
+      } });
+  }
 
   /* ---- Б4. Специи и смеси отца ---- */
   /** Подборка на главной сразу после «Наша курага», в том же стиле. Товары и тексты — из настроек; нет товаров в наличии — блока нет. */
@@ -4417,10 +4678,12 @@
   el.adminBtn.hidden = !adminHint;
   track('open', deepId ? deepId.toUpperCase() : '', params.get('view') || '');
   loadCatalog();
+  // Оптовые цены — отдельным запросом и только одобренному оптовику (остальным сервер их не отдаёт).
+  setTimeout(function () { loadWh(false); }, 900);
   // Админу заказы подгружаются заранее, пока он смотрит магазин: панель открывается уже с данными, бэкенд к этому моменту «разогрет».
   if (adminHint && params.get('admin') !== '1') setTimeout(function () { if (state.view !== 'admin') prefetchAdmin('orders'); }, 1500);
   if (adminHint && params.get('admin') === '1') go('admin');
-  else if (/^(points|story|cart)$/.test(params.get('view') || '')) go(params.get('view')); // кнопки в сообщениях бота
+  else if (/^(points|story|cart|biz)$/.test(params.get('view') || '')) go(params.get('view')); // кнопки в сообщениях бота
   else if (params.get('view') === 'orders') go('orders'); // кнопка «Повторити замовлення» в сообщении бота
   // Кнопка «Повторити звичне» в приветствии бота: последний заказ сразу ложится в корзину.
   if (params.get('repeat') === 'last' && inTelegram) {

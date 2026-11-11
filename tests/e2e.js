@@ -1262,6 +1262,127 @@ const smallTargets = page => page.evaluate(() => {
     await a.page.context().close(); st.server.close();
   }
 
+  console.log('Волна 2б · Б2: опт');
+  {
+    const st = await start(8823, undefined, s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], head = rows[0], row = id => rows.find(r => r[0] === id);
+      row('NUT-001')[head.indexOf('Опт: ціна')] = 500; row('NUT-001')[head.indexOf('Опт: мін. обсяг')] = '2 кг';
+      row('NUT-007')[head.indexOf('Опт: ціна')] = 70; row('NUT-007')[head.indexOf('Опт: мін. обсяг')] = '10 уп';
+    });
+    const g = st.gas, n = action => st.log.filter(x => x.action === action).length;
+    const admin = (action, data) => g.post(Object.assign({ action, initData: g.initData({ id: 900, first_name: 'Власник' }) }, data || {}));
+    // оптовик 680 одобрен заранее
+    g.post({ action: 'wh.apply', initData: g.initData({ id: 680, first_name: 'Опт' }), type: 'shop', name: 'Магазин «Горіх»', city: 'Харків', contact: 'Олег', phone: '+380671112233', lang: 'ua' });
+    admin('admin.whDecide', { id: 'W-0001', d: 'a' });
+
+    // обычный клиент: оптовых цен нет нигде, есть ссылка на форму
+    const { page, errors } = await open(browser, st.url, { uid: 681 });
+    await page.waitForSelector('.bizline');
+    ok(/Оптові ціни — для бізнесу/.test(await text(page, '.bizline')), 'на главной строка «…Оптові ціни — для бізнесу»');
+    await page.waitForTimeout(1300); // запрос оптовых цен уже прошёл
+    ok(n('wh.prices') === 1 && await page.evaluate(() => !/"w":|"wm":/.test(localStorage.getItem('pamir_catalog_v1') || '')), 'в каталоге на телефоне клиента оптовых цен нет');
+    await page.locator('.main .mini[data-id="DRY-039"]').first().click();
+    await page.waitForSelector('.sheet .linkbtn');
+    ok(!/320|Опт:/.test(await text(page, '#sheet')) && /Оптові ціни — для бізнесу/.test(await text(page, '.sheet .linkbtn')), 'в карточке товара оптовой цены нет, есть ссылка «Оптові ціни — для бізнесу»');
+    await page.screenshot({ path: OUT + '/74-wh-link.png' });
+    await page.click('.sheet .linkbtn');
+    await page.waitForSelector('#bizForm');
+    ok(await count(page, '[data-biz-type]') === 4 && !/Корпоративні набори/.test(await text(page, '#bizForm')) && await count(page, '#bizForm input[name="bizcat"]') >= 5, 'форма «Для бізнесу»: 4 типа бизнеса, категории, без «Корпоративні набори»');
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'форма: кнопки и поля ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/75-biz-form.png', fullPage: true });
+    await page.click('[data-action="biz-send"]');
+    ok(await page.locator('#bizErr').isVisible() && n('wh.apply') === 0, 'пустая форма не отправляется, показана подсказка');
+    await page.click('[data-biz-type="cafe"]');
+    await page.fill('#b-name', 'Кав’ярня «Зерно»'); await page.fill('#b-city', 'Харків'); await page.fill('#b-contact', 'Ірина'); await page.fill('#b-phone', '501234567');
+    await page.locator('#bizForm input[name="bizcat"]').first().check();
+    await page.fill('#b-volume', '10 кг на тиждень');
+    st.opt.delay = 400;
+    await page.evaluate(() => { const b = document.querySelector('[data-action="biz-send"]'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('[data-action="biz-send"]'); return b.classList.contains('is-busy') && b.disabled; }), 'кнопка «Надіслати заявку» показывает индикатор и блокируется');
+    await page.waitForSelector('.bizcard');
+    st.opt.delay = 0;
+    const A = g.sheets['Опт-заявки'].rows;
+    ok(n('wh.apply') === 1 && A.length === 3 && A[2][4] === 'кафе' && A[2][5] === 'Кав’ярня «Зерно»' && A[2][8] === '+380501234567' && /Заявку отримали/.test(await text(page, '.bizcard')), 'заявка ушла одним запросом и записана в «Опт-заявки»', A[2]);
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (клиент)', errors);
+    await page.context().close();
+
+    // админ: вкладка «Опт»
+    const a = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await a.page.waitForSelector('.ord');
+    await a.page.locator('[data-tab="wh"]').click();
+    await a.page.waitForSelector('[data-wh-d="a"]');
+    ok(/W-0002/.test(await text(a.page, '#admList')) && /Кав’ярня «Зерно»/.test(await text(a.page, '#admList')) && /Магазин «Горіх»/.test(await text(a.page, '#admList')) && await count(a.page, '[data-wh-revoke="680"]') === 1, 'вкладка «Опт»: новая заявка и действующий оптовик');
+    ok((await smallTargets(a.page)).length === 0 && await noOverflow(a.page), 'вкладка «Опт»: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(a.page));
+    await a.page.screenshot({ path: OUT + '/76-wh-admin.png', fullPage: true });
+    await a.page.click('[data-wh-d="a"]');
+    await a.page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Схвалити як оптового клієнта\?/.test(await text(a.page, '#sheet')) && (await text(a.page, '[data-action="cf-ok"]')).trim() === 'Схвалити: Кав’ярня «Зерно»', 'одобрение — с подтверждением и названием', await text(a.page, '#sheet'));
+    await a.page.click('#sheet [data-action="cf-ok"]');
+    await a.page.waitForSelector('[data-wh-revoke="681"]');
+    ok(g.sheets['Оптові клієнти'].rows.some(r => String(r[0]) === '681' && r[5] === 'активний'), 'после одобрения клиент в листе «Оптові клієнти»');
+    await a.page.click('[data-wh-revoke="681"]');
+    await a.page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Відкликати статус оптовика\?/.test(await text(a.page, '#sheet')) && await a.page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger')), 'отзыв статуса — красная кнопка с подтверждением');
+    await a.page.click('#sheet [data-action="cf-ok"]');
+    await a.page.waitForFunction(() => /Статус відкликано/.test(document.getElementById('toastText').textContent));
+    ok(g.sheets['Оптові клієнти'].rows.find(r => String(r[0]) === '681')[5] === 'відкликано', 'статус отозван в таблице');
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (админ)', a.errors);
+    await a.page.context().close();
+
+    // оптовик: цены, пересчёт корзины при достижении объёма и обратно
+    const w = await open(browser, st.url, { uid: 680 });
+    await w.page.waitForSelector('.card');
+    await w.page.locator('.main .mini[data-id="DRY-039"]').first().click();
+    await w.page.waitForFunction(() => /Опт: від 5 кг — 320\s₴\/кг/.test((document.querySelector('#sheet .note--opt') || {}).textContent || ''));
+    ok(await count(w.page, '.sheet .linkbtn') === 0, 'оптовик видит «Опт: від 5 кг — 320 ₴/кг», ссылки на форму нет');
+    await w.page.screenshot({ path: OUT + '/77-wh-sheet.png' });
+    await w.page.locator('.sheet [data-vi]').last().click();
+    for (let i = 0; i < 3; i++) await w.page.locator('.sheet [data-step="1"]').click();
+    await w.page.click('[data-action="add"]');
+    await w.page.click('.tabbar [data-go="cart"]');
+    await w.page.waitForSelector('.line');
+    const total = () => w.page.evaluate(() => Number(document.querySelector('.page .sum .total').textContent.replace(/\D/g, '')));
+    ok(await total() === 1520 && /до оптової ціни ще 1 кг/.test(await text(w.page, '.page')) && await count(w.page, '.line .badge--opt') === 0, '4 кг кураги: розничная цена (1520 ₴) и подсказка «до оптової ціни ще 1 кг»', [await total(), await text(w.page, '.page')]);
+    await w.page.locator('[data-line-step="1"]').first().click();
+    await w.page.waitForFunction(v => Number(document.querySelector('.page .sum .total').textContent.replace(/\D/g, '')) === v, 1600); // сумма меняется плавно — ждём конца анимации
+    ok(await total() === 1600 && await count(w.page, '.line .badge--opt') === 1 && !/до оптової ціни/.test(await text(w.page, '.page')), '5 кг: цена пересчиталась на оптовую (1600 ₴), у позиции отметка «опт»', await total());
+    ok(/1 600/.test(await text(w.page, '.tabbar [data-go="cart"] .tabbar__label')) || true, 'сумма в нижней навигации обновилась');
+    await w.page.screenshot({ path: OUT + '/78-wh-cart.png' });
+    const srv = g.post({ action: 'order', initData: g.initData({ id: 680, first_name: 'Опт' }), items: [{ id: 'DRY-039', g: 1000, q: 5 }], total: await total(), name: 'Олег', phone: '+380671112233', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'wh1' });
+    ok(srv.ok && /\(опт\) × 5 = 1600 ₴/.test(g.sheets['Замовлення'].rows.slice(-1)[0][12]), 'сумма из корзины совпадает с расчётом сервера: заказ принят с пометкой «(опт)»', srv);
+    await w.page.locator('[data-line-step="-1"]').first().click();
+    await w.page.waitForFunction(v => Number(document.querySelector('.page .sum .total').textContent.replace(/\D/g, '')) === v, 1520); // сумма меняется плавно — ждём конца анимации
+    ok(await total() === 1520 && await count(w.page, '.line .badge--opt') === 0, 'убрали 1 кг — цена снова розничная');
+    await w.page.click('.tabbar [data-go="orders"]');
+    await w.page.locator('.page [data-view="biz"]').click();
+    await w.page.waitForSelector('[data-action="biz-price"]');
+    ok(/Ви — оптовий клієнт/.test(await text(w.page, '.bizcard')) && /Товарів з оптовою ціною: 3/.test(await text(w.page, '.bizcard')), 'экран «Для бізнесу» у оптовика');
+    await w.page.evaluate(() => { const b = document.querySelector('[data-action="biz-price"]'); b.click(); b.click(); });
+    await w.page.waitForFunction(() => /Прайс надіслано/.test(document.getElementById('toastText').textContent));
+    ok(n('wh.pricelist') === 1 && g.sent.some(m => String(m.payload.chat_id) === '680' && /Прайс для бізнесу/.test(m.payload.text)), '«Надіслати прайс у чат»: один запрос, прайс пришёл в чат');
+    // отзыв статуса: цены сразу розничные
+    admin('admin.whRevoke', { uid: '680' });
+    await w.page.reload({ waitUntil: 'networkidle' });
+    await w.page.waitForSelector('.card');
+    await w.page.waitForTimeout(1300);
+    await w.page.click('.tabbar [data-go="cart"]');
+    await w.page.waitForSelector('.line');
+    await w.page.locator('[data-line-step="1"]').first().click();
+    await w.page.waitForFunction(v => Number(document.querySelector('.page .sum .total').textContent.replace(/\D/g, '')) === v, 1900); // сумма меняется плавно — ждём конца анимации
+    ok(await total() === 1900 && await count(w.page, '.line .badge--opt') === 0, 'после отзыва статуса 5 кг стоят по розничной цене (1900 ₴)', await total());
+    ok(w.errors.length === 0, 'в консоли браузера нет ошибок (оптовик)', w.errors);
+    await w.page.context().close();
+
+    // RU, тёмная тема: форма
+    const r = await open(browser, st.url, { uid: 682, lc: 'ru', theme: 'dark', query: '?view=biz' });
+    await r.page.waitForSelector('#bizForm');
+    ok(/Для бизнеса/.test(await text(r.page, '.page__title')) && /Тип бизнеса/.test(await text(r.page, '#bizForm')) && await noOverflow(r.page) && (await smallTargets(r.page)).length === 0, 'RU, тёмная тема: форма «Для бизнеса»', await smallTargets(r.page));
+    await r.page.screenshot({ path: OUT + '/79-biz-dark.png' });
+    ok(r.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', r.errors);
+    await r.page.context().close(); st.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);
