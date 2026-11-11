@@ -123,6 +123,7 @@ function createGas(codePath, seed) {
         return Array.from(h.digest()).map(b => (b > 127 ? b - 256 : b));
       },
       formatDate,
+      sleep() {},
       base64Decode: s => Array.from(Buffer.from(s, 'base64')),
       getUuid: () => crypto.randomUUID()
     },

@@ -1294,6 +1294,15 @@ function handleCallback_(cq, token, admins) {
     if (cq.message) tg_(token, 'editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
     return;
   }
+  if (cq.data === 'mu') { // клиент отказался от рассылок: действует сразу, сообщения о заказах остаются
+    mailUnsubscribe_(fromId);
+    var ruMu = String((cq.from && cq.from.language_code) || '').toLowerCase().indexOf('ru') === 0;
+    answer(ruMu ? 'Рассылки отключены' : 'Розсилки вимкнено');
+    tg_(token, 'sendMessage', { chat_id: fromId, text: ruMu
+      ? 'Больше не присылаем рассылки. Сообщения о ваших заказах будут приходить как раньше.'
+      : 'Більше не надсилаємо розсилки. Повідомлення про ваші замовлення приходитимуть, як і раніше.' });
+    return;
+  }
   var props = scriptProps_();
   if (handleCallback8_(cq, token, props, answer)) return; // отзывы, брошенная корзина, ТТН
   var menu = String(cq.data || '').match(/^m:(pts|apr|biz)$/);
@@ -1620,6 +1629,13 @@ function handleAdmin_(body) {
   if (a === 'admin.adminSave') return deny('admins') || saveAdmin_(me, body, props, token);
   if (a === 'admin.log') return deny('admins') || listLog_();
   if (a === 'admin.ttn') return deny('st') || setTtn_(String(body.num || ''), String(body.ttn || ''), token);
+  // Рассылка (право «Розсилка»). Порядок «черновик → тільки мені → отправка» проверяет сервер.
+  if (a === 'admin.mail') return deny('mail') || listMail_();
+  if (a === 'admin.mailSave') return deny('mail') || saveMail_(body);
+  if (a === 'admin.mailCount') return deny('mail') || (function () { var c = mailCount_(body.seg || {}, ''); return { ok: true, n: c.n, skip: c.skip }; })();
+  if (a === 'admin.mailTest') return deny('mail') || testMail_(String(body.id || ''), me, token);
+  if (a === 'admin.mailSend') return deny('mail') || startMail_(String(body.id || ''), String(body.at || ''), token);
+  if (a === 'admin.mailCancel') return deny('mail') || cancelMail_(String(body.id || ''));
   if (a === 'admin.wh') return deny('wh') || listWh_();
   if (a === 'admin.whDecide') return deny('wh') || decideWhApp_(String(body.id || ''), String(body.d || ''), token, null);
   if (a === 'admin.whRevoke') return deny('wh') || revokeWholesaler_(String(body.uid || ''));
@@ -2018,6 +2034,7 @@ var SETTINGS_DEF = [
   ['story_text_ua', 'Сторінка «Від саду до столу»: текст (UA), кожен абзац з нового рядка. Порожньо — сторінки немає', 'Наш сад — в Ісфарі, на півночі Таджикистану. Тут наша родина вирощує абрикоси.\nКоли абрикоси достигають, ми збираємо врожай і сушимо його — так виходить курага.\nКурагу привозимо до Харкова, на Центральний ринок. Тут ми зустрічаємо покупців на наших точках.\nЗапитуйте про сад і курагу — розповімо з радістю.'],
   ['story_text_ru', 'Страница «От сада до стола»: текст (RU), каждый абзац с новой строки', 'Наш сад — в Исфаре, на севере Таджикистана. Здесь наша семья выращивает абрикосы.\nКогда абрикосы созревают, мы собираем урожай и сушим его — так получается курага.\nКурагу привозим в Харьков, на Центральный рынок. Здесь мы встречаем покупателей на наших точках.\nСпрашивайте про сад и курагу — расскажем с радостью.'],
   ['story_photos', 'Сторінка «Від саду до столу»: посилання на фото (https://…), кожне з нового рядка', ''],
+  ['mail_every_days', 'Розсилка: не частіше ніж раз на N днів одній людині (0 — без обмеження)', '7'],
   ['father_ids', 'Добірка «Спеції від батька» на головній: ID товарів через кому (наприклад SPC-001, SPC-004). Порожньо — без блоку', ''],
   ['father_title_ua', 'Добірка «Спеції від батька»: заголовок (UA)', 'Спеції від батька'],
   ['father_title_ru', 'Подборка «Специи от отца»: заголовок (RU)', 'Специи от отца'],
@@ -2025,7 +2042,7 @@ var SETTINGS_DEF = [
   ['father_text_ru', 'Подборка «Специи от отца»: текст под заголовком (RU)', ''],
   ['remind_text_ru', 'Текст напоминания (RU)', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.']
 ];
-var SETTINGS_NUM = { min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72 };
+var SETTINGS_NUM = { mail_every_days: 365, min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72 };
 var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'feature_id', 'gift_text_ua', 'gift_text_ru', 'loyal_text_ua', 'loyal_text_ru',
   'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos',
   'father_ids', 'father_text_ua', 'father_text_ru'];
@@ -2242,7 +2259,7 @@ function salesStats_(write) {
  */
 var SHEET_EVENTS = 'Події';
 var EVENT_HEADERS = ['Час', 'Користувач', 'Сесія', 'Подія', 'Товар', 'Значення'];
-var EVENT_NAMES = ['open', 'view', 'add', 'cart', 'checkout', 'order', 'search', 'search0', 'fav', 'repeat', 'share', 'notify'];
+var EVENT_NAMES = ['open', 'view', 'add', 'cart', 'checkout', 'order', 'search', 'search0', 'fav', 'repeat', 'share', 'notify', 'mail'];
 var MAX_EVENTS_PER_HOUR = 400;
 var EVENTS_KEEP_ROWS = 20000;
 
@@ -2524,10 +2541,11 @@ function menuDailyOff() {
 
 function menuDailyOn() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob') ScriptApp.deleteTrigger(t);
+    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob' || t.getHandlerFunction() === 'mailJob') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('dailyJob').timeBased().everyDays(1).atHour(11).create();
   ScriptApp.newTrigger('hourlyJob').timeBased().everyHours(1).create();
+  ScriptApp.newTrigger('mailJob').timeBased().everyMinutes(10).create(); // рассылка: порции и отложенная отправка
   try {
     SpreadsheetApp.getUi().alert('Готово. Щодня близько 11:00: повідомлення про появу товарів, прохання про відгук і (якщо задано remind_days) нагадування про повторне замовлення. Щогодини: нагадування про покинутий кошик.');
   } catch (err) { /* запуск из редактора */ }
@@ -4484,7 +4502,8 @@ function setupWave2a() {
 var SHEET_CLIENTS = 'Клієнти';
 var CLIENT_HEAD = ['Chat id', 'Ім\'я', 'Мова', 'Перший вхід', 'Останній вхід', 'Відписка', 'Заблокував бота'];
 var CLIENT_COLS = { id: ['chat id'], name: ['ім\'я', 'ім’я'], lang: ['мова'], first: ['перший вхід'], last: ['останній вхід'],
-  unsub: ['відписка'], blocked: ['заблокував'] };
+  unsub: ['відписка'], blocked: ['заблокував'],
+  mailId: ['остання розсилка'], mailAt: ['дата останньої розсилки'] }; // необязательные: появляются при первой рассылке
 var CLIENT_TOUCH_SEC = 6 * 3600; // «Останній вхід» обновляется не чаще раза в 6 часов: магазин не должен тормозить из-за записи в таблицу
 
 function ensureClientsSheet_() {
@@ -5115,6 +5134,7 @@ function setupWave2b() {
   [[SHEET_WH_APPS, WH_APP_HEAD], [SHEET_WH_CLIENTS, WH_CLIENT_HEAD]].forEach(function (s) {
     if (!ss.getSheetByName(s[0])) { ensureWhSheet_(s[0], s[1]); done.push('лист «' + s[0] + '»'); }
   });
+  if (!ss.getSheetByName(SHEET_MAIL)) { ensureMailSheet_(); done.push('лист «' + SHEET_MAIL + '»'); }
   var products = ss.getSheetByName(SHEET_PRODUCTS);
   if (products) {
     var pcol = mapHeaders_(headRow_(products), PRODUCT_COLS);
@@ -5134,4 +5154,543 @@ function setupWave2b() {
   console.log(text);
   try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }
   return done;
+}
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2б · Б1: рассылка                                           */
+/* ======================================================================== */
+/*
+ * Получатели — лист «Клієнти». Порядок жёсткий и проверяется на сервере: черновик → «Надіслати тільки мені» →
+ * подтверждение → отправка. Отправка идёт порциями по триггеру mailJob: после обрыва продолжается с того же места,
+ * каждому получателю отметка ставится ДО отправки — второго сообщения он не получит.
+ * Отписавшимся и тем, кто заблокировал бота, рассылка не уходит. Сервисные сообщения о заказах отписка не трогает.
+ */
+
+var SHEET_MAIL = 'Розсилки';
+var MAIL_HEAD = ['ID', 'Створено', 'Хто створив', 'Статус', 'Сегмент', 'Текст (UA)', 'Текст (RU)', 'Фото', 'Кнопка', 'Заплановано (Київ)', 'Хто надіслав',
+  'Отримувачів', 'Надіслано', 'Помилки', 'Блокування', 'Пропущено (частота)', 'Натиснули кнопку', 'Замовили за 3 дні', 'Службове'];
+var ML = { id: 0, created: 1, by: 2, status: 3, seg: 4, ua: 5, ru: 6, photo: 7, btn: 8, at: 9, sender: 10, total: 11, sent: 12, err: 13, blocked: 14, skipped: 15, clicks: 16, orders: 17, svc: 18 };
+var ML_NEW = 'створена', ML_PLAN = 'запланована', ML_RUN = 'йде', ML_DONE = 'завершена', ML_STOP = 'скасована';
+var MAIL_SEGMENTS = { all: 'усі клієнти', cat: 'купували категорію', prod: 'купували товар', idle: 'не замовляли 30+ днів', wh: 'оптовики', sub: 'чекають на товар' };
+var MAIL_BUTTONS = { none: '', shop: 'Відкрити магазин', prod: 'Відкрити товар', cat: 'Відкрити категорію' };
+var MAIL_IDLE_DAYS = 30;
+var MAIL_BATCH = 120;          // сообщений за один запуск триггера
+var MAIL_RUN_MS = 4 * 60 * 1000; // запуск триггера работает не дольше (лимит Apps Script — 6 минут)
+var MAIL_PAUSE_MS = 60;        // пауза между сообщениями: не больше ~15 в секунду, с запасом к лимиту Telegram
+var MAIL_ORDER_DAYS = 3;
+
+function ensureMailSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_MAIL);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_MAIL);
+    sheet.getRange(1, 1, 1, MAIL_HEAD.length).setValues([MAIL_HEAD]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.hideColumns(MAIL_HEAD.length);
+  }
+  return sheet;
+}
+
+function mailRows_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MAIL);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, MAIL_HEAD.length).getValues();
+}
+
+function mailSvc_(row) {
+  try { return JSON.parse(String(row[ML.svc] || '{}')) || {}; } catch (err) { return {}; }
+}
+
+/** Время по Киеву «2026-11-12T10:30» → миллисекунды. Часовой пояс проекта может быть любым: считаем явно в Europe/Kiev. */
+function kyivToMs_(text) {
+  var m = String(text || '').match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$/);
+  if (!m) return 0;
+  var want = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  var t = want - 2 * 3600 * 1000;
+  for (var i = 0; i < 4; i++) { // подбираем момент, который в Киеве показывает нужные дату и время (учитывает летнее и зимнее время)
+    var p = Utilities.formatDate(new Date(t), 'Europe/Kiev', 'yyyy-MM-dd-HH-mm').split('-');
+    var shown = Date.UTC(+p[0], +p[1] - 1, +p[2], +p[3], +p[4]);
+    if (shown === want) break;
+    t += want - shown;
+  }
+  return t;
+}
+
+function kyivText_(ms) {
+  return ms > 0 ? Utilities.formatDate(new Date(ms), 'Europe/Kiev', 'dd.MM.yyyy HH:mm') : '';
+}
+
+/** Отпечаток содержимого: «тільки мені» действует только для того текста, фото, кнопки и сегмента, которые проверяли. */
+function mailHash_(m) {
+  var s = [m.ua, m.ru, m.photo, m.btn.k, m.btn.v, m.seg.k, m.seg.v].join('\u0001');
+  var h = 0;
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return String(h) + ':' + s.length;
+}
+
+function mailFromRow_(row) {
+  var svc = mailSvc_(row);
+  return { id: String(row[ML.id]).trim(), status: String(row[ML.status]).trim() || ML_NEW, ua: String(row[ML.ua] || ''), ru: String(row[ML.ru] || ''),
+    photo: String(row[ML.photo] || '').trim(), btn: svc.btn || { k: 'none', v: '' }, seg: svc.seg || { k: 'all', v: '' }, at: Number(svc.at) || 0, svc: svc,
+    by: String(row[ML.by] || ''), sender: String(row[ML.sender] || ''),
+    total: toNum_(row[ML.total]), sent: toNum_(row[ML.sent]), err: toNum_(row[ML.err]), blocked: toNum_(row[ML.blocked]), skipped: toNum_(row[ML.skipped]),
+    clicks: toNum_(row[ML.clicks]), orders: toNum_(row[ML.orders]) };
+}
+
+function mailPublic_(m, row) {
+  var d = row[ML.created];
+  var isDate = Object.prototype.toString.call(d) === '[object Date]' && !isNaN(d.getTime());
+  return { id: m.id, status: m.status, ua: m.ua, ru: m.ru, photo: m.photo, btn: m.btn, seg: m.seg, at: m.at ? kyivText_(m.at) : '',
+    created: isDate ? Utilities.formatDate(d, 'Europe/Kiev', 'dd.MM.yyyy HH:mm') : '', by: m.by, sender: m.sender, tested: m.svc.test === mailHash_(m) ? 1 : 0,
+    total: m.total, sent: m.sent, err: m.err, blocked: m.blocked, skipped: m.skipped, clicks: m.clicks, orders: m.orders };
+}
+
+function listMail_() {
+  var rows = mailRows_();
+  var list = rows.slice(-50).reverse().map(function (row) { return mailPublic_(mailFromRow_(row), row); });
+  var st = readSettings_();
+  return { ok: true, mails: list, every: Math.round(toNum_(st.mail_every_days)), trigger: mailTriggerOn_() ? 1 : 0 };
+}
+
+function mailTriggerOn_() {
+  try { return ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'mailJob'; }); } catch (err) { return false; }
+}
+
+function ensureMailTrigger_() {
+  try {
+    if (mailTriggerOn_()) return true;
+    ScriptApp.newTrigger('mailJob').timeBased().everyMinutes(10).create();
+    return true;
+  } catch (err) {
+    console.warn('mail trigger: ' + err);
+    return false;
+  }
+}
+
+/* ---- Получатели ---- */
+
+/** Кто что покупал и когда: { uid: { last: мс последнего заказа, ids: {id:1}, cats: {код:1} } }. Тестовые и отменённые заказы не считаются. */
+function mailBuyers_() {
+  var out = {};
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
+  if (!sheet) return out;
+  var all = sheet.getDataRange().getValues();
+  if (all.length < 2) return out;
+  var col = orderCols_(sheet, all[0]);
+  if (col.uid < 0) return out;
+  var catOf = {};
+  try { JSON.parse(getCatalogJson_()).products.forEach(function (p) { catOf[p.id] = p.c; }); } catch (err) { /* без категорий */ }
+  for (var r = 1; r < all.length; r++) {
+    var row = all[r];
+    var uid = String(row[col.uid]).trim();
+    var status = cell_(row, col.status);
+    if (!/^\d+$/.test(uid) || cell_(row, col.source).indexOf('test') >= 0 || status === 'скасовано' || status === 'немає в наявності') continue;
+    var b = out[uid] || (out[uid] = { last: 0, ids: {}, cats: {} });
+    var d = col.date >= 0 ? row[col.date] : '';
+    if (Object.prototype.toString.call(d) === '[object Date]' && d.getTime() > b.last) b.last = d.getTime();
+    try {
+      (JSON.parse(cell_(row, col.svc) || '{}').i || []).forEach(function (it) {
+        var id = String(it[0]);
+        b.ids[id] = 1;
+        if (catOf[id]) b.cats[catOf[id]] = 1;
+      });
+    } catch (err) { /* служебная ячейка испорчена */ }
+  }
+  return out;
+}
+
+/**
+ * Клиенты, подходящие под сегмент. Возвращает { list: [{ uid, lang, row, mailId, mailAt }], cols }.
+ * Отписавшиеся и заблокировавшие бота не попадают никогда.
+ */
+function mailAudience_(seg) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_CLIENTS);
+  if (!sheet || sheet.getLastRow() < 2) return { list: [], col: null, sheet: sheet };
+  var values = sheet.getDataRange().getValues();
+  var col = mapHeaders_(values[0], CLIENT_COLS);
+  if (col.id < 0) return { list: [], col: col, sheet: sheet };
+  var k = seg && MAIL_SEGMENTS[seg.k] ? seg.k : 'all', v = String((seg && seg.v) || '').trim();
+  var buyers = k === 'cat' || k === 'prod' || k === 'idle' ? mailBuyers_() : null;
+  var set = null;
+  if (k === 'wh') {
+    set = {};
+    whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length).forEach(function (row) { if (String(row[WC.status]).trim().toLowerCase() === WC_ON) set[String(row[WC.uid]).trim()] = 1; });
+  } else if (k === 'sub') {
+    set = {};
+    var subs = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SUBS);
+    if (subs && subs.getLastRow() > 1) {
+      subs.getRange(2, 1, subs.getLastRow() - 1, SUB_HEADERS.length).getValues().forEach(function (row) {
+        if (String(row[4]).trim() !== SUB_WAIT) return;
+        if (!v || String(row[2]).trim().toUpperCase() === v.toUpperCase()) set[String(row[1]).trim()] = 1;
+      });
+    }
+  }
+  var now = Date.now(), list = [], seen = {};
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var uid = cell_(row, col.id);
+    if (!/^\d+$/.test(uid) || seen[uid]) continue;
+    seen[uid] = 1;
+    if (cell_(row, col.unsub) || cell_(row, col.blocked)) continue;
+    var b = buyers ? buyers[uid] : null;
+    if (k === 'cat' && !(b && b.cats[v])) continue;
+    if (k === 'prod' && !(b && b.ids[v.toUpperCase()])) continue;
+    if (k === 'idle' && !(b && b.last > 0 && now - b.last >= MAIL_IDLE_DAYS * 24 * 3600 * 1000)) continue; // заказывали раньше, но не в последние 30 дней
+    if (set && !set[uid]) continue;
+    var at = col.mailAt >= 0 ? row[col.mailAt] : '';
+    list.push({ uid: uid, lang: cell_(row, col.lang) === 'ru' ? 'ru' : 'ua', row: r + 1, mailId: cell_(row, col.mailId),
+      mailAt: Object.prototype.toString.call(at) === '[object Date]' ? at.getTime() : 0 });
+  }
+  return { list: list, col: col, sheet: sheet };
+}
+
+/** Сколько человек получит рассылку сейчас и сколько пропустим из-за лимита частоты. */
+function mailCount_(seg, mailId) {
+  var every = Math.round(toNum_(readSettings_().mail_every_days)) * 24 * 3600 * 1000;
+  var now = Date.now(), n = 0, skip = 0;
+  mailAudience_(seg).list.forEach(function (c) {
+    if (mailId && c.mailId === mailId) return; // уже получил эту рассылку
+    if (every > 0 && c.mailAt > 0 && now - c.mailAt < every) skip++; else n++;
+  });
+  return { n: n, skip: skip };
+}
+
+/* ---- Черновик, проверка, запуск ---- */
+
+function mailInput_(body) {
+  var btnK = MAIL_BUTTONS[body.btn && body.btn.k] !== undefined ? String(body.btn.k) : 'none';
+  var segK = MAIL_SEGMENTS[body.seg && body.seg.k] ? String(body.seg.k) : 'all';
+  var m = { ua: multiline_(body.ua, 3500), ru: multiline_(body.ru, 3500), photo: clean_(body.photo, 200),
+    btn: { k: btnK, v: btnK === 'prod' || btnK === 'cat' ? clean_(body.btn.v, 40).toUpperCase() : '' },
+    seg: { k: segK, v: segK === 'cat' || segK === 'prod' || segK === 'sub' ? clean_(body.seg.v, 40).toUpperCase() : '' } };
+  if (!m.ua && !m.ru) return { error: 'bad_form' };
+  if (m.photo && Math.max(m.ua.length, m.ru.length) > 1000) return { error: 'too_long' }; // подпись к фото в Telegram — до 1024 знаков
+  if (m.photo && !/^https:\/\//i.test(m.photo) && !/^[A-Za-z0-9_-]{20,200}$/.test(m.photo)) return { error: 'bad_photo' };
+  if ((m.btn.k === 'prod' || m.btn.k === 'cat') && !m.btn.v) return { error: 'bad_form' };
+  if ((m.seg.k === 'cat' || m.seg.k === 'prod') && !m.seg.v) return { error: 'bad_form' };
+  return { m: m };
+}
+
+function nextMailId_(rows) {
+  var max = 0;
+  rows.forEach(function (row) { var x = String(row[ML.id]).match(/^M-(\d+)$/); if (x) max = Math.max(max, parseInt(x[1], 10)); });
+  var n = String(max + 1);
+  while (n.length < 4) n = '0' + n;
+  return 'M-' + n;
+}
+
+function mailSegText_(seg) { return MAIL_SEGMENTS[seg.k] + (seg.v ? ': ' + seg.v : ''); }
+function mailBtnText_(btn) { return btn.k === 'none' ? '' : MAIL_BUTTONS[btn.k] + (btn.v ? ': ' + btn.v : ''); }
+
+/** Находит рассылку. Возвращает { rows, r, m } или null. */
+function findMail_(id) {
+  var rows = mailRows_();
+  for (var r = rows.length - 1; r >= 0; r--) if (String(rows[r][ML.id]).trim() === id) return { rows: rows, r: r, m: mailFromRow_(rows[r]) };
+  return null;
+}
+
+function writeMailSvc_(sheet, r, svc) { sheet.getRange(r + 2, ML.svc + 1).setValue(JSON.stringify(svc)); }
+
+/** Создать черновик или изменить его. Менять можно только рассылку, которая ещё не запущена. */
+function saveMail_(body) {
+  var inp = mailInput_(body);
+  if (inp.error) return { ok: false, error: inp.error };
+  var m = inp.m;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = ensureMailSheet_();
+    var id = String(body.id || '').trim();
+    if (id) {
+      var f = findMail_(id);
+      if (!f) return { ok: false, error: 'not_found' };
+      if (f.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+      var svc = f.m.svc;
+      svc.btn = m.btn; svc.seg = m.seg; // отметка «проверено на себе» остаётся, только если содержимое не изменилось (сверяется по отпечатку)
+      sheet.getRange(f.r + 2, ML.seg + 1, 1, 5).setValues([[mailSegText_(m.seg), safeCell_(m.ua), safeCell_(m.ru), safeCell_(m.photo), mailBtnText_(m.btn)]]);
+      writeMailSvc_(sheet, f.r, svc);
+    } else {
+      id = nextMailId_(mailRows_());
+      var row = [];
+      for (var i = 0; i < MAIL_HEAD.length; i++) row.push('');
+      row[ML.id] = id; row[ML.created] = new Date(); row[ML.by] = safeCell_(clean_(actor_ ? actor_.name : '', 80)); row[ML.status] = ML_NEW;
+      row[ML.seg] = mailSegText_(m.seg); row[ML.ua] = safeCell_(m.ua); row[ML.ru] = safeCell_(m.ru); row[ML.photo] = safeCell_(m.photo); row[ML.btn] = mailBtnText_(m.btn);
+      row[ML.svc] = JSON.stringify({ btn: m.btn, seg: m.seg });
+      sheet.appendRow(row);
+      sheet.getRange(sheet.getLastRow(), ML.created + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+      logAction_('Розсилка: створено', id, '', mailSegText_(m.seg));
+    }
+    SpreadsheetApp.flush();
+    var saved = findMail_(id);
+    var count = mailCount_(saved.m.seg, id);
+    return { ok: true, mail: mailPublic_(saved.m, saved.rows[saved.r]), n: count.n, skip: count.skip };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Клавиатура сообщения рассылки: кнопка действия (если есть) и «Не надсилати мені розсилки». */
+function mailKeyboard_(m, ru, webapp) {
+  var kb = [];
+  if (m.btn.k !== 'none' && /^https:\/\//.test(webapp || '')) {
+    var q = 'm=' + encodeURIComponent(m.id);
+    if (m.btn.k === 'prod') q += '&p=' + encodeURIComponent(m.btn.v);
+    if (m.btn.k === 'cat') q += '&cat=' + encodeURIComponent(m.btn.v);
+    var label = m.btn.k === 'prod' ? (ru ? '🛒 Открыть товар' : '🛒 Відкрити товар') : m.btn.k === 'cat' ? (ru ? '🛒 Открыть категорию' : '🛒 Відкрити категорію')
+      : (ru ? '🛒 Открыть магазин' : '🛒 Відкрити магазин');
+    kb.push([{ text: label, web_app: { url: appUrl_(webapp, q) } }]);
+  }
+  kb.push([{ text: ru ? 'Не присылать мне рассылки' : 'Не надсилати мені розсилки', callback_data: 'mu' }]);
+  return { inline_keyboard: kb };
+}
+
+/** Одно сообщение рассылки одному человеку на его языке; пустой текст на его языке — берётся второй язык. */
+function mailSendOne_(token, m, chatId, lang, webapp) {
+  var ru = lang === 'ru';
+  var text = (ru ? m.ru : m.ua) || m.ua || m.ru;
+  var markup = mailKeyboard_(m, ru, webapp);
+  return m.photo
+    ? tg_(token, 'sendPhoto', { chat_id: chatId, photo: m.photo, caption: text.slice(0, 1024), reply_markup: markup })
+    : tg_(token, 'sendMessage', { chat_id: chatId, text: text.slice(0, 4000), disable_web_page_preview: true, reply_markup: markup });
+}
+
+/** «Надіслати тільки мені»: обязательный шаг. Автор получает оба языка, как их увидят клиенты. */
+function testMail_(id, me, token) {
+  var f = findMail_(id);
+  if (!f) return { ok: false, error: 'not_found' };
+  if (f.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+  var webapp = scriptProps_().getProperty('WEBAPP_URL');
+  var langs = [];
+  if (f.m.ua) langs.push('ua');
+  if (f.m.ru && f.m.ru !== f.m.ua) langs.push('ru');
+  var okAll = true, why = '';
+  langs.forEach(function (lang) {
+    var res = mailSendOne_(token, f.m, me.id, lang, webapp);
+    if (!res.ok) { okAll = false; why = String(res.description || ''); }
+  });
+  if (!okAll) return { ok: false, error: 'send_failed', why: clean_(why, 200) }; // например, неверный код фото
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var again = findMail_(id);
+    if (!again || again.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+    var svc = again.m.svc;
+    svc.test = mailHash_(again.m);
+    writeMailSvc_(ensureMailSheet_(), again.r, svc);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  var count = mailCount_(f.m.seg, id);
+  return { ok: true, n: count.n, skip: count.skip, sent: langs.length };
+}
+
+/**
+ * Запуск: сразу (at пусто) или в назначенное время по Киеву. Без шага «тільки мені» для этого же содержимого — отказ.
+ * Сам запуск только ставит рассылку в очередь; сообщения отправляет mailJob.
+ */
+function startMail_(id, atText, token) {
+  var out;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var f = findMail_(id);
+    if (!f) return { ok: false, error: 'not_found' };
+    if (f.m.status !== ML_NEW) return { ok: false, error: 'locked' };
+    if (f.m.svc.test !== mailHash_(f.m)) return { ok: false, error: 'need_test' };
+    var at = 0;
+    if (atText) {
+      at = kyivToMs_(atText);
+      if (!(at > Date.now() + 60 * 1000) || at > Date.now() + 60 * 24 * 3600 * 1000) return { ok: false, error: 'bad_time' };
+    }
+    var count = mailCount_(f.m.seg, id);
+    if (!count.n) return { ok: false, error: 'no_recipients', skip: count.skip };
+    var sheet = ensureMailSheet_();
+    var svc = f.m.svc;
+    svc.at = at || Date.now();
+    var who = safeCell_(clean_(actor_ ? actor_.name : '', 80));
+    sheet.getRange(f.r + 2, ML.status + 1).setValue(ML_PLAN);
+    sheet.getRange(f.r + 2, ML.at + 1, 1, 7).setValues([[kyivText_(svc.at), who, count.n, 0, 0, 0, count.skip]]);
+    writeMailSvc_(sheet, f.r, svc);
+    SpreadsheetApp.flush();
+    logAction_(at ? 'Розсилка: заплановано' : 'Розсилка: надіслано', id, mailSegText_(f.m.seg), 'отримувачів: ' + count.n + (at ? ' · ' + kyivText_(at) + ' (Київ)' : ''));
+    out = { ok: true, n: count.n, skip: count.skip, at: at ? kyivText_(at) : '', trigger: ensureMailTrigger_() ? 1 : 0 };
+  } finally {
+    lock.releaseLock();
+  }
+  if (!atText) { // «надіслати зараз»: первая порция уходит сразу, остальное — по триггеру
+    try { mailRun_(token, 25, 15000); } catch (err) { console.error('mail first batch: ' + (err && err.stack || err)); }
+  }
+  var fresh = findMail_(id);
+  if (fresh) out.mail = mailPublic_(fresh.m, fresh.rows[fresh.r]);
+  return out;
+}
+
+/** Отмена: до старта — рассылка не уйдёт; во время отправки — остановится, уже отправленное не вернуть. */
+function cancelMail_(id) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var f = findMail_(id);
+    if (!f) return { ok: false, error: 'not_found' };
+    if (f.m.status !== ML_PLAN && f.m.status !== ML_RUN) return { ok: false, error: 'locked' };
+    ensureMailSheet_().getRange(f.r + 2, ML.status + 1).setValue(ML_STOP);
+    SpreadsheetApp.flush();
+    logAction_('Розсилка: скасовано', id, f.m.status, ML_STOP + (f.m.sent ? ' · уже надіслано: ' + f.m.sent : ''));
+    var again = findMail_(id);
+    return { ok: true, mail: mailPublic_(again.m, again.rows[again.r]) };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/* ---- Отправка порциями ---- */
+
+/** Триггер раз в 10 минут: отправляет очередную порцию и считает итоги завершённых рассылок. */
+function mailJob() {
+  var token = scriptProps_().getProperty('BOT_TOKEN');
+  if (!token) return;
+  try { mailRun_(token, MAIL_BATCH, MAIL_RUN_MS); } catch (err) { console.error('mailJob: ' + (err && err.stack || err)); }
+  try { mailFreezeStats_(); } catch (err) { console.error('mail stats: ' + (err && err.stack || err)); }
+}
+
+/**
+ * Одна порция: не больше limit сообщений и не дольше maxMs. Возвращает число отправленных.
+ * Два запуска одновременно не работают (блокировка). Отметка получателю ставится до отправки: при обрыве он не получит дубль.
+ */
+function mailRun_(token, limit, maxMs) {
+  var started = Date.now(), done = 0;
+  // Общую блокировку скрипта на время отправки не держим: иначе заказы ждали бы минутами. Вместо неё — флажок в кэше:
+  // под короткой блокировкой проверяем, что другая порция не идёт, и ставим флажок на время работы.
+  var cache = CacheService.getScriptCache();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return 0;
+  try {
+    if (cache.get('mail_run')) return 0;
+    cache.put('mail_run', '1', Math.ceil(maxMs / 1000) + 90);
+  } finally {
+    lock.releaseLock();
+  }
+  try {
+    var rows = mailRows_();
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MAIL);
+    var webapp = scriptProps_().getProperty('WEBAPP_URL');
+    var every = Math.round(toNum_(readSettings_().mail_every_days)) * 24 * 3600 * 1000;
+    for (var r = 0; r < rows.length && done < limit; r++) {
+      var m = mailFromRow_(rows[r]);
+      if (m.status !== ML_RUN && !(m.status === ML_PLAN && m.at > 0 && m.at <= Date.now())) continue;
+      if (m.svc.wait && m.svc.wait > Date.now()) continue; // Telegram попросил подождать
+      if (m.status === ML_PLAN) { m.status = ML_RUN; sheet.getRange(r + 2, ML.status + 1).setValue(ML_RUN); SpreadsheetApp.flush(); }
+      var aud = mailAudience_(m.seg);
+      var col = aud.col;
+      if (col && col.mailId < 0) { col.mailId = aud.sheet.getLastColumn(); aud.sheet.getRange(1, col.mailId + 1).setValue('Остання розсилка').setFontWeight('bold'); }
+      if (col && col.mailAt < 0) { col.mailAt = aud.sheet.getLastColumn(); aud.sheet.getRange(1, col.mailAt + 1).setValue('Дата останньої розсилки').setFontWeight('bold'); }
+      var sent = m.sent, err = m.err, blocked = m.blocked, left = 0, stop = false;
+      for (var i = 0; i < aud.list.length; i++) {
+        var c = aud.list[i];
+        if (c.mailId === m.id) continue;                                            // эту рассылку он уже получил (или отметка поставлена перед отправкой)
+        if (every > 0 && c.mailAt > 0 && Date.now() - c.mailAt < every) continue;    // лимит частоты: недавно получал другую рассылку
+        if (stop || done >= limit || Date.now() - started > maxMs) { left++; continue; }
+        // Отметка — до отправки и сразу в таблицу: если запуск оборвётся, второго сообщения человек не получит.
+        aud.sheet.getRange(c.row, col.mailId + 1).setValue(m.id);
+        aud.sheet.getRange(c.row, col.mailAt + 1).setValue(new Date());
+        SpreadsheetApp.flush();
+        var res = mailSendOne_(token, m, c.uid, c.lang, webapp);
+        if (!res.ok && res.error_code === 429) { // лимит Telegram: ждём, сколько он просит
+          var wait = Number(res.parameters && res.parameters.retry_after) || 5;
+          if (wait <= 20) { Utilities.sleep(wait * 1000); res = mailSendOne_(token, m, c.uid, c.lang, webapp); }
+          if (!res.ok && res.error_code === 429) { // всё ещё нельзя — снимаем отметку и продолжим в следующий запуск
+            aud.sheet.getRange(c.row, col.mailId + 1).setValue(c.mailId);
+            aud.sheet.getRange(c.row, col.mailAt + 1).setValue(c.mailAt ? new Date(c.mailAt) : '');
+            m.svc.wait = Date.now() + Math.min(wait, 600) * 1000;
+            stop = true; left++;
+            continue;
+          }
+        }
+        done++;
+        if (res.ok) sent++;
+        else if (res.error_code === 403) blocked++; // «Заблокував бота» в листе «Клієнти» ставит tg_
+        else err++;
+        Utilities.sleep(MAIL_PAUSE_MS);
+      }
+      if (!stop) delete m.svc.wait;
+      var finished = left === 0;
+      if (finished) m.svc.end = Date.now();
+      sheet.getRange(r + 2, ML.sent + 1, 1, 3).setValues([[sent, err, blocked]]);
+      if (finished) sheet.getRange(r + 2, ML.status + 1).setValue(ML_DONE);
+      writeMailSvc_(sheet, r, m.svc);
+      SpreadsheetApp.flush();
+      if (finished) { var keep = actor_; actor_ = null; logAction_('Розсилка: завершено', m.id, '', 'надіслано: ' + sent + ', помилок: ' + err + ', блокувань: ' + blocked); actor_ = keep; }
+    }
+  } finally {
+    cache.remove('mail_run');
+  }
+  return done;
+}
+
+/** Итоги рассылки: кто нажал кнопку (событие mail в листе «Події») и кто заказал в течение 3 дней. Считаются на момент запроса. */
+function mailStats_(m) {
+  var clicks = {}, orders = 0;
+  var ev = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EVENTS);
+  if (ev && ev.getLastRow() > 1) {
+    ev.getRange(2, 1, ev.getLastRow() - 1, EVENT_HEADERS.length).getValues().forEach(function (row) {
+      if (String(row[3]) === 'mail' && String(row[4]).trim() === m.id) clicks[String(row[1])] = 1;
+    });
+  }
+  var got = {};
+  mailAudience_({ k: 'all' }).list.forEach(function (c) { if (c.mailId === m.id && c.mailAt > 0) got[c.uid] = c.mailAt; });
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
+  if (sheet && Object.keys(got).length) {
+    var all = sheet.getDataRange().getValues();
+    var col = orderCols_(sheet, all[0]);
+    var counted = {};
+    for (var r = 1; r < all.length; r++) {
+      var uid = String(all[r][col.uid]).trim();
+      var d = col.date >= 0 ? all[r][col.date] : '';
+      if (!got[uid] || counted[uid] || Object.prototype.toString.call(d) !== '[object Date]' || cell_(all[r], col.source).indexOf('test') >= 0) continue;
+      var dt = d.getTime() - got[uid];
+      if (dt >= 0 && dt <= MAIL_ORDER_DAYS * 24 * 3600 * 1000) { counted[uid] = 1; orders++; }
+    }
+  }
+  return { clicks: Object.keys(clicks).length, orders: orders };
+}
+
+/** Через 3 дня после завершения итоги записываются в лист «Розсилки» насовсем (позже отметки у клиентов займёт следующая рассылка). */
+function mailFreezeStats_() {
+  var rows = mailRows_();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MAIL);
+  rows.forEach(function (row, r) {
+    var m = mailFromRow_(row);
+    if (m.status !== ML_DONE || m.svc.fz || !(m.svc.end > 0)) return;
+    var s = mailStats_(m);
+    sheet.getRange(r + 2, ML.clicks + 1, 1, 2).setValues([[s.clicks, s.orders]]);
+    if (Date.now() - m.svc.end > MAIL_ORDER_DAYS * 24 * 3600 * 1000) { m.svc.fz = 1; writeMailSvc_(sheet, r, m.svc); }
+  });
+}
+
+/** «Не надсилати мені розсилки»: действует сразу. Сообщения о заказах приходят как раньше. */
+function mailUnsubscribe_(uid) {
+  uid = String(uid);
+  if (!/^\d+$/.test(uid)) return false;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = ensureClientsSheet_();
+    var values = sheet.getDataRange().getValues();
+    var col = mapHeaders_(values[0], CLIENT_COLS);
+    if (col.id < 0 || col.unsub < 0) return false;
+    for (var r = 1; r < values.length; r++) {
+      if (cell_(values[r], col.id) !== uid) continue;
+      sheet.getRange(r + 1, col.unsub + 1).setValue('так');
+      return true;
+    }
+    var row = [];
+    for (var b = 0; b < sheet.getLastColumn(); b++) row.push('');
+    row[col.id] = '\'' + uid; row[col.unsub] = 'так';
+    if (col.first >= 0) row[col.first] = new Date();
+    sheet.appendRow(row);
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
 }
