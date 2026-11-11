@@ -1128,7 +1128,7 @@ const smallTargets = page => page.evaluate(() => {
     st.gas.props.PERF_LOG = '1';
     await page.click('[data-stock="NUT-002"]');
     await page.waitForSelector('#perfLine');
-    ok(/product: \d+ мс = сервер \d+ \(підпис і права \d+, таблиця \d+, дія \d+, журнал \d+\) \+ мережа й Google \d+/.test(await text(page, '#perfLine')), 'с PERF_LOG = 1 внизу экрана видно время по этапам', await text(page, '#perfLine'));
+    ok(/product: \d+ мс = сервер \d+/.test(await text(page, '#perfLine')) && /\+ мережа й Google \d+/.test(await text(page, '#perfLine')), 'с PERF_LOG = 1 внизу экрана видно время от нажатия до ответа, сервер и сеть', await text(page, '#perfLine'));
     ok(await noOverflow(page), 'строка с замерами не ломает вёрстку');
     // строка замеров живёт только в админ-панели
     await page.click('[data-nav="back"]');

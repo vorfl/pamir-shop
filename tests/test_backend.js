@@ -846,8 +846,8 @@ console.log('Скорость админ-панели: меньше обраще
   ok(adm(g, 900, 'admin.orders')._t === undefined, 'без PERF_LOG в ответе нет замеров');
   g.props.PERF_LOG = '1';
   const t = adm(g, 900, 'admin.status', { num, code: 'c' });
-  ok(t.ok && t._t && typeof t._t.total === 'number' && t._t.marks.map(m => m[0]).join() === 'підпис і права,таблиця,Telegram,дія,журнал' && t._t.marks.every(m => typeof m[1] === 'number'),
-    'с PERF_LOG = 1 ответ несёт время по этапам: подпись и права, таблица, Telegram, журнал', t._t);
+  ok(t.ok && t._t && typeof t._t.total === 'number' && t._t.marks.map(m => m[0]).join() === 'властивості скрипта,підпис HMAC,відкриття таблиці,читання Адміни,права,блокування,читання Замовлення,запис,Telegram,дія,журнал' && t._t.marks.every(m => typeof m[1] === 'number'),
+    'с PERF_LOG = 1 ответ несёт время по мелким этапам: свойства, HMAC, открытие таблицы, чтение «Адміни», блокировка, чтение, запись, Telegram, журнал', t._t);
   ok(JSON.stringify(adm(g, 5555, 'admin.orders')) === JSON.stringify({ ok: false, error: 'forbidden' }), 'постороннему замеры не уходят: в ответе только отказ', adm(g, 5555, 'admin.orders'));
   ok(JSON.stringify(g.post({ action: 'admin.orders', initData: 'x' })) === JSON.stringify({ ok: false, error: 'forbidden' }), 'запросу без подписи замеры не уходят');
   ['orders.my', 'cart', 'notify', 'ev'].forEach(a => { const r = g.post({ action: a, initData: g.initData(U(44)), items: [], events: [{ e: 'open', t: Date.now() }], id: 'NUT-008' }); ok(r._t === undefined, 'запрос покупателя «' + a + '»: замеров в ответе нет', r); });

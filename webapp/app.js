@@ -3945,7 +3945,7 @@
    */
   var perfLines = [];
   function perfShow(action, total, srv) {
-    var marks = (srv.marks || []).map(function (m) { return m[0] + ' ' + m[1]; }).join(', ');
+    var marks = (srv.marks || []).filter(function (m) { return m[1] > 0; }).map(function (m) { return m[0] + ' ' + m[1]; }).join(', '); // этапы по 0 мс не показываем
     perfLines.push(action.replace('admin.', '') + ': ' + total + ' ' + t('perfMs') + ' = ' + t('perfServer') + ' ' + srv.total + (marks ? ' (' + marks + ')' : '') +
       ' + ' + t('perfNet') + ' ' + Math.max(0, total - srv.total));
     perfLines = perfLines.slice(-4);

@@ -1298,8 +1298,10 @@ function setOrderStatus_(num, code, actor, token, extraTarget) {
   var found;
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
+  perfMark_('блокування');
   try {
     found = findOrder_(num);
+    perfMark_('читання Замовлення');
     if (!found) return { ok: false, error: 'not_found' };
     if (found.o.status === status) return { ok: true, same: true, status: status, told: null };
     found.sheet.getRange(found.rowIndex, found.col.status + 1).setValue(status);
@@ -1314,7 +1316,7 @@ function setOrderStatus_(num, code, actor, token, extraTarget) {
   } finally {
     lock.releaseLock();
   }
-  perfMark_('таблиця');
+  perfMark_('запис');
 
   var o = found.o;
   o.status = status;
@@ -1519,10 +1521,12 @@ function setup() {
 function handleAdmin_(body) {
   var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
+  perfMark_('властивості скрипта'); // первое обращение к Script Properties в запросе
   if (!token) return { ok: false, error: 'not_configured' };
   var user = verifyInitData_(String(body.initData || ''), token);
-  var me = user ? adminAccess_(user.id, props) : null;
-  perfMark_('підпис і права');
+  perfMark_('підпис HMAC');
+  var me = user ? adminAccess_(user.id, props) : null; // внутри — этапы «відкриття таблиці» и «читання Адміни»
+  perfMark_('права');
   if (!me) return { ok: false, error: 'forbidden' };
   if (perf_) perf_.admin = true; // замеры отдаются только действующему админу
   actor_ = { id: String(user.id), name: clean_((user.first_name || '') + (user.username ? ' @' + user.username : ''), 60) || me.name || ROLE_UA[me.role] };
@@ -1669,10 +1673,12 @@ function updateProduct_(id, patch, create) {
   if (!create && !id) return { ok: false, error: 'bad_form' };
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
+  perfMark_('блокування');
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName(SHEET_PRODUCTS);
     var values = sheet.getDataRange().getValues();
+    perfMark_('читання Товари');
     var col = productCols_(sheet, values[0]);
     var cat = null;
     if (patch.cat !== undefined) { // лист «Категорії» читается, только когда категория действительно меняется
@@ -1772,16 +1778,18 @@ function updateProduct_(id, patch, create) {
       if (col.p100 >= 0 && !sheet.getRange(r + 1, col.p100 + 1).getFormula()) set(col.p100, isWeight && price ? Math.round(price) / 10 : '');
     }
     SpreadsheetApp.flush();
+    perfMark_('запис'); // запись ячеек и пересчёт формул таблицы
     clearCatalogCache_();
+    perfMark_('кеш каталогу');
     var result = { ok: true, product: adminProduct_(shadow, col) };
     if (actor_) logProductDiff_(beforeLog, result.product);
   } finally {
     lock.releaseLock();
   }
-  perfMark_('таблиця');
   // Товар снова в наличии — пишем тем, кто просил сообщить. Сбой рассылки правку не отменяет.
   if (patch.stock === true || patch.stock === 1) {
     try { notifyBackInStock_(); } catch (err) { console.error('back in stock: ' + (err && err.stack || err)); }
+    perfMark_('підписки');
   }
   return result;
 }
@@ -2536,8 +2544,11 @@ function adminList_(props) {
     seen[owner] = true;
   }
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ADMINS);
-  if (sheet && sheet.getLastRow() > 1) {
+  var hasAdminRows = !!sheet && sheet.getLastRow() > 1;
+  perfMark_('відкриття таблиці'); // первое обращение к таблице в запросе: Google открывает файл
+  if (hasAdminRows) {
     var values = sheet.getDataRange().getValues();
+    perfMark_('читання Адміни');
     var col = mapHeaders_(values[0], ADMIN_COLS);
     for (var r = 1; r < values.length; r++) {
       var row = values[r];
