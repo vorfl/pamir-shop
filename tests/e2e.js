@@ -1146,6 +1146,40 @@ const smallTargets = page => page.evaluate(() => {
     await page.context().close(); st.server.close();
   }
 
+  /* ---------------- 7. Этап 8, волна 2б ---------------- */
+  console.log('Волна 2б · Б3: оплата');
+  {
+    const st = await start(8821);
+    const g = st.gas, n = action => st.log.filter(x => x.action === action).length;
+    const num = g.post({ action: 'order', initData: g.initData({ id: 660, first_name: 'Покупець' }), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'card', lang: 'ua', rid: 'pay1' }).number;
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    await page.locator('.ord__head').first().click();
+    await page.waitForSelector('[data-pay="paid"]');
+    ok(/Оплата: не оплачено/.test(await text(page, '.ord__pay')) && await count(page, '[data-pay="refund"]') === 0, 'в карточке заказа: «Оплата: не оплачено» и кнопка «Оплачено»');
+    st.opt.delay = 400;
+    await page.evaluate(() => { const b = document.querySelector('[data-pay="paid"]'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('[data-pay="paid"]'); return b.classList.contains('is-busy') && b.disabled; }), 'кнопка «Оплачено» сразу показывает индикатор и блокируется');
+    await page.waitForFunction(() => /Оплата: оплачено/.test((document.querySelector('.ord__pay') || {}).textContent || ''));
+    st.opt.delay = 0;
+    ok(n('admin.paid') === 1 && g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '660' && /Оплату за замовлення/.test(m.payload.text)).length === 1, 'двойное нажатие — один запрос, клиенту одно сообщение', n('admin.paid'));
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'карточка заказа с оплатой: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/70-order-paid.png' });
+    await page.click('[data-pay="refund"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Позначити повернення оплати\?/.test(await text(page, '#sheet')) && (await text(page, '[data-action="cf-ok"]')).trim() === 'Повернено: ' + num && await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger')), '«Повернено» — с подтверждением и номером заказа', await text(page, '#sheet'));
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Оплата: повернено/.test((document.querySelector('.ord__pay') || {}).textContent || ''));
+    ok(g.sheets['Замовлення'].rows.slice(-1)[0].slice(-1)[0] === 'повернено', 'возврат записан в таблицу');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (админ)', errors);
+    await page.context().close();
+    const c = await open(browser, st.url, { uid: 660, query: '?view=orders' });
+    await c.page.waitForSelector('.my');
+    ok(/повернено/.test(await text(c.page, '.my__paid')), 'клиент видит статус оплаты в «Мої замовлення»', await text(c.page, '.my'));
+    ok(c.errors.length === 0, 'в консоли браузера нет ошибок (покупатель)', c.errors);
+    await c.page.context().close(); st.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);

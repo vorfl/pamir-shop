@@ -953,3 +953,10 @@ button.prod__main:active, .ord__head:active { background: var(--surface-sunken);
   display: none;
 }
 body[data-view="admin"] .perfline { display: block; } /* только в админ-панели: в магазине строки нет даже у самого админа */
+
+/* ================= Этап 8, волна 2б ================= */
+/* ---------- Б3. Оплата заказа ---------- */
+.ord__pay { margin: var(--space-2) 0; }
+.my__paid { margin: 0; }
+.pay__acts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin-bottom: var(--space-3); }
+.pay__acts .btn { padding: 0 var(--space-2); font-size: 13px; line-height: 16px; }

@@ -655,7 +655,7 @@ var ORDER_COLS = {
   num: ['№'], date: ['дата'], status: ['статус'], uid: ['telegram user id'], username: ['@username'],
   name: ['ім\'я', 'ім’я'], phone: ['телефон'], delivery: ['доставка'], city: ['місто'], branch: ['відділення'],
   pay: ['оплата'], comment: ['коментар'], items: ['товари'], total: ['сума'], lang: ['мова'],
-  source: ['джерело'], svc: ['службове'], ttn: ['ттн']
+  source: ['джерело'], svc: ['службове'], ttn: ['ттн'], paid: ['оплата: статус']
 };
 var STATUS_NEW = 'новий';
 var STATUS_BY_CODE = { c: 'підтверджено', n: 'немає в наявності', s: 'відправлено', d: 'виконано' };
@@ -935,7 +935,8 @@ function handleMyOrders_(body) {
       items: cell_(row, col.items),
       total: toNum_(col.total >= 0 ? row[col.total] : 0),
       delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
-      i: again, ttn: svcTtn_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch)
+      i: again, ttn: svcTtn_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch),
+      paid: paidCode_(cell_(row, col.paid))
     });
   }
   return { ok: true, orders: orders, done: done };
@@ -1034,7 +1035,7 @@ function findOrder_(num) {
         name: get('name'), phone: get('phone'), delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
         city: get('city'), branch: get('branch'), pay: payCode, comment: get('comment'),
         items: get('items'), total: toNum_(col.total >= 0 ? row[col.total] : 0),
-        lang: get('lang') === 'ru' ? 'ru' : 'ua', source: get('source'), svc: get('svc'),
+        lang: get('lang') === 'ru' ? 'ru' : 'ua', source: get('source'), svc: get('svc'), paid: get('paid'),
         npType: parseDelivery_(delivery).npType, point: parseDelivery_(delivery).point
       }
     };
@@ -1056,7 +1057,7 @@ function adminText_(o, statusNote) {
     '👤 ' + who,
     '📞 ' + escHtml_(o.phone),
     '🚚 ' + escHtml_(deliveryLine_(o)),
-    '💳 ' + PAY_UA[o.pay],
+    '💳 ' + PAY_UA[o.pay] + (paidCode_(o.paid) !== 'unpaid' ? ' · <b>' + PAID_UA[paidCode_(o.paid)] + '</b>' : ''),
     ''
   ];
   String(o.items).split('; ').forEach(function (s) { if (s) lines.push('• ' + escHtml_(s)); });
@@ -1075,7 +1076,8 @@ function adminKeyboard_(num) {
   return {
     inline_keyboard: [
       [{ text: '✅ Підтвердити', callback_data: 'st:' + num + ':c' }, { text: '❌ Немає в наявності', callback_data: 'st:' + num + ':n' }],
-      [{ text: '📦 Відправлено', callback_data: 'st:' + num + ':s' }, { text: '✔️ Виконано', callback_data: 'st:' + num + ':d' }]
+      [{ text: '📦 Відправлено', callback_data: 'st:' + num + ':s' }, { text: '✔️ Виконано', callback_data: 'st:' + num + ':d' }],
+      [{ text: '💳 Оплачено', callback_data: 'pay:' + num }]
     ]
   };
 }
@@ -1275,6 +1277,16 @@ function handleCallback_(cq, token, admins) {
   // Права проверяются при каждом нажатии: по тому, кто нажал (или по чату, если это чат из ADMIN_CHAT_IDS).
   var me = adminAccess_(fromId, props) || adminAccess_(chatId, props);
   if (!me) { answer('Немає доступу'); return; }
+  var pay = String(cq.data || '').match(/^pay:(P-\d+)$/);
+  if (pay) { // «💳 Оплачено» под сообщением о заказе
+    if (!me.perms.st) { answer('У вас немає права змінювати статуси замовлень'); return; }
+    actor_ = { id: fromId, name: clean_((cq.from && cq.from.first_name) || me.name || '', 60) };
+    var paidRes = setOrderPaid_(pay[1], 'paid', token, cq.message ? [chatId, cq.message.message_id] : null);
+    if (paidRes.error === 'not_found') answer('Замовлення ' + pay[1] + ' не знайдено в таблиці');
+    else if (paidRes.same) answer('Уже позначено: оплачено');
+    else answer('Оплату позначено' + (paidRes.told === false ? '. Клієнту написати не вдалося' : ''));
+    return;
+  }
   var m = String(cq.data || '').match(/^st:(P-\d+):([cnsd])$/);
   if (!m) { answer(''); return; }
   if (!me.perms.st) { answer('У вас немає права змінювати статуси замовлень'); return; }
@@ -1570,6 +1582,7 @@ function handleAdmin_(body) {
   if (a === 'admin.adminSave') return deny('admins') || saveAdmin_(me, body, props, token);
   if (a === 'admin.log') return deny('admins') || listLog_();
   if (a === 'admin.ttn') return deny('st') || setTtn_(String(body.num || ''), String(body.ttn || ''), token);
+  if (a === 'admin.paid') return deny('st') || setOrderPaid_(String(body.num || ''), String(body.state || ''), token, null); // «Оплачено» / «Повернено»
   if (a === 'admin.reviews') return deny('reviews') || listReviews_();
   if (a === 'admin.review') return deny('reviews') || moderateReview_(String(body.id || ''), body.ok === true, token);
   return { ok: false, error: 'unknown_action' };
@@ -1608,7 +1621,8 @@ function listOrders_() {
         status: status, uid: cell_(row, col.uid), username: cell_(row, col.username), name: cell_(row, col.name),
         phone: cell_(row, col.phone), delivery: cell_(row, col.delivery), city: cell_(row, col.city),
         branch: cell_(row, col.branch), pay: cell_(row, col.pay), comment: cell_(row, col.comment),
-        items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(cell_(row, col.svc))
+        items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(cell_(row, col.svc)),
+        paid: paidCode_(cell_(row, col.paid))
       });
     }
   }
@@ -4541,3 +4555,89 @@ function perfEnd_(out) {
     console.warn('perf: ' + err);
   }
 }
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2б · Б3: отметка «Оплачено»                                 */
+/* ======================================================================== */
+/*
+ * Оплату отмечает админ вручную (перевод на карту, наличные). Колонка «Оплата: статус» в листе «Замовлення»
+ * появляется сама при первой отметке. Номер карты нигде не хранится: ни в коде, ни в таблице, ни на витрине.
+ */
+
+var PAID_HEAD = 'Оплата: статус';
+var PAID_UA = { unpaid: 'не оплачено', paid: 'оплачено', refund: 'повернено' };
+
+/** Значение ячейки → код. Пусто и всё непонятное — «не оплачено». */
+function paidCode_(v) {
+  var s = String(v === null || v === undefined ? '' : v).trim().toLowerCase();
+  if (/^(оплачен|сплачен|paid)/.test(s)) return 'paid';
+  if (/^(поверн|возвра|refund)/.test(s)) return 'refund';
+  return 'unpaid';
+}
+
+/**
+ * Меняет статус оплаты заказа. state: paid | unpaid | refund.
+ * Клиенту сообщение «Оплату отримали» уходит один раз за всю жизнь заказа (отметка pd в служебной ячейке):
+ * повторное нажатие и «оплачено → не оплачено → оплачено» второго сообщения не шлют.
+ */
+function setOrderPaid_(num, state, token, extraTarget) {
+  if (!PAID_UA[state]) return { ok: false, error: 'bad_form' };
+  var found, first = false, was;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    found = findOrder_(num);
+    if (!found) return { ok: false, error: 'not_found' };
+    var sheet = found.sheet, col = found.col;
+    if (col.paid < 0) { // колонка необязательная: появляется после «Службове» и «ТТН» при первой отметке
+      col.paid = sheet.getLastColumn();
+      sheet.getRange(1, col.paid + 1).setValue(PAID_HEAD).setFontWeight('bold');
+    }
+    was = paidCode_(found.o.paid);
+    if (was === state) return { ok: true, same: true, paid: state, told: null };
+    sheet.getRange(found.rowIndex, col.paid + 1).setValue(PAID_UA[state]);
+    if (state === 'paid' && col.svc >= 0) {
+      var sv = {};
+      try { sv = JSON.parse(found.o.svc || '{}') || {}; } catch (err) { sv = null; } // служебная ячейка испорчена — клиенту не пишем, чтобы не написать дважды
+      if (sv && !sv.pd) {
+        sv.pd = Date.now();
+        found.o.svc = JSON.stringify(sv);
+        sheet.getRange(found.rowIndex, col.svc + 1).setValue(found.o.svc);
+        first = true;
+      }
+    }
+    SpreadsheetApp.flush();
+    logAction_('Замовлення: оплата', num, PAID_UA[was], PAID_UA[state]);
+  } finally {
+    lock.releaseLock();
+  }
+  var o = found.o;
+  o.paid = PAID_UA[state];
+  var targets = [];
+  try { targets = (JSON.parse(o.svc || '{}').m) || []; } catch (err) { targets = []; }
+  if (extraTarget && !targets.some(function (t) { return String(t[0]) === String(extraTarget[0]) && t[1] === extraTarget[1]; })) targets.push(extraTarget);
+  var text = adminText_(o, ''), kb = adminKeyboard_(o.num);
+  tgAll_(token, targets.map(function (t) {
+    return ['editMessageText', { chat_id: t[0], message_id: t[1], text: text, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb }];
+  }));
+  var told = null;
+  if (first && o.uid && String(o.source).indexOf('test') < 0) {
+    told = !!tg_(token, 'sendMessage', { chat_id: o.uid, text: o.lang === 'ru'
+      ? 'Оплату за заказ ' + o.num + ' получили. Спасибо!' : 'Оплату за замовлення ' + o.num + ' отримали. Дякуємо!' }).ok;
+  }
+  return { ok: true, paid: state, told: told };
+}
+
+/**
+ * Платёжный провайдер — заглушка с интерфейсом. Договора с провайдером нет, оплата «Онлайн» на витрине скрыта.
+ * Когда появится договор: реализовать три функции ниже и добавить способ оплаты в настройки.
+ */
+var PayProvider_ = {
+  enabled: false,
+  /** Создать платёж по заказу. Должен вернуть { ok, url, id }. */
+  create: function (order) { return { ok: false, error: 'not_configured' }; },
+  /** Проверить статус платежа. Должен вернуть { ok, paid }. */
+  status: function (paymentId) { return { ok: false, error: 'not_configured' }; },
+  /** Принять уведомление провайдера (callback): проверить подпись и вызвать setOrderPaid_. */
+  callback: function (e) { return { ok: false, error: 'not_configured' }; }
+};

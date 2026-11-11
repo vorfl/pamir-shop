@@ -2127,6 +2127,7 @@
         '<span class="my__date">' + esc(o.date) + '</span></div>' +
         '<ul class="my__items">' + items + '</ul>' +
         (o.ttn ? '<p class="my__ttn"><span>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b></span><button type="button" class="btn" data-w1="open" data-url="https://novaposhta.ua/tracking/?cargo_number=' + esc(o.ttn) + '">' + esc(t('track')) + '</button></p>' : '') +
+        (o.paid === 'paid' || o.paid === 'refund' ? '<p class="my__paid"><span class="badge ' + (o.paid === 'paid' ? 'badge--stock' : 'badge--out') + '">' + esc(t('pay_' + o.paid)) + '</span></p>' : '') +
         '<div class="my__foot"><span class="total">' + money(o.total) + '</span>' +
         (o.i ? '<button type="button" class="btn btn--soft" data-repeat="' + esc(o.num) + '">' + icon('rotate') + esc(t('repeat')) + '</button>'
              : '<span class="my__old">' + esc(t('repeatOld')) + '</span>') + '</div></li>';
@@ -2419,7 +2420,7 @@
         }).join('') + '</ul>' +
           '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br><a href="tel:' + esc(o.phone) + '">' + esc(o.phone) + '</a></p>' +
           '<p>' + esc(o.delivery) + (o.city ? ': ' + esc(o.city) + ', ' + esc(o.branch) : '') + '<br>' + esc(o.pay) + '</p>' +
-          (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) +
+          (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) + payAdminHtml(o) +
           (can('st') ? '<div class="ord__acts">' + STATUS_BTNS.map(function (b) {
             var pend = adm.stPending && adm.stPending.num === o.num; // статус уже показан новым, сервер ещё отвечает
             return '<button type="button" class="btn' + (o.status === b[2] ? ' btn--soft' : '') + (pend && adm.stPending.code === b[0] ? ' is-busy" aria-busy="true' : '') +
@@ -2956,6 +2957,8 @@
     if (name === 'adm-invite-done') { goBack(); return true; }
     if (name === 'adm-log') { loadLog(); return true; }
     if (name === 'adm-arch') { loadArchive(); return true; }
+    var payBtn = e.target.closest('[data-pay]');
+    if (payBtn) { if (!payBtn.disabled) markPaid(payBtn.getAttribute('data-num'), payBtn.getAttribute('data-pay'), payBtn); return true; }
     if (name === 'adm-archive') { askArchive(adminProduct(adm.edit)); return true; }
     if (name === 'adm-cat-del') { askDeleteCategory(act); return true; }
     if (name === 'adm-admin-del') { askDeleteAdmin(adminEntry(adm.admEdit)); return true; }
@@ -3930,6 +3933,61 @@
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_W2[lang]).forEach(function (k) { I18N[lang][k] = I18N_W2[lang][k]; });
   });
+
+  /* ======================================================================== */
+  /* ЭТАП 8, волна 2б: оплата, специи, опт, рассылка                           */
+  /* ======================================================================== */
+  var I18N_2B = {
+    ua: {
+      payState: 'Оплата', pay_unpaid: 'не оплачено', pay_paid: 'оплачено', pay_refund: 'повернено', payMark: 'Оплачено', payRefund: 'Повернено',
+      payUndo: 'Не оплачено', payRefundTitle: 'Позначити повернення оплати?', payRefundText: 'Замовлення {num}: статус оплати стане «повернено». Клієнту повідомлення не надсилається.',
+      payRefundOk: 'Повернено: {num}'
+    },
+    ru: {
+      payState: 'Оплата', pay_unpaid: 'не оплачено', pay_paid: 'оплачено', pay_refund: 'возвращено', payMark: 'Оплачено', payRefund: 'Возвращено',
+      payUndo: 'Не оплачено', payRefundTitle: 'Отметить возврат оплаты?', payRefundText: 'Заказ {num}: статус оплаты станет «возвращено». Клиенту сообщение не отправляется.',
+      payRefundOk: 'Возвращено: {num}'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_2B[lang]).forEach(function (k) { I18N[lang][k] = I18N_2B[lang][k]; });
+  });
+
+  /* ---- Б3. Оплата заказа ---- */
+  /** Статус оплаты и кнопки в карточке заказа. Старый бэкенд статус не присылает — тогда блока нет. */
+  function payAdminHtml(o) {
+    if (o.paid === undefined) return '';
+    var html = '<p class="ord__pay">' + esc(t('payState')) + ': <b>' + esc(t('pay_' + o.paid)) + '</b></p>';
+    if (!can('st')) return html;
+    return html + '<div class="pay__acts">' +
+      (o.paid === 'paid'
+        ? '<button type="button" class="btn btn--ghost-danger" data-pay="refund" data-num="' + esc(o.num) + '">' + esc(t('payRefund')) + '</button>' +
+          '<button type="button" class="btn" data-pay="unpaid" data-num="' + esc(o.num) + '">' + esc(t('payUndo')) + '</button>'
+        : '<button type="button" class="btn btn--soft" data-pay="paid" data-num="' + esc(o.num) + '">' + esc(t('payMark')) + '</button>') + '</div>';
+  }
+  function markPaid(num, kind, btn) {
+    var order = null;
+    (adm.orders || []).forEach(function (o) { if (o.num === num) order = o; });
+    if (!order || adm.busy) return;
+    function send(done) {
+      adm.busy = true;
+      api('admin.paid', { num: num, state: kind }).then(function (res) {
+        adm.busy = false;
+        if (!res || !res.ok) { var err = apiErr(res); if (done) done(err); else { btnFree(btn); haptic('error'); toast(err); } return; }
+        order.paid = res.paid;
+        if (done) done();
+        haptic('success');
+        toast(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''));
+        renderAdminList();
+      }).catch(function () { adm.busy = false; if (done) done(t('admFail')); else { btnFree(btn); toast(t('admFail')); } });
+    }
+    if (kind === 'refund') { // возврат — заметное действие: с подтверждением и названием заказа
+      askConfirm({ title: t('payRefundTitle'), text: tf('payRefundText', { num: num }), ok: tf('payRefundOk', { num: num }), danger: true, run: send });
+      return;
+    }
+    btnBusy(btn, '.pay__acts');
+    send(null);
+  }
 
   /* ---- Скорость админ-панели ---- */
   /** Витрина после правок в панели обновляется один раз, а не после каждого нажатия: несколько правок подряд — один запрос каталога. */

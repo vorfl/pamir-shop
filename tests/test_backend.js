@@ -51,7 +51,7 @@ console.log('Заказ');
   const last = rows[rows.length - 1];
   ok(last[2] === 'новий' && last[13] === 465 && last[3] === '42' && /Курага.*500 г × 2 = 380 ₴/.test(last[12]), 'строка заказа в таблице', last.slice(0, 14));
   const adminMsg = g.sent.filter(m => m.method === 'sendMessage' && m.payload.chat_id === '900').pop();
-  ok(adminMsg && adminMsg.payload.reply_markup.inline_keyboard.length === 2 && /P-0008/.test(adminMsg.payload.text), 'админ получил сообщение с кнопками');
+  ok(adminMsg && adminMsg.payload.reply_markup.inline_keyboard.length === 3 && adminMsg.payload.reply_markup.inline_keyboard[2][0].callback_data === 'pay:P-0008' && /P-0008/.test(adminMsg.payload.text), 'админ получил сообщение с кнопками');
   ok(g.sent.some(m => m.method === 'sendMessage' && m.payload.chat_id === '42'), 'клиент получил подтверждение');
   ok(order(g, U(42), [{ id: 'DRY-039', g: 500, q: 2 }], 1).error === 'changed', 'чужая сумма отклоняется (цены считает сервер)');
   ok(order(g, U(42), [{ id: 'DRY-005', g: 250, q: 1 }], 120).error === 'changed', 'товар «немає» заказать нельзя');
@@ -852,6 +852,46 @@ console.log('Скорость админ-панели: меньше обраще
   ok(JSON.stringify(g.post({ action: 'admin.orders', initData: 'x' })) === JSON.stringify({ ok: false, error: 'forbidden' }), 'запросу без подписи замеры не уходят');
   ['orders.my', 'cart', 'notify', 'ev'].forEach(a => { const r = g.post({ action: a, initData: g.initData(U(44)), items: [], events: [{ e: 'open', t: Date.now() }], id: 'NUT-008' }); ok(r._t === undefined, 'запрос покупателя «' + a + '»: замеров в ответе нет', r); });
   ok(g.get({ action: 'catalog' })._t === undefined && order(g, U(43), [{ id: 'NUT-007', g: 0, q: 1 }], 85)._t === undefined, 'в каталог и заказ замеры не попадают');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+/* ============================ Этап 8, волна 2б ============================ */
+console.log('Волна 2б · Б3: оплата');
+{
+  const g = fresh();
+  addAdmin(g, 770, 'manager', ['stock']); // без права на статусы
+  addAdmin(g, 771, 'manager', ['st']);
+  const num = order(g, U(42), [{ id: 'NUT-007', g: 0, q: 1 }], 85).number;
+  const O = g.sheets['Замовлення'].rows, row = n => O.find(r => r[0] === n);
+  const toClient = (uid) => g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === String(uid) && /Оплату за/.test(m.payload.text));
+  ok(O[0].indexOf('Оплата: статус') < 0, 'до первой отметки колонки «Оплата: статус» нет');
+  ok(adm(g, 770, 'admin.paid', { num, state: 'paid' }).error === 'no_perm' && adm(g, 5555, 'admin.paid', { num, state: 'paid' }).error === 'forbidden' && O[0].indexOf('Оплата: статус') < 0, '«Оплачено» без права «Замовлення: статуси» нельзя');
+  tgPress(g, 770, 'pay:' + num);
+  ok(O[0].indexOf('Оплата: статус') < 0 && /немає права/.test(g.sent.filter(m => m.method === 'answerCallbackQuery').pop().payload.text), 'кнопка в сообщении без права не срабатывает');
+  const r = adm(g, 771, 'admin.paid', { num, state: 'paid' });
+  const pc = O[0].indexOf('Оплата: статус');
+  ok(r.ok && r.paid === 'paid' && r.told === true && pc === O[0].length - 1 && pc > O[0].indexOf('Службове') && row(num)[pc] === 'оплачено', 'оплата отмечена, колонка появилась в конце листа', [r, O[0].slice(-3)]);
+  ok(toClient(42).length === 1 && toClient(42)[0].payload.text === 'Оплату за замовлення ' + num + ' отримали. Дякуємо!', 'клиент получил «Оплату за замовлення … отримали. Дякуємо!»', toClient(42).map(m => m.payload.text));
+  ok(g.sent.some(m => m.method === 'editMessageText' && /оплачено/.test(m.payload.text) && m.payload.reply_markup.inline_keyboard.length === 3), 'сообщение о заказе у админа обновлено: видно «оплачено»');
+  const again = adm(g, 771, 'admin.paid', { num, state: 'paid' });
+  tgPress(g, 771, 'pay:' + num);
+  ok(again.ok && again.same === true && toClient(42).length === 1 && /Уже позначено/.test(g.sent.filter(m => m.method === 'answerCallbackQuery').pop().payload.text), 'повторное нажатие (в панели и в боте) не шлёт второе сообщение');
+  ok(adm(g, 771, 'admin.paid', { num, state: 'unpaid' }).ok && row(num)[pc] === 'не оплачено' && adm(g, 771, 'admin.paid', { num, state: 'paid' }).told === null && toClient(42).length === 1, '«не оплачено» → снова «оплачено»: клиенту второй раз не пишем');
+  const rf = adm(g, 771, 'admin.paid', { num, state: 'refund' });
+  ok(rf.ok && rf.paid === 'refund' && row(num)[pc] === 'повернено' && toClient(42).length === 1, '«Повернено» записано, клиенту сообщение не уходит', rf);
+  ok(adm(g, 771, 'admin.paid', { num, state: 'online' }).error === 'bad_form' && adm(g, 771, 'admin.paid', { num: 'P-9999', state: 'paid' }).error === 'not_found', 'неизвестный статус и неизвестный заказ отклоняются');
+  const num2 = order(g, U(43), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { lang: 'ru' }).number;
+  tgPress(g, 900, 'pay:' + num2);
+  ok(row(num2)[pc] === 'оплачено' && toClient(43).length === 1 && toClient(43)[0].payload.text === 'Оплату за заказ ' + num2 + ' получили. Спасибо!', 'кнопка «💳 Оплачено» в боте: клиенту на русском', toClient(43).map(m => m.payload.text));
+  const my42 = g.post({ action: 'orders.my', initData: g.initData(U(42)) }), my43 = g.post({ action: 'orders.my', initData: g.initData(U(43)) });
+  ok(my42.orders[0].paid === 'refund' && my43.orders[0].paid === 'paid', 'статус оплаты виден в «Мої замовлення»', [my42.orders[0].paid, my43.orders[0].paid]);
+  const ao = adm(g, 900, 'admin.orders').orders;
+  ok(ao.find(o => o.num === num2).paid === 'paid' && ao.find(o => o.num === 'P-0001').paid === 'unpaid', 'в панели у заказа есть статус оплаты; пусто = не оплачено');
+  row('P-0001')[pc] = 'ОПЛАЧЕНО';
+  ok(adm(g, 900, 'admin.orders').orders.find(o => o.num === 'P-0001').paid === 'paid', 'статус, вписанный в таблицу руками, читается без учёта регистра');
+  ok(logRows(g, 'Замовлення: оплата').some(x => x[4] === num && x[5] === 'не оплачено' && x[6] === 'оплачено') && logRows(g, 'Замовлення: оплата').some(x => x[6] === 'повернено'), 'оплата и возврат записаны в «Журнал»');
+  ok(g.sandbox.PayProvider_.enabled === false && g.sandbox.PayProvider_.create({}).error === 'not_configured' && g.get({ action: 'catalog' }).shop.pay.indexOf('online') < 0, 'платёжный провайдер — выключенная заглушка, оплаты «Онлайн» на витрине нет');
+  ok(!/\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}/.test(require('fs').readFileSync(CODE, 'utf8')), 'в коде нет номера карты');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
