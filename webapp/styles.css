@@ -925,3 +925,8 @@ button.prod__main:active, .ord__head:active { background: var(--surface-sunken);
 .pager .pager__arrow { border-color: var(--line-strong); background: var(--surface-raised); font-size: 22px; line-height: 1; }
 .pager button:disabled { opacity: .35; cursor: not-allowed; }
 .pager__gap { flex: none; display: grid; place-items: center; min-width: var(--tap); height: var(--tap); color: var(--ink-muted); font-weight: 700; }
+
+/* ---------- А3. Товары в админ-панели: чипы категорий и фильтры ---------- */
+#admPChips { display: flex; flex-direction: column; gap: var(--space-2); }
+#admPChips:empty { display: none; }
+.chips--wrap { flex-wrap: wrap; overflow: visible; }

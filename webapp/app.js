@@ -2173,7 +2173,8 @@
   var CAT_ICONS = ['nut', 'cherry', 'candy', 'flame', 'leaf', 'coffee'];
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
     edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false, sales: null, salesOpen: false,
-    me: null, admins: null, invites: null, permList: null, admEdit: '', invite: null, logOpen: false, log: null, reviews: null, pending: {} };
+    me: null, admins: null, invites: null, permList: null, admEdit: '', invite: null, logOpen: false, log: null, reviews: null, pending: {},
+    pp: 1, pcat: '', pf: { out: false, hidden: false, nophoto: false } }; // товары в панели: страница, категория, фильтры
 
   /** Есть ли у меня право. Пока сервер не прислал роль (или бэкенд ещё старый) — показываем всё: решает всё равно сервер. */
   function can(perm) { return !adm.me || adm.me.perms.indexOf(perm) >= 0; }
@@ -2245,7 +2246,8 @@
         }).join('') + '</div>';
     } else if (adm.tab === 'products') {
       html += (can('text') && can('price') && can('stock') ? '<button type="button" class="btn btn--primary btn--block" data-edit="+">' + icon('plus') + esc(t('admAdd')) + '</button>' : '') +
-        '<input class="input" id="admPQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchP')) + '" value="' + esc(adm.pq) + '">';
+        '<input class="input" id="admPQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchP')) + '" value="' + esc(adm.pq) + '">' +
+        '<div id="admPChips">' + productChipsHtml() + '</div>';
     } else if (adm.tab === 'cats') {
       html += '<button type="button" class="btn btn--primary btn--block" data-cat="+">' + icon('plus') + esc(t('admAddCat')) + '</button>';
     } else if (adm.tab === 'admins') {
@@ -2325,6 +2327,14 @@
   function renderAdminList() {
     var box = document.getElementById('admList');
     if (box) box.innerHTML = adminListHtml();
+    // Числа на чипах-фильтрах товаров («Без фото · 12») обновляются вместе со списком; прокрутка ряда категорий сохраняется.
+    var chips = document.getElementById('admPChips');
+    if (chips && adm.tab === 'products') {
+      var row = chips.querySelector('.chips'), left = row ? row.scrollLeft : 0;
+      chips.innerHTML = productChipsHtml();
+      row = chips.querySelector('.chips');
+      if (row) row.scrollLeft = left;
+    }
   }
 
   function adminListHtml() {
@@ -2374,20 +2384,48 @@
     return p.price > 0 ? String(p.price).replace('.', ',') + NBSP + '₴' + (p.t === 'w' ? '/' + weight(1000) : '') : '—';
   }
 
-  function productsHtml() {
+  /** Товары панели после поиска, категории и фильтров. Поиск идёт по всем товарам, а не по открытой странице. */
+  function adminProductList() {
     var q = adm.pq.trim().toLowerCase();
-    var list = (adm.products || []).filter(function (p) {
+    return (adm.products || []).filter(function (p) {
+      if (adm.pcat && p.cat !== adm.pcat) return false;
+      if (adm.pf.out && p.stock) return false;
+      if (adm.pf.hidden && !p.hidden) return false;
+      if (adm.pf.nophoto && p.img) return false;
       return !q || (p.ua + ' ' + p.ru + ' ' + p.id).toLowerCase().indexOf(q) >= 0;
     });
+  }
+
+  /** Чипы над списком товаров: категории и фильтры «немає в наявності», «приховані», «без фото» (с числом товаров). */
+  function productChipsHtml() {
+    var all = adm.products || [];
+    if (!all.length) return '';
+    var cats = [], seenCat = {};
+    (adm.cats || []).forEach(function (c) { if (!seenCat[c.ua]) { seenCat[c.ua] = 1; cats.push(c.ua); } });
+    all.forEach(function (p) { if (p.cat && !seenCat[p.cat]) { seenCat[p.cat] = 1; cats.push(p.cat); } }); // категория, которой нет в листе «Категорії»
+    function n(test) { return all.filter(test).length; }
+    var flags = [['out', 'admFltOut', n(function (p) { return !p.stock; })], ['hidden', 'admFltHidden', n(function (p) { return p.hidden; })],
+      ['nophoto', 'admFltNoPhoto', n(function (p) { return !p.img; })]];
+    return '<div class="chips chips--flush" role="group" aria-label="' + esc(t('admCat')) + '">' +
+      '<button type="button" class="chip" data-pcat="" aria-pressed="' + (adm.pcat === '') + '">' + esc(t('admAll')) + '</button>' +
+      cats.map(function (c) { return '<button type="button" class="chip" data-pcat="' + esc(c) + '" aria-pressed="' + (adm.pcat === c) + '">' + esc(c) + '</button>'; }).join('') + '</div>' +
+      '<div class="chips chips--flush chips--wrap" role="group">' + flags.map(function (f) {
+        return '<button type="button" class="chip" data-pflt="' + f[0] + '" aria-pressed="' + !!adm.pf[f[0]] + '">' + esc(t(f[1])) + ' · ' + f[2] + '</button>';
+      }).join('') + '</div>';
+  }
+
+  function productsHtml() {
+    var list = adminProductList();
     if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
-    var html = '<ul class="lines">' + list.slice(0, 60).map(function (p) {
+    adm.pp = clampPage(adm.pp, list.length, PAGE_SIZE);
+    var from = (adm.pp - 1) * PAGE_SIZE;
+    var html = '<ul class="lines">' + list.slice(from, from + PAGE_SIZE).map(function (p) {
       return '<li class="prod"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
         '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) +
         (p.hidden ? ' · ' + esc(t('admHiddenTag')) : '') + (p.img ? '' : ' · ' + esc(t('admNoPhoto'))) + '</span></button>' +
         '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"' + (can('stock') && !adm.pending[p.id] ? '' : ' disabled') + (adm.pending[p.id] ? ' aria-busy="true"' : '') + '><span></span></button></li>';
     }).join('') + '</ul>';
-    if (list.length > 60) html += '<p class="state__text adm__msg">' + esc(t('admMore')) + '</p>';
-    return html;
+    return html + pagerHtml(list.length, adm.pp, PAGE_SIZE);
   }
 
   function adminProduct(id) {
@@ -2785,6 +2823,21 @@
       });
       renderAdminList(); return true;
     }
+    var pc = e.target.closest('[data-pcat], [data-pflt]');
+    if (pc) { // категория или фильтр товаров: список с первой страницы
+      if (pc.hasAttribute('data-pcat')) adm.pcat = pc.getAttribute('data-pcat');
+      else adm.pf[pc.getAttribute('data-pflt')] = !adm.pf[pc.getAttribute('data-pflt')];
+      adm.pp = 1;
+      Array.prototype.forEach.call(document.querySelectorAll('#admPChips .chip'), function (b) {
+        b.setAttribute('aria-pressed', String(b.hasAttribute('data-pcat') ? b.getAttribute('data-pcat') === adm.pcat : !!adm.pf[b.getAttribute('data-pflt')]));
+      });
+      renderAdminList(); return true;
+    }
+    var pg = e.target.closest('[data-page]');
+    if (pg) {
+      if (!pg.disabled) { adm.pp = Number(pg.getAttribute('data-page')); renderAdminList(); scrollToList(document.getElementById('admList')); }
+      return true;
+    }
     var ord = e.target.closest('[data-ord]');
     if (ord) { var num = ord.getAttribute('data-ord'); adm.open = adm.open === num ? '' : num; renderAdminList(); return true; }
     var st = e.target.closest('[data-st]');
@@ -2926,7 +2979,7 @@
     el.page.addEventListener('input', function (e) {
       var input = e.target;
       if (input.id === 'admQ') { adm.q = input.value; renderAdminList(); return; }
-      if (input.id === 'admPQ') { adm.pq = input.value; renderAdminList(); return; }
+      if (input.id === 'admPQ') { adm.pq = input.value; adm.pp = 1; renderAdminList(); return; }
       if (!input.name || state.view !== 'checkout') return;
       if (input.name === 'phone') input.value = formatPhone(input.value);
       if (input.getAttribute('aria-invalid')) setError(input.name, '');
@@ -3745,10 +3798,12 @@
   var I18N_W2 = {
     ua: {
       admSwFail: 'Не вдалося зберегти — повернули, як було.',
+      admFltOut: 'Немає в наявності', admFltHidden: 'Приховані', admFltNoPhoto: 'Без фото',
       pgRange: 'Товари {a}–{b} з {n}', pgPrev: 'Попередня сторінка', pgNext: 'Наступна сторінка', pgNav: 'Сторінки', pgPage: 'Сторінка {n}'
     },
     ru: {
       admSwFail: 'Не удалось сохранить — вернули, как было.',
+      admFltOut: 'Нет в наличии', admFltHidden: 'Скрытые', admFltNoPhoto: 'Без фото',
       pgRange: 'Товары {a}–{b} из {n}', pgPrev: 'Предыдущая страница', pgNext: 'Следующая страница', pgNav: 'Страницы', pgPage: 'Страница {n}'
     }
   };

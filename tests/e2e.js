@@ -812,6 +812,75 @@ const smallTargets = page => page.evaluate(() => {
     await w.page.context().close(); st.server.close();
   }
 
+  console.log('Волна 2а · А3: товары в админ-панели');
+  {
+    const st = await start(8818, undefined, s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], base = rows.slice(1).filter(r => /^NUT-00[1-6]$/.test(r[0]));
+      for (let i = 0; i < 180; i++) { const r = base[i % base.length].slice(); r[0] = 'NUT-' + (500 + i); r[3] = 'Товар номер ' + (500 + i); rows.push(r); }
+    });
+    const head = st.gas.sheets['Товари'].rows[0];
+    const all = st.gas.sheets['Товари'].rows.slice(1).filter(r => r[0] && r[head.indexOf('Назва (UA)')]);
+    const col = name => head.findIndex(h => String(h).indexOf(name) === 0);
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('.prod');
+    const range = () => text(page, '#admList .pager__range');
+    const cur = () => page.locator('#admList .pager [aria-current="page"]').innerText();
+    ok(all.length === 219 && await count(page, '.prod') === 20, 'в панели 20 товаров на странице (всего 219, включая скрытый)', [all.length, await count(page, '.prod')]);
+    ok(await range() === 'Товари 1–20 з 219' && !/Показано перші 60/.test(await text(page, '.page')), 'подпись «Товари 1–20 з 219», ограничения «первые 60» больше нет', await range());
+    ok((await page.locator('#admList .pager__row > *').allInnerTexts()).join(' ') === '‹ 1 2 3 … 11 ›', 'те же номера страниц, что на витрине');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'список товаров: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/56-admin-products.png', fullPage: true });
+    const firstId = await page.locator('.prod [data-edit]').first().getAttribute('data-edit');
+    await page.click('#admList .pager [data-page="2"]');
+    ok(await range() === 'Товари 21–40 з 219' && await page.locator('.prod [data-edit]').first().getAttribute('data-edit') !== firstId, 'страница 2 показывает следующие 20 товаров', await range());
+    const y = await page.evaluate(() => ({ y: window.scrollY, top: document.getElementById('admList').getBoundingClientRect().top }));
+    ok(y.top >= 0 && y.top < 60, 'после смены страницы список прокручен к своему началу', y);
+
+    // поиск ищет по всем товарам, а не по открытой странице
+    await page.fill('#admPQ', 'номер 679');
+    await page.waitForFunction(() => document.querySelectorAll('.prod').length === 1);
+    ok(await page.locator('.prod [data-edit]').first().getAttribute('data-edit') === 'NUT-679', 'поиск находит товар с последней страницы');
+    await page.fill('#admPQ', '');
+    await page.waitForFunction(() => document.querySelectorAll('.prod').length === 20);
+    ok(await cur() === '1', 'поиск возвращает на страницу 1');
+
+    // категории чипами
+    const catName = await page.locator('#admPChips [data-pcat]').nth(1).getAttribute('data-pcat');
+    const inCat = all.filter(r => r[col('Категорія (UA)')] === catName).length;
+    await page.click('#admList .pager [data-page="3"]');
+    await page.locator('#admPChips [data-pcat]').nth(1).click();
+    const shown = await count(page, '.prod');
+    ok(inCat > 0 && shown === Math.min(20, inCat) && (inCat <= 20 ? await count(page, '#admList .pager') === 0 : await cur() === '1'), 'чип категории «' + catName + '»: только её товары, список с первой страницы', [inCat, shown]);
+    ok(await page.locator('#admPChips [data-pcat]').nth(1).getAttribute('aria-pressed') === 'true', 'выбранная категория выделена');
+    await page.locator('#admPChips [data-pcat=""]').click();
+
+    // фильтры
+    const hidden = all.filter(r => /^так$/i.test(String(r[col('Приховати')] || ''))).length;
+    const noPhoto = all.filter(r => !r[col('Фото')]).length;
+    await page.click('[data-pflt="hidden"]');
+    ok(hidden === 1 && await count(page, '.prod') === 1 && /Приховані · 1/.test(await text(page, '[data-pflt="hidden"]')), 'фильтр «Приховані» показывает скрытые товары, на чипе их число', [hidden, await count(page, '.prod')]);
+    await page.click('[data-pflt="hidden"]');
+    await page.click('[data-pflt="nophoto"]');
+    ok(new RegExp('з ' + noPhoto + '$').test(await range()) && new RegExp('Без фото · ' + noPhoto).test(await text(page, '[data-pflt="nophoto"]')), 'фильтр «Без фото»', [noPhoto, await range()]);
+    await page.click('#admList .pager [data-page="2"]');
+    await page.click('[data-pflt="out"]');
+    const both = all.filter(r => !r[col('Фото')] && !/^(є|e|есть|так|да)$/i.test(String(r[col('Наявність')]).trim())).length;
+    ok((await count(page, '.prod')) === Math.min(20, both) && (both <= 20 || await cur() === '1'), 'фильтры складываются («без фото» и «немає в наявності»), список с первой страницы', [both, await count(page, '.prod')]);
+    await page.click('[data-pflt="nophoto"]');
+    // переключатель в отфильтрованном списке: товар вернули в наличие — число на чипе уменьшилось
+    const outBefore = Number((await text(page, '[data-pflt="out"]')).replace(/\D/g, ''));
+    await page.locator('#admList .sw').first().click();
+    await page.waitForFunction(n => Number(document.querySelector('[data-pflt="out"]').textContent.replace(/\D/g, '')) === n - 1, outBefore);
+    ok(true, 'после переключателя число на чипе «Немає в наявності» обновилось');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'чипы и фильтры: без горизонтальной прокрутки страницы, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/57-admin-filters.png' });
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close(); st.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);
