@@ -251,6 +251,9 @@ const smallTargets = page => page.evaluate(() => {
     ok(['open', 'view', 'add', 'cart', 'checkout', 'order', 'fav', 'share', 'search0', 'repeat', 'notify'].every(e => evs.includes(e)), 'аналитика: все ключевые события записаны', evs);
     const evCalls = st.log.filter(x => x.action === 'ev').length;
     ok(evCalls <= 4, 'события уходят пачками: запросов к серверу ' + evCalls);
+    // волна 2а, А5: открытие магазина и заказ записывают клиента в лист «Клієнти»
+    const clients = st.gas.sheets['Клієнти'] ? st.gas.sheets['Клієнти'].rows : [];
+    ok(clients.filter(r => String(r[0]) === '501').length === 1 && clients.find(r => String(r[0]) === '501')[2] === 'ua', 'покупатель записан в лист «Клієнти» одной строкой', clients);
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close(); st.server.close();
   }

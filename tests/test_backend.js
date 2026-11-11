@@ -707,5 +707,80 @@ console.log('Волна 2а · А4: удаление админа');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+console.log('Волна 2а · А5: лист «Клієнти»');
+{
+  const g = fresh();
+  const rows = () => (g.sheets['Клієнти'] ? g.sheets['Клієнти'].rows : []);
+  const cl = id => rows().find(r => String(r[0]) === String(id));
+  ok(!g.sheets['Клієнти'], 'пока никто не заходил, листа «Клієнти» нет');
+  tgMsg(g, 801, '/start');
+  ok(rows().length === 2 && rows()[0].join('|') === 'Chat id|Ім\'я|Мова|Перший вхід|Останній вхід|Відписка|Заблокував бота', 'лист «Клієнти» создан с нужными колонками', rows()[0]);
+  const c1 = cl(801);
+  ok(c1 && c1[0] === '801' && c1[1] === 'Гість801' && c1[2] === 'ua' && isDate(c1[3]) && isDate(c1[4]) && c1[5] === '' && c1[6] === '', '/start: записаны chat id, имя, язык, первый и последний вход', c1);
+  tgMsg(g, 801, '/start');
+  tgMsg(g, 801, '/start DRY-039');
+  ok(rows().length === 2, 'повторный /start не создаёт вторую строку');
+  const first = new Date(Date.now() - 30 * 24 * 3600e3), old = new Date(Date.now() - 10 * 24 * 3600e3);
+  c1[3] = first; c1[4] = old;
+  tgMsg(g, 801, '/start');
+  ok(c1[4] === old, '«Останній вхід» обновляется не чаще раза в 6 часов');
+  g.clearCache();
+  tgMsg(g, 801, '/start');
+  ok(c1[3] === first && isDate(c1[4]) && c1[4].getTime() > old.getTime() && rows().length === 2, 'позже — «Останній вхід» обновился, «Перший вхід» остался', [c1[3], c1[4]]);
+  tgMsg(g, 805, 'привіт');
+  tgMsg(g, 805, '/id');
+  ok(!cl(805), 'обычное сообщение и /id клиента не записывают — только /start');
+  tgPost(g, { message: { chat: { id: -100500, type: 'group' }, from: { id: 806, first_name: 'Група' }, text: '/start' } });
+  ok(!cl(806) && !cl(-100500), '/start в группе клиента не записывает');
+  tgMsg(g, 900, '/start');
+  ok(!!cl(900), 'админ тоже клиент: /start записан');
+
+  // заказ: язык — тот, что выбран в магазине
+  ok(order(g, U(802), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { lang: 'ru' }).ok && cl(802) && cl(802)[2] === 'ru' && cl(802)[1] === 'Тест802', 'заказ записывает клиента с языком из магазина', cl(802));
+  tgMsg(g, 802, '/start'); // в Telegram у него украинский, но язык из заказа важнее
+  ok(cl(802)[2] === 'ru' && rows().filter(r => String(r[0]) === '802').length === 1, '/start не затирает язык, выбранный в магазине');
+  ok(order(g, U(802), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { lang: 'ua' }).ok && cl(802)[2] === 'ua', 'новый заказ на другом языке — язык обновился');
+  ok(g.post({ action: 'order', initData: g.initData(U(807)), test: true, items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash' }).ok && !cl(807), 'тестовый заказ клиента не записывает');
+
+  // открытие магазина
+  const ev = (uid, events, init) => g.post({ action: 'ev', initData: init || g.initData(Object.assign(U(uid), { language_code: 'ru' })), sid: 's' + uid, events });
+  ok(ev(803, [{ e: 'open', t: Date.now() }, { e: 'view', id: 'DRY-039', t: Date.now() }]).ok && cl(803) && cl(803)[2] === 'ru', 'открытие магазина записывает клиента (язык — из Telegram)', cl(803));
+  ev(804, [{ e: 'view', id: 'DRY-039', t: Date.now() }]);
+  ok(!cl(804), 'события без открытия магазина клиента не записывают');
+  ok(ev(808, [{ e: 'open', t: Date.now() }], g.initData(U(808)).replace(/hash=[0-9a-f]{6}/, 'hash=000000')).error === 'bad_auth' && !cl(808), 'поддельная подпись Telegram клиента не записывает');
+  const n = rows().length;
+  for (let i = 0; i < 5; i++) ev(803, [{ e: 'open', t: Date.now() }]);
+  ok(rows().length === n, 'повторные открытия не плодят строки');
+
+  // заблокировал бота
+  g.setTelegramFail((method, payload) => String(payload.chat_id) === '801' ? { ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' } : null);
+  g.clearCache();
+  tgMsg(g, 801, '/start');
+  ok(c1[6] === 'так' && cl(802)[6] === '', 'Telegram отказал в доставке (403) — отметка «Заблокував бота»', c1);
+  g.setTelegramFail(false);
+  g.clearCache();
+  tgMsg(g, 801, '/start');
+  ok(c1[6] === '', 'человек снова нажал /start — отметка снята');
+  tgPost(g, { my_chat_member: { chat: { id: 802, type: 'private' }, from: { id: 802 }, new_chat_member: { status: 'kicked' } } });
+  ok(cl(802)[6] === 'так', 'Telegram сообщил о блокировке — отметка поставлена');
+  tgPost(g, { my_chat_member: { chat: { id: 802, type: 'private' }, from: { id: 802 }, new_chat_member: { status: 'member' } } });
+  ok(cl(802)[6] === '', 'Telegram сообщил о разблокировке — отметка снята');
+  tgPost(g, { my_chat_member: { chat: { id: 999999, type: 'private' }, from: { id: 999999 }, new_chat_member: { status: 'kicked' } } });
+  ok(!cl(999999), 'блокировка от незнакомого чата строку не создаёт');
+
+  // имя не становится формулой; наружу лист не уходит
+  tgPost(g, { message: { chat: { id: 809, type: 'private' }, from: { id: 809, first_name: '=HYPERLINK("x")', language_code: 'uk' }, text: '/start' } });
+  ok(cl(809) && cl(809)[1] === '=HYPERLINK("x")' && g.sheets['Клієнти'].rows.length > 0, 'имя записано как текст', cl(809));
+  g.clearCache();
+  ok(!/Гість801|Тест802/.test(JSON.stringify(g.get({ action: 'catalog' }))), 'в каталог данные клиентов не попадают');
+  ok(rows().every(r => r[5] === '' || r[5] === 'Відписка'), 'колонка «Відписка» пока пустая (понадобится в выпуске 2б)');
+
+  const g2 = fresh();
+  const made = g2.call('setupWave2a');
+  ok(made.length === 2 && g2.sheets['Архів товарів'].rows[0].indexOf('Дата архівації') > 0 && g2.sheets['Клієнти'].rows[0][0] === 'Chat id', 'меню «Етап 8.2» создаёт листы «Архів товарів» и «Клієнти»', made);
+  ok(g2.call('setupWave2a').length === 0, 'повторный запуск меню ничего не меняет');
+  ok(g.sandbox.__errors.length === 0 && g2.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

@@ -823,6 +823,7 @@ function handleOrder_(body) {
   } finally {
     lock.releaseLock();
   }
+  if (user && !isTest) touchClient_(user, o.lang, true); // лист «Клієнти»: язык — тот, что выбран в магазине
 
   // 6. Уведомления. Заказ уже записан: сбой Telegram не должен его отменять.
   try {
@@ -1140,6 +1141,7 @@ function handleUpdate_(u, token, props, admins) {
   try {
     if (u.callback_query) handleCallback_(u.callback_query, token, admins);
     else if (u.message) handleMessage_(u.message, token, props);
+    else if (u.my_chat_member) handleChatMember_(u.my_chat_member);
   } catch (err) {
     console.error('update ' + u.update_id + ': ' + (err && err.stack || err));
   }
@@ -1200,6 +1202,9 @@ function handleMessage_(msg, token, props) {
     return;
   }
   if (msg.chat.type !== 'private') return;
+  if (/^\/start(@\w+)?(\s|$)/i.test(text)) { // лист «Клієнти»: запоминаем всех, кто нажал /start
+    touchClient_({ id: msg.chat.id, first_name: msg.from && msg.from.first_name, last_name: msg.from && msg.from.last_name, language_code: msg.from && msg.from.language_code });
+  }
   var webappUrl = props.getProperty('WEBAPP_URL');
   if (/^\/admin(@\w+)?$/i.test(text) && adminAccess_(msg.chat.id, props) && /^https:\/\//.test(webappUrl || '')) {
     tg_(token, 'sendMessage', {
@@ -1332,7 +1337,10 @@ function tg_(token, method, payload) {
     var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
       method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true
     });
-    return JSON.parse(res.getContentText());
+    var out = JSON.parse(res.getContentText());
+    // 403 на отправку сообщения — клиент заблокировал бота: помечаем в листе «Клієнти».
+    if (out && out.ok === false && out.error_code === 403 && payload && payload.chat_id && /^send/.test(method)) markClientBlocked_(payload.chat_id, true);
+    return out;
   } catch (err) {
     return { ok: false, description: String(err) };
   }
@@ -2121,6 +2129,8 @@ function handleEvents_(body) {
   var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
   if (!user) return { ok: false, error: 'bad_auth' };
   var uid = String(user.id);
+  // Лист «Клієнти»: открытие магазина. Пишется не чаще раза в несколько часов на человека.
+  if (Array.isArray(body.events) && body.events.some(function (ev) { return ev && ev.e === 'open'; })) touchClient_(user);
   if (adminAccess_(uid, props)) return { ok: true, n: 0 };
   var list = Array.isArray(body.events) ? body.events.slice(0, 40) : [];
   if (!list.length) return { ok: true, n: 0 };
@@ -4265,8 +4275,112 @@ function setupWave2a() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var done = [];
   if (!ss.getSheetByName(SHEET_ARCHIVE)) { ensureArchiveSheet_(); done.push('лист «' + SHEET_ARCHIVE + '»'); }
+  if (!ss.getSheetByName(SHEET_CLIENTS)) { ensureClientsSheet_(); done.push('лист «' + SHEET_CLIENTS + '»'); }
   var text = done.length ? 'Готово, створено:\n• ' + done.join('\n• ') : 'Усе вже створено раніше, нічого не змінено.';
   console.log(text);
   try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }
   return done;
+}
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2а · А5: лист «Клієнти»                                     */
+/* ======================================================================== */
+/*
+ * Кто пользуется ботом: заполняется с /start, заказов и открытия магазина. Нужен для рассылки (выпуск 2б),
+ * собирать начинаем сразу. Наружу (витрине, API) этот лист не отдаётся.
+ */
+
+var SHEET_CLIENTS = 'Клієнти';
+var CLIENT_HEAD = ['Chat id', 'Ім\'я', 'Мова', 'Перший вхід', 'Останній вхід', 'Відписка', 'Заблокував бота'];
+var CLIENT_COLS = { id: ['chat id'], name: ['ім\'я', 'ім’я'], lang: ['мова'], first: ['перший вхід'], last: ['останній вхід'],
+  unsub: ['відписка'], blocked: ['заблокував'] };
+var CLIENT_TOUCH_SEC = 6 * 3600; // «Останній вхід» обновляется не чаще раза в 6 часов: магазин не должен тормозить из-за записи в таблицу
+
+function ensureClientsSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_CLIENTS);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_CLIENTS);
+    sheet.getRange(1, 1, 1, CLIENT_HEAD.length).setValues([CLIENT_HEAD]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    sheet.getRange('A:A').setNumberFormat('@');
+    sheet.getRange('D:E').setNumberFormat('dd.MM.yyyy HH:mm');
+  }
+  return sheet;
+}
+
+/**
+ * Записывает клиента или обновляет «Останній вхід». user — объект Telegram (id, first_name, last_name, language_code).
+ * lang — язык, выбранный в магазине ('ua' | 'ru'); sure = true — язык известен точно (заказ), он заменяет догадку по Telegram.
+ * Никогда не бросает исключений: сбой здесь не должен мешать заказу или ответу бота.
+ */
+function touchClient_(user, lang, sure) {
+  try {
+    var uid = String(user && user.id !== undefined && user.id !== null ? user.id : '').trim();
+    if (!/^\d+$/.test(uid)) return; // только личные чаты
+    var cache = CacheService.getScriptCache();
+    if (!sure && cache.get('cl_' + uid)) return;
+    cache.put('cl_' + uid, '1', CLIENT_TOUCH_SEC);
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(5000)) return;
+    try {
+      var sheet = ensureClientsSheet_();
+      var values = sheet.getDataRange().getValues();
+      var col = mapHeaders_(values[0], CLIENT_COLS);
+      if (col.id < 0) return;
+      var r = -1;
+      for (var i = 1; i < values.length; i++) if (cell_(values[i], col.id) === uid) { r = i; break; }
+      var now = new Date();
+      var name = clean_((user.first_name || '') + ' ' + (user.last_name || ''), 60);
+      var code = lang === 'ru' || lang === 'ua' ? lang : (String(user.language_code || '').toLowerCase().indexOf('ru') === 0 ? 'ru' : 'ua');
+      if (r < 0) {
+        var row = [];
+        for (var b = 0; b < Math.max(sheet.getLastColumn(), 1); b++) row.push('');
+        row[col.id] = '\'' + uid;
+        if (col.name >= 0) row[col.name] = safeCell_(name);
+        if (col.lang >= 0) row[col.lang] = code;
+        if (col.first >= 0) row[col.first] = now;
+        if (col.last >= 0) row[col.last] = now;
+        sheet.appendRow(row);
+        return;
+      }
+      function set(key, value) { if (col[key] >= 0) sheet.getRange(r + 1, col[key] + 1).setValue(value); }
+      if (name && name !== cell_(values[r], col.name)) set('name', safeCell_(name));
+      if (code !== cell_(values[r], col.lang) && (sure || !cell_(values[r], col.lang))) set('lang', code);
+      set('last', now);
+      if (cell_(values[r], col.blocked)) set('blocked', ''); // человек снова пришёл — значит, бота разблокировал
+    } finally {
+      lock.releaseLock();
+    }
+  } catch (err) {
+    console.warn('clients: ' + err);
+  }
+}
+
+/** Отметка «Заблокував бота»: ставится, когда Telegram отказал в доставке (403) или сообщил о блокировке. */
+function markClientBlocked_(chatId, blocked) {
+  try {
+    var uid = String(chatId);
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_CLIENTS);
+    if (!sheet || sheet.getLastRow() < 2 || !/^\d+$/.test(uid)) return;
+    var values = sheet.getDataRange().getValues();
+    var col = mapHeaders_(values[0], CLIENT_COLS);
+    if (col.id < 0 || col.blocked < 0) return;
+    var want = blocked ? 'так' : '';
+    for (var i = 1; i < values.length; i++) {
+      if (cell_(values[i], col.id) !== uid) continue;
+      if (cell_(values[i], col.blocked) !== want) sheet.getRange(i + 1, col.blocked + 1).setValue(want);
+      return;
+    }
+  } catch (err) {
+    console.warn('clients blocked: ' + err);
+  }
+}
+
+/** Telegram сообщает, что человек заблокировал (kicked) или снова включил (member) бота. */
+function handleChatMember_(m) {
+  if (!m || !m.chat || m.chat.type !== 'private' || !m.new_chat_member) return;
+  var status = String(m.new_chat_member.status);
+  if (status === 'kicked') markClientBlocked_(m.chat.id, true);
+  else if (status === 'member') markClientBlocked_(m.chat.id, false);
 }
