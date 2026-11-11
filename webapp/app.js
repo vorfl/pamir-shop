@@ -592,11 +592,11 @@
   }
 
   /* ------------------------- Избранное, просмотренное, поиск ------------------------- */
-  var PAGE_SIZE = 30;
+  var PAGE_SIZE = 20; // товаров на странице: 10 рядов по 2
   var FAV_KEY = 'pamir_fav_v1', SEEN_KEY = 'pamir_seen_v1', SEARCH_KEY = 'pamir_search_v1';
   var SUBS_KEY = 'pamir_subs_v1', HASORD_KEY = 'pamir_has_orders';
   var favs = [], seen = [], searches = [], subs = [];
-  var flt = { sort: '', onlyStock: false, onlySale: false, limit: PAGE_SIZE };
+  var flt = { sort: '', onlyStock: false, onlySale: false, page: 1 };
 
   /** Текст с подстановками: tf('found', { n: 12 }) → «Знайдено: 12». */
   function tf(key, vars) {
@@ -989,9 +989,7 @@
     return '<div class="grid" aria-hidden="true">' + cards + '</div>';
   }
 
-  var moreObs = null;
   function renderMain() {
-    if (moreObs) { moreObs.disconnect(); moreObs = null; }
     if (state.status === 'loading') { el.main.innerHTML = skeletonHtml(); return; }
     if (state.status === 'error') {
       el.main.innerHTML = '<div class="state">' + MARK +
@@ -1013,33 +1011,21 @@
       return;
     }
     var html = home ? featureHtml() + perksHtml() + homeRails() : '';
-    html += '<div class="grid__head"><h2 class="rail__title">' + esc(home ? t('secAll') : tf('found', { n: list.length })) + '</h2></div>' +
-      '<div class="grid" id="grid">' + list.slice(0, flt.limit).map(function (p, i) { return cardHtml(p, i < 4); }).join('') + '</div>';
-    if (list.length > flt.limit) {
-      html += '<div class="more" id="more"><button type="button" class="btn btn--block" data-action="more">' + esc(t('showMore')) + '</button></div>';
-    }
+    // Список листается страницами по PAGE_SIZE товаров; номер страницы живёт в flt.page.
+    flt.page = clampPage(flt.page, list.length, PAGE_SIZE);
+    var from = (flt.page - 1) * PAGE_SIZE;
+    html += '<div class="grid__head" id="gridHead"><h2 class="rail__title">' + esc(home ? t('secAll') : tf('found', { n: list.length })) + '</h2></div>' +
+      '<div class="grid" id="grid">' + list.slice(from, from + PAGE_SIZE).map(function (p, i) { return cardHtml(p, i < 4); }).join('') + '</div>' +
+      pagerHtml(list.length, flt.page, PAGE_SIZE);
     el.main.innerHTML = html;
-    // Длинный каталог рисуется порциями: следующая появляется, когда до неё доскроллили.
-    var more = document.getElementById('more');
-    if (more && window.IntersectionObserver) {
-      moreObs = new IntersectionObserver(function (entries) {
-        if (entries.some(function (x) { return x.isIntersecting; })) showMore();
-      }, { rootMargin: '600px 0px' });
-      moreObs.observe(more);
-    }
   }
 
-  function showMore() {
-    var grid = document.getElementById('grid');
-    if (!grid || !state.catalog) return;
-    var list = visibleProducts();
-    grid.insertAdjacentHTML('beforeend', list.slice(flt.limit, flt.limit + PAGE_SIZE).map(function (p) { return cardHtml(p); }).join(''));
-    flt.limit += PAGE_SIZE;
-    if (flt.limit >= list.length) {
-      var more = document.getElementById('more');
-      if (more) more.parentNode.removeChild(more);
-      if (moreObs) { moreObs.disconnect(); moreObs = null; }
-    }
+  /** Переход на страницу каталога: список прокручивается к своему началу (под чипы категорий), а не к верху экрана. */
+  function setPage(n) {
+    if (!state.catalog || n === flt.page) return;
+    flt.page = n;
+    renderMain();
+    scrollToList(document.getElementById('gridHead'));
   }
 
   /** Обновляет только кнопки под карточками: фото не перерисовываются и не мигают. */
@@ -1052,7 +1038,7 @@
 
   /** Новый поиск, категория или фильтр: список с начала. */
   function resetList() {
-    flt.limit = PAGE_SIZE;
+    flt.page = 1;
     if (state.status === 'ready') renderMain();
   }
 
@@ -3028,7 +3014,6 @@
       if (act) {
         var kind = act.getAttribute('data-action');
         if (kind === 'retry') loadCatalog();
-        if (kind === 'more') showMore();
         if (kind === 'reset') {
           state.cat = ''; flt.sort = ''; flt.onlyStock = false; flt.onlySale = false;
           setSearch('');
@@ -3036,6 +3021,8 @@
         }
         return;
       }
+      var pg = e.target.closest('[data-page]');
+      if (pg) { if (!pg.disabled) setPage(Number(pg.getAttribute('data-page'))); return; }
       productClick(e);
     });
 
@@ -3757,10 +3744,12 @@
   /* ======================================================================== */
   var I18N_W2 = {
     ua: {
-      admSwFail: 'Не вдалося зберегти — повернули, як було.'
+      admSwFail: 'Не вдалося зберегти — повернули, як було.',
+      pgRange: 'Товари {a}–{b} з {n}', pgPrev: 'Попередня сторінка', pgNext: 'Наступна сторінка', pgNav: 'Сторінки', pgPage: 'Сторінка {n}'
     },
     ru: {
-      admSwFail: 'Не удалось сохранить — вернули, как было.'
+      admSwFail: 'Не удалось сохранить — вернули, как было.',
+      pgRange: 'Товары {a}–{b} из {n}', pgPrev: 'Предыдущая страница', pgNext: 'Следующая страница', pgNav: 'Страницы', pgPage: 'Страница {n}'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
@@ -3856,6 +3845,50 @@
       haptic('error');
       toast(t(err && err.message === 'admNoPerm' ? 'admNoPerm' : 'admSwFail'));
     });
+  }
+
+  /* ---- А2/А3. Нумерованные страницы (один компонент для витрины и админ-панели) ---- */
+  function clampPage(page, total, size) {
+    var pages = Math.max(1, Math.ceil(total / size));
+    return Math.min(pages, Math.max(1, Math.floor(Number(page)) || 1));
+  }
+  /**
+   * Какие номера показать: первая, последняя и текущая с соседями, остальное — «…» (0 в списке).
+   * slots — сколько мест под номера и «…»: 5 на узком экране (вместе со стрелками 7 кнопок по 44 px в одну строку на 360 px),
+   * 7 там, где шире. На узком экране в середине длинного списка соседние номера не помещаются — остаются стрелки.
+   */
+  function pageList(page, pages, slots) {
+    var out = [], i;
+    if (pages <= slots) { for (i = 1; i <= pages; i++) out.push(i); return out; }
+    var side = slots >= 7 ? 1 : 0, edge = slots - 2;
+    if (page <= edge - side) { for (i = 1; i <= edge; i++) out.push(i); out.push(0, pages); return out; }
+    if (page > pages - (edge - side)) { out.push(1, 0); for (i = pages - edge + 1; i <= pages; i++) out.push(i); return out; }
+    out.push(1, 0);
+    for (i = page - side; i <= page + side; i++) out.push(i);
+    out.push(0, pages);
+    return out;
+  }
+  function pagerHtml(total, page, size) {
+    var pages = Math.ceil(total / size);
+    if (pages < 2) return '';
+    var width = Math.min(window.innerWidth || 360, 720) - 32;
+    var from = (page - 1) * size + 1, to = Math.min(total, page * size);
+    function arrow(n, off, label, sign) {
+      return '<button type="button" class="pager__arrow" data-page="' + n + '" aria-label="' + esc(t(label)) + '"' + (off ? ' disabled' : '') + '>' + sign + '</button>';
+    }
+    return '<nav class="pager" aria-label="' + esc(t('pgNav')) + '"><p class="pager__range">' + esc(tf('pgRange', { a: from, b: to, n: total })) + '</p>' +
+      '<div class="pager__row">' + arrow(page - 1, page <= 1, 'pgPrev', '‹') +
+      pageList(page, pages, width >= 9 * 46 ? 7 : 5).map(function (n) {
+        return n ? '<button type="button" data-page="' + n + '" aria-label="' + esc(tf('pgPage', { n: n })) + '"' + (n === page ? ' aria-current="page"' : '') + '>' + n + '</button>'
+          : '<span class="pager__gap" aria-hidden="true">…</span>';
+      }).join('') + arrow(page + 1, page >= pages, 'pgNext', '›') + '</div></nav>';
+  }
+  /** Прокрутка к началу списка: заголовок списка встаёт сразу под закреплённой панелью поиска и категорий. */
+  function scrollToList(head) {
+    if (!head) return;
+    var tools = document.querySelector('.tools');
+    var fixed = tools && state.view === 'catalog' ? tools.getBoundingClientRect().height : 0;
+    window.scrollTo(0, Math.max(0, Math.round(head.getBoundingClientRect().top + (window.scrollY || 0) - fixed - 8)));
   }
 
   // Любое нажатие на кнопку — лёгкая вибрация; занятая кнопка нажатий не принимает.

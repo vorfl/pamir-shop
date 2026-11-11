@@ -910,3 +910,18 @@ button.prod__main:active, .ord__head:active { background: var(--surface-sunken);
 .sw[aria-busy="true"] span { animation: pulse .6s ease-in-out infinite alternate; }
 .check.is-busy { opacity: .6; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- А2/А3. Нумерованные страницы ---------- */
+.pager { margin-top: var(--space-5); }
+.pager__range { margin: 0 0 var(--space-2); text-align: center; font-size: 13px; line-height: 18px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.pager__row { display: flex; justify-content: center; gap: 2px; flex-wrap: nowrap; }
+.pager button {
+  flex: none; min-width: var(--tap); height: var(--tap); padding: 0 var(--space-1);
+  border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--ink);
+  font-size: 15px; line-height: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+  transition: transform .12s var(--ease), background-color .15s, filter .12s;
+}
+.pager button[aria-current="page"] { background: var(--apricot); color: var(--on-apricot); }
+.pager .pager__arrow { border-color: var(--line-strong); background: var(--surface-raised); font-size: 22px; line-height: 1; }
+.pager button:disabled { opacity: .35; cursor: not-allowed; }
+.pager__gap { flex: none; display: grid; place-items: center; min-width: var(--tap); height: var(--tap); color: var(--ink-muted); font-weight: 700; }
