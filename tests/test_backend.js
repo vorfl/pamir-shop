@@ -1360,5 +1360,27 @@ console.log('Волна 2в · В3: «Пригости друга»');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+console.log('Часовой пояс: всё считается по Киеву, от пояса проекта не зависит');
+{
+  const g = fresh();
+  // полночь по Киеву сегодня — в виде момента времени
+  const kyivDay = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', dateStyle: 'short' }).format(new Date());
+  const midnight = g.call('kyivToMs_', kyivDay + 'T00:00');
+  ok(new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' }).format(new Date(midnight)) === kyivDay + ' 00:00', 'полночь по Киеву вычисляется верно', new Date(midnight).toISOString());
+  const O = g.sheets['Замовлення'].rows;
+  const base = O[1].slice();
+  const add = (num, ms) => { const r = base.slice(); r[0] = num; r[1] = new Date(ms); r[2] = 'новий'; r[13] = 100; r[15] = 'miniapp'; O.push(r); };
+  const before = adm(g, 900, 'admin.orders').stats.today.n;
+  add('P-9001', midnight - 10 * 60000); // 23:50 вчера по Киеву
+  add('P-9002', midnight + 10 * 60000); // 00:10 сегодня по Киеву
+  const today = adm(g, 900, 'admin.orders');
+  ok(today.stats.today.n === before + 1, 'заказ в 23:50 по Киеву — вчерашний, в 00:10 — сегодняшний', [before, today.stats.today.n]);
+  const row = n => today.orders.find(o => o.num === n);
+  ok(row('P-9001').date.slice(6) === '23:50' && row('P-9002').date.slice(6) === '00:10' && row('P-9001').date.slice(0, 5) !== row('P-9002').date.slice(0, 5), 'в панели время заказов показано киевским, дата меняется в полночь по Киеву', [row('P-9001').date, row('P-9002').date]);
+  ok(g.call('saleEnd_', '31.12.2099', 'Europe/Berlin').day === '2099-12-31' && g.call('saleEnd_', '31.12.2099', 'Europe/Kiev').end === g.call('saleEnd_', '31.12.2099', 'Europe/Berlin').end, '«Акція до», записанная текстом, не зависит от часового пояса');
+  ok(!/getScriptTimeZone|getTimezoneOffset|\.getHours\(\)|toLocale/.test(require('fs').readFileSync(CODE, 'utf8')), 'в коде нет обращений к часовому поясу проекта (кроме часа ежедневного таймера)');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);
