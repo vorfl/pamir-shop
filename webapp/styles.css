@@ -1016,3 +1016,10 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
   font: inherit; font-size: 15px; line-height: 20px; font-weight: 700; text-align: left; overflow-wrap: anywhere;
 }
 .rec__p { margin: 0; font-size: 15px; line-height: 22px; overflow-wrap: anywhere; }
+
+/* ---------- В2. Квиз ---------- */
+.bizline--quiz { background: var(--apricot-soft); color: var(--on-apricot-soft); margin-bottom: var(--space-2); }
+.quiz__step { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+.quiz__q { margin: 0 0 var(--space-2); font-family: var(--font-display); font-size: 20px; line-height: 28px; font-weight: 600; overflow-wrap: anywhere; }
+.quiz__opts { display: flex; flex-direction: column; gap: var(--space-2); }
+.quiz__opt { min-height: 52px; font-size: 16px; }

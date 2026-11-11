@@ -896,7 +896,7 @@
     function perk(ico, text) { return '<p class="perk">' + icon(ico) + '<span>' + esc(text) + '</span></p>'; }
     if (s.gift) out += '<div id="homeGift" class="homegift">' + homeGiftHtml() + '</div>';
     if (s.loyal) out += perk('users', tf('loyalText', { k: s.loyal.every, g: ru ? s.loyal.ru : s.loyal.ua }));
-    return (out ? '<div class="perks">' + out + '</div>' : '') + bizBannerHtml();
+    return (out ? '<div class="perks">' + out + '</div>' : '') + quizBannerHtml() + bizBannerHtml();
   }
 
   /** Кнопка под карточкой. Штучный товар кладётся в корзину сразу; у весового сначала выбирают вес. */
@@ -4065,12 +4065,20 @@
       howTitle: 'Як їсти', recTitle: 'Рецепти', recWith: 'Рецепти з цим товаром', recItems: 'Що знадобиться', recAdd: 'Додати інгредієнти в кошик', recOut: 'немає в наявності',
       recAdded: 'Додано в кошик: {n}.', recAlready: 'Усі інгредієнти вже в кошику.', recMissing: 'Зараз немає в наявності: {list}.', recNone: 'Цих товарів зараз немає в наявності.',
       recGone: 'Рецепт не знайдено.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для підбору', admTagsHint: 'Через кому: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      quizBtn: 'Підібрати смаколики', quizTitle: 'Підібрати смаколики', quizQ1: 'Для чого обираєте?', quizQ2: 'Солодке чи солоне?', quizQ3: 'Скільки готові витратити на одну позицію?',
+      quizAny: 'Байдуже', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без обмежень', quizStep: 'Питання {a} з {b}', quizResult: 'Ось що вам підійде', quizPopular: 'Точного збігу немає. Ось те, що зараз беруть найчастіше',
+      quizAgain: 'Підібрати ще раз', quizBack: 'Назад',
+      'tag_до чаю': 'До чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарунок', 'tag_солодке': 'Солодке', 'tag_солоне': 'Солоне', 'tag_для плову': 'Для плову', 'tag_для випічки': 'Для випічки',
       mailBtn_rec: 'Відкрити рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Розсилка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
     },
     ru: {
       howTitle: 'Как есть', recTitle: 'Рецепты', recWith: 'Рецепты с этим товаром', recItems: 'Что понадобится', recAdd: 'Добавить ингредиенты в корзину', recOut: 'нет в наличии',
       recAdded: 'Добавлено в корзину: {n}.', recAlready: 'Все ингредиенты уже в корзине.', recMissing: 'Сейчас нет в наличии: {list}.', recNone: 'Этих товаров сейчас нет в наличии.',
       recGone: 'Рецепт не найден.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для подбора', admTagsHint: 'Через запятую: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      quizBtn: 'Подобрать вкусности', quizTitle: 'Подобрать вкусности', quizQ1: 'Для чего выбираете?', quizQ2: 'Сладкое или солёное?', quizQ3: 'Сколько готовы потратить на одну позицию?',
+      quizAny: 'Неважно', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без ограничений', quizStep: 'Вопрос {a} из {b}', quizResult: 'Вот что вам подойдёт', quizPopular: 'Точного совпадения нет. Вот то, что сейчас берут чаще всего',
+      quizAgain: 'Подобрать ещё раз', quizBack: 'Назад',
+      'tag_до чаю': 'К чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарок', 'tag_солодке': 'Сладкое', 'tag_солоне': 'Солёное', 'tag_для плову': 'Для плова', 'tag_для випічки': 'Для выпечки',
       mailBtn_rec: 'Открыть рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Рассылка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
     }
   };
@@ -4159,6 +4167,90 @@
     updateChrome();
     if (added) toast(tf('recAdded', { n: added }), t('open'), function () { go('cart'); });
   }
+  /* ---- В2. Квиз «Підібрати смаколики» ---- */
+  /*
+   * Подбор идёт только по тегам из колонки «Теги» и по настоящим ценам. Нет ни одного товара в наличии с тегами — квиза нет.
+   * Нет совпадений — показываем популярное (по настоящим заказам), а не пустой экран.
+   */
+  var QUIZ_FOR = ['до чаю', 'перекус', 'подарунок', 'для плову', 'для випічки'];
+  var QUIZ_TASTE = ['солодке', 'солоне'];
+  var QUIZ_BUDGET = [150, 400, 0];
+  var quiz = { step: 0, purpose: '', taste: '', budget: 0 };
+  function quizTagSet() {
+    var set = {};
+    if (state.catalog) state.catalog.products.forEach(function (p) { if (p.a && Array.isArray(p.tg)) p.tg.forEach(function (x) { set[x] = 1; }); });
+    return set;
+  }
+  function quizOn() { return Object.keys(quizTagSet()).length > 0; }
+  function quizBannerHtml() {
+    if (!quizOn()) return '';
+    return '<button type="button" class="bizline bizline--quiz" data-w1="go" data-view="quiz">' + icon('gift') + '<span>' + esc(t('quizBtn')) + '</span></button>';
+  }
+  /** Самая маленькая цена, за которую товар можно купить: младшая фасовка у весового, упаковка или штука у остальных. */
+  function minPrice(p) {
+    if (p.t !== 'w') return p.p > 0 ? p.p : Infinity;
+    var m = Infinity;
+    (p.v || []).forEach(function (v) { if (v[1] > 0 && v[1] < m) m = v[1]; });
+    return m;
+  }
+  function quizPick() {
+    var list = state.catalog.products.filter(function (p) {
+      if (!p.a || !Array.isArray(p.tg)) return false;
+      if (quiz.purpose && p.tg.indexOf(quiz.purpose) < 0) return false;
+      if (quiz.taste && p.tg.indexOf(quiz.taste) < 0) return false;
+      return !(quiz.budget > 0) || minPrice(p) <= quiz.budget;
+    }).sort(function (a, b) { return (b.n || 0) - (a.n || 0); }).slice(0, 6);
+    if (list.length) return { list: list, exact: true };
+    var pop = popular(6).list; // точного совпадения нет — популярное по настоящим заказам, а не пустой экран
+    if (!pop.length) pop = state.catalog.products.filter(function (p) { return p.a; }).slice(0, 6);
+    return { list: pop, exact: false };
+  }
+  function quizHtml() {
+    var html = pageHead(t('quizTitle'));
+    if (!state.catalog || !quizOn()) return html + '<p class="state__text adm__msg">' + esc(t('emptyTitle')) + '</p><button type="button" class="btn btn--block" data-nav="catalog">' + esc(t('toCatalog')) + '</button>';
+    var have = quizTagSet();
+    function opts(values, labelOf) {
+      return '<div class="quiz__opts">' + values.map(function (v) {
+        return '<button type="button" class="btn btn--block quiz__opt" data-quiz="' + esc(String(v)) + '">' + esc(labelOf(v)) + '</button>';
+      }).join('') + '</div>';
+    }
+    var back = quiz.step > 0 ? '<button type="button" class="btn btn--ghost btn--block" data-action="quiz-back">' + esc(t('quizBack')) + '</button>' : '';
+    if (quiz.step === 0) {
+      return html + '<p class="quiz__step">' + esc(tf('quizStep', { a: 1, b: 3 })) + '</p><h3 class="quiz__q">' + esc(t('quizQ1')) + '</h3>' +
+        opts(QUIZ_FOR.filter(function (x) { return have[x]; }).concat(['']), function (v) { return v ? t('tag_' + v) : t('quizAny'); });
+    }
+    if (quiz.step === 1) {
+      return html + '<p class="quiz__step">' + esc(tf('quizStep', { a: 2, b: 3 })) + '</p><h3 class="quiz__q">' + esc(t('quizQ2')) + '</h3>' +
+        opts(QUIZ_TASTE.filter(function (x) { return have[x]; }).concat(['']), function (v) { return v ? t('tag_' + v) : t('quizAny'); }) + back;
+    }
+    if (quiz.step === 2) {
+      return html + '<p class="quiz__step">' + esc(tf('quizStep', { a: 3, b: 3 })) + '</p><h3 class="quiz__q">' + esc(t('quizQ3')) + '</h3>' +
+        opts(QUIZ_BUDGET, function (v) { return t(v === 150 ? 'quizB1' : v === 400 ? 'quizB2' : 'quizB3'); }) + back;
+    }
+    var res = quizPick();
+    return html + '<h3 class="quiz__q">' + esc(t(res.exact ? 'quizResult' : 'quizPopular')) + '</h3>' +
+      '<div class="grid" id="quizGrid">' + res.list.map(function (p) { return cardHtml(p); }).join('') + '</div>' +
+      '<button type="button" class="btn btn--block" data-action="quiz-again">' + esc(t('quizAgain')) + '</button>' +
+      '<button type="button" class="btn btn--ghost btn--block" data-nav="catalog">' + esc(t('toCatalog')) + '</button>';
+  }
+  el.page.addEventListener('click', function (e) {
+    if (state.view !== 'quiz') return;
+    var q = e.target.closest('[data-quiz]');
+    if (q) {
+      var v = q.getAttribute('data-quiz');
+      if (quiz.step === 0) quiz.purpose = v; else if (quiz.step === 1) quiz.taste = v; else quiz.budget = Number(v) || 0;
+      quiz.step++;
+      hapticSelect();
+      if (quiz.step === 3) track('search', '', 'quiz:' + [quiz.purpose, quiz.taste, quiz.budget].join('|'));
+      renderPage(); window.scrollTo(0, 0);
+      return;
+    }
+    var act = e.target.closest('[data-action]');
+    var kind = act ? act.getAttribute('data-action') : '';
+    if (kind === 'quiz-back') { quiz.step = Math.max(0, quiz.step - 1); renderPage(); window.scrollTo(0, 0); }
+    if (kind === 'quiz-again') { quiz = { step: 0, purpose: '', taste: '', budget: 0 }; renderPage(); window.scrollTo(0, 0); }
+  });
+
   /* Панель: шаблон «Рецепт» для рассылки */
   function mailRecipesHtml() {
     var list = recipes();
@@ -5070,7 +5162,7 @@
   // Админу заказы подгружаются заранее, пока он смотрит магазин: панель открывается уже с данными, бэкенд к этому моменту «разогрет».
   if (adminHint && params.get('admin') !== '1') setTimeout(function () { if (state.view !== 'admin') prefetchAdmin('orders'); }, 1500);
   if (adminHint && params.get('admin') === '1') go('admin');
-  else if (/^(points|story|cart|biz)$/.test(params.get('view') || '')) go(params.get('view')); // кнопки в сообщениях бота
+  else if (/^(points|story|cart|biz|quiz)$/.test(params.get('view') || '')) go(params.get('view')); // кнопки в сообщениях бота
   else if (params.get('view') === 'orders') go('orders'); // кнопка «Повторити замовлення» в сообщении бота
   // Кнопка «Повторити звичне» в приветствии бота: последний заказ сразу ложится в корзину.
   if (params.get('repeat') === 'last' && inTelegram) {

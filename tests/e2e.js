@@ -1558,6 +1558,79 @@ const smallTargets = page => page.evaluate(() => {
     await a.page.context().close(); st.server.close();
   }
 
+  console.log('Волна 2в · В2: квиз');
+  {
+    const tagged = s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], head = rows[0];
+      head.push('Теги');
+      rows.slice(1).forEach(r => { r.push(''); });
+      const tag = (id, v) => { rows.find(r => r[0] === id)[head.indexOf('Теги')] = v; };
+      tag('DRY-039', 'До чаю, солодке'); tag('SWT-001', 'до чаю, солодке, подарунок'); tag('NUT-001', 'перекус, солоне'); tag('NUT-002', 'перекус, солоне');
+      tag('NUT-008', 'для плову'); // товара нет в наличии — его тег в вопросах не появляется
+    };
+    const st = await start(8826, undefined, tagged);
+    const { page, errors } = await open(browser, st.url, { uid: 710 });
+    await page.waitForSelector('.bizline--quiz');
+    ok(/Підібрати смаколики/.test(await text(page, '.bizline--quiz')) && await noOverflow(page) && (await smallTargets(page)).length === 0, 'на главной кнопка «Підібрати смаколики»', await smallTargets(page));
+    await page.click('.bizline--quiz');
+    await page.waitForSelector('.quiz__opt');
+    const opts = () => page.locator('.quiz__opt').allInnerTexts();
+    ok(/Питання 1 з 3/.test(await text(page, '.quiz__step')) && (await opts()).join('|') === 'До чаю|Перекус|Подарунок|Байдуже', 'вопрос 1: только те варианты, для которых есть товары в наличии', await opts());
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'квиз: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/86-quiz.png' });
+    await page.locator('.quiz__opt', { hasText: 'До чаю' }).click();
+    ok((await opts()).join('|') === 'Солодке|Солоне|Байдуже' && /Питання 2 з 3/.test(await text(page, '.quiz__step')), 'вопрос 2: солодке чи солоне', await opts());
+    await page.locator('.quiz__opt', { hasText: 'Солодке' }).click();
+    ok((await opts()).length === 3 && /Питання 3 з 3/.test(await text(page, '.quiz__step')), 'вопрос 3: бюджет');
+    await page.locator('.quiz__opt').last().click();
+    await page.waitForSelector('#quizGrid .card');
+    const ids = () => page.evaluate(() => [].map.call(document.querySelectorAll('#quizGrid .card'), c => c.getAttribute('data-id')).sort().join());
+    ok(await ids() === 'DRY-039,SWT-001' && /Ось що вам підійде/.test(await text(page, '.quiz__q')), 'результат: товары «є» с тегами «до чаю» и «солодке»', await ids());
+    ok(await count(page, '#quizGrid .card__act .btn') === 2 && (await smallTargets(page)).length === 0, 'у товаров кнопка «У кошик»');
+    await page.screenshot({ path: OUT + '/87-quiz-result.png' });
+    await page.locator('#quizGrid .card[data-id="DRY-039"] .card__name').click();
+    await page.waitForSelector('.sheet__title');
+    await page.click('[data-action="add"]');
+    await page.waitForSelector('#toast:not([hidden])');
+    ok(await page.evaluate(() => JSON.parse(localStorage.getItem('pamir_cart_v1')).i.length) === 1 && /У кошику/.test(await page.locator('#quizGrid .card[data-id="DRY-039"] .card__act').textContent()), 'товар из результата кладётся в корзину, карточка это помнит');
+    // нет совпадений → популярные, а не пустой экран
+    await page.click('[data-action="quiz-again"]');
+    await page.locator('.quiz__opt', { hasText: 'Перекус' }).click();
+    await page.locator('.quiz__opt', { hasText: 'Солодке' }).click();
+    await page.locator('.quiz__opt').last().click();
+    await page.waitForSelector('#quizGrid .card');
+    ok(/Точного збігу немає/.test(await text(page, '.quiz__q')) && await count(page, '#quizGrid .card') >= 3 && (await ids()).indexOf('DRY-039') >= 0, 'совпадений нет — показаны популярные товары', await ids());
+    // бюджет
+    await page.click('[data-action="quiz-again"]');
+    await page.locator('.quiz__opt', { hasText: 'Перекус' }).click();
+    await page.locator('.quiz__opt').last().click();
+    await page.locator('.quiz__opt').first().click(); // до 150 ₴: мигдаль 100 г = 56 ₴, кеш’ю 100 г = 64 ₴
+    await page.waitForSelector('#quizGrid .card');
+    ok(await ids() === 'NUT-001,NUT-002', 'бюджет сравнивается с ценой самой маленькой фасовки', await ids());
+    await page.evaluate(() => window.__tg.back.cb());
+    await page.waitForSelector('.bizline--quiz');
+    ok(await page.evaluate(() => document.body.getAttribute('data-view')) === 'catalog', '«Назад» Telegram возвращает из квиза в каталог');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close();
+    const r = await open(browser, st.url, { uid: 711, lc: 'ru', theme: 'dark', query: '?view=quiz' });
+    await r.page.waitForSelector('.quiz__opt');
+    ok(/Подобрать вкусности/.test(await text(r.page, '.page__title')) && (await r.page.locator('.quiz__opt').allInnerTexts()).join('|') === 'К чаю|Перекус|Подарок|Неважно' && await noOverflow(r.page), 'RU, тёмная тема: вопросы на русском');
+    await r.page.screenshot({ path: OUT + '/88-quiz-dark.png' });
+    ok(r.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', r.errors);
+    await r.page.context().close(); st.server.close();
+    // ни одного товара с тегами — квиз скрыт
+    const st2 = await start(8827, undefined, withPhotos);
+    const e = await open(browser, st2.url, { uid: 712 });
+    await e.page.waitForSelector('.card');
+    ok(await count(e.page, '.bizline--quiz') === 0 && await count(e.page, '.recs') === 0, 'без тегов квиза нет; без листа «Рецепти» блока рецептов нет');
+    await e.page.context().close();
+    const e2 = await open(browser, st2.url, { uid: 713, query: '?view=quiz' });
+    await e2.page.waitForSelector('.page__title');
+    ok(await count(e2.page, '.quiz__opt') === 0 && e2.errors.length === 0, 'прямая ссылка на квиз без тегов не ломает магазин', e2.errors);
+    await e2.page.context().close(); st2.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);
