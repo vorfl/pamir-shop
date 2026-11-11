@@ -1631,6 +1631,64 @@ const smallTargets = page => page.evaluate(() => {
     await e2.page.context().close(); st2.server.close();
   }
 
+  console.log('Волна 2в · В3: «Пригости друга»');
+  {
+    const st = await start(8828, undefined, s => {
+      withPhotos(s);
+      s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис'], ['referral_on', '1', ''], ['referral_gift_ua', '50 г кураги', ''], ['referral_gift_ru', '50 г кураги', ''], ['referral_min_order', '80', '']];
+    });
+    const g = st.gas;
+    // пригласивший: блок в профиле и своя ссылка
+    const a = await open(browser, st.url, { uid: 720000, query: '?view=orders' });
+    await a.page.waitForSelector('[data-w1="ref-share"]');
+    ok(/Пригости друга/.test(await text(a.page, '.page')) && /До першого замовлення від 80\s₴ він отримає пробник: 50 г кураги/.test(await text(a.page, '.refcard')), 'в профиле блок «Пригости друга» с условиями из настроек', await text(a.page, '.refcard'));
+    ok(await noOverflow(a.page) && (await smallTargets(a.page)).length === 0, 'профиль с блоком: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(a.page));
+    await a.page.screenshot({ path: OUT + '/89-referral.png', fullPage: true });
+    await a.page.click('[data-w1="ref-share"]');
+    const shared = await a.page.evaluate(() => (window.__tg.calls.filter(c => c[0] === 'openTelegramLink').pop() || [])[1] || '');
+    ok(shared.indexOf(encodeURIComponent('https://t.me/pamir_test_bot/shop?startapp=ref_720000')) >= 0, '«Поділитися посиланням»: личная ссылка ?startapp=ref_<id>', shared);
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (пригласивший)', a.errors);
+    await a.page.context().close();
+
+    // новый клиент пришёл по ссылке друга
+    const { page, errors } = await open(browser, st.url, { uid: 721000, start: 'ref_720000' });
+    await page.waitForSelector('.card');
+    ok(await page.evaluate(() => localStorage.getItem('pamir_ref')) === '720000' && await count(page, '.sheet:not([hidden])') === 0, 'ссылка друга запомнена; товар по ней не открывается');
+    await toCard(page, 'NUT-007');
+    await page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+    await page.click('.tabbar [data-go="cart"]');
+    await page.waitForSelector('.line');
+    ok(/Вас запросив друг: до першого замовлення від 80\s₴ — пробник \(50 г кураги\)/.test(await text(page, '.page')), 'в корзине подсказка о пробнике', await text(page, '.page'));
+    await page.evaluate(() => window.__tg.main.cb());
+    await page.waitForSelector('#f-phone');
+    await page.fill('#f-phone', '0501234567');
+    await page.evaluate(() => window.__tg.main.cb());
+    await page.waitForSelector('.done');
+    const sentOrder = st.log.filter(x => x.action === 'order').pop();
+    ok(sentOrder.ref === '720000' && /Пробник за запрошенням друга: 50 г кураги/.test(await text(page, '.page')), 'заказ ушёл с отметкой о приглашении; на экране «Замовлення прийнято» виден пробник', await text(page, '.page'));
+    ok(g.sheets['Запрошення'].rows.length === 2 && g.sheets['Запрошення'].rows[1][1] === '720000' && g.sheets['Запрошення'].rows[1][2] === '721000' && await page.evaluate(() => localStorage.getItem('pamir_ref')) === '', 'приглашение записано в лист «Запрошення»; после первого заказа ссылка забыта');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (новый клиент)', errors);
+    await page.context().close();
+    // сам себя пригласить нельзя
+    const s = await open(browser, st.url, { uid: 722000, start: 'ref_722000' });
+    await s.page.waitForSelector('.card');
+    ok(await s.page.evaluate(() => localStorage.getItem('pamir_ref')) === null, 'своя же ссылка не запоминается');
+    await s.page.context().close(); st.server.close();
+    // выключено по умолчанию: ни блока, ни подсказки, ни отметки в заказе
+    const st2 = await start(8829, undefined, withPhotos);
+    const o = await open(browser, st2.url, { uid: 723000, start: 'ref_720000', query: '?view=orders' });
+    await o.page.waitForSelector('.page__title');
+    await o.page.waitForTimeout(600);
+    ok(await count(o.page, '[data-w1="ref-share"]') === 0 && !/Пригости друга/.test(await text(o.page, '.page')), 'функция выключена по умолчанию: блока в профиле нет');
+    await o.page.click('.tabbar [data-go="catalog"]');
+    await toCard(o.page, 'NUT-007');
+    await o.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+    await o.page.click('.tabbar [data-go="cart"]');
+    await o.page.waitForSelector('.line');
+    ok(!/запросив друг/.test(await text(o.page, '.page')) && o.errors.length === 0, 'и подсказки в корзине нет');
+    await o.page.context().close(); st2.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);

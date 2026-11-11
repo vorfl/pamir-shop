@@ -851,6 +851,10 @@ function handleOrder_(body) {
       var doneBefore = completedOrders_(sheet, col, o.uid);
       if ((doneBefore + 1) % shop.loyal.every === 0) gifts.push(shop.loyal);
     }
+    if (shop.ref && o.uid && !isTest) { // «Пригости друга»: пробник новому клиенту и пригласившему
+      o.num = nextOrderNumber_(sheet, col);
+      referralGifts_(shop.ref, o, String(body.ref || ''), sheet, col).forEach(function (x) { gifts.push(x); });
+    }
     o.gifts = gifts.map(function (x) { return x.ua; });
     o.giftsClient = gifts.map(function (x) { return o.lang === 'ru' ? x.ru : x.ua; });
     var svc = { i: compact };
@@ -2060,6 +2064,10 @@ var SETTINGS_DEF = [
   ['story_text_ru', 'Страница «От сада до стола»: текст (RU), каждый абзац с новой строки', 'Наш сад — в Исфаре, на севере Таджикистана. Здесь наша семья выращивает абрикосы.\nКогда абрикосы созревают, мы собираем урожай и сушим его — так получается курага.\nКурагу привозим в Харьков, на Центральный рынок. Здесь мы встречаем покупателей на наших точках.\nСпрашивайте про сад и курагу — расскажем с радостью.'],
   ['story_photos', 'Сторінка «Від саду до столу»: посилання на фото (https://…), кожне з нового рядка', ''],
   ['mail_every_days', 'Розсилка: не частіше ніж раз на N днів одній людині (0 — без обмеження)', '7'],
+  ['referral_on', '«Пригости друга»: 1 — увімкнено, 0 — вимкнено', '0'],
+  ['referral_gift_ua', '«Пригости друга»: який пробник даруємо (UA), наприклад «50 г кураги». Порожньо — функція вимкнена', ''],
+  ['referral_gift_ru', '«Угости друга»: какой пробник дарим (RU)', ''],
+  ['referral_min_order', '«Пригости друга»: мінімальна сума першого замовлення друга, ₴ (0 — без обмеження)', '0'],
   ['father_ids', 'Добірка «Спеції від батька» на головній: ID товарів через кому (наприклад SPC-001, SPC-004). Порожньо — без блоку', ''],
   ['father_title_ua', 'Добірка «Спеції від батька»: заголовок (UA)', 'Спеції від батька'],
   ['father_title_ru', 'Подборка «Специи от отца»: заголовок (RU)', 'Специи от отца'],
@@ -2067,10 +2075,10 @@ var SETTINGS_DEF = [
   ['father_text_ru', 'Подборка «Специи от отца»: текст под заголовком (RU)', ''],
   ['remind_text_ru', 'Текст напоминания (RU)', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.']
 ];
-var SETTINGS_NUM = { mail_every_days: 365, min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72 };
+var SETTINGS_NUM = { referral_min_order: 100000, mail_every_days: 365, min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72 };
 var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'feature_id', 'gift_text_ua', 'gift_text_ru', 'loyal_text_ua', 'loyal_text_ru',
   'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos',
-  'father_ids', 'father_text_ua', 'father_text_ru'];
+  'father_ids', 'father_text_ua', 'father_text_ru', 'referral_gift_ua', 'referral_gift_ru'];
 var settingsMemo_ = null;
 
 function isYes_(v) {
@@ -2113,6 +2121,7 @@ function saveSettings_(values) {
     else if (SETTINGS_NUM[k]) next[k] = String(Math.max(0, Math.min(SETTINGS_NUM[k], Math.round(toNum_(values[k])))));
     else if (k === 'feature_id') next[k] = clean_(values[k], 20).toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9-]/g, '');
     else if (k === 'father_ids') next[k] = idList_(values[k], 20).join(', ');
+    else if (k === 'referral_on') next[k] = /^(1|так|да|yes|true)$/i.test(String(values[k]).trim()) || values[k] === true ? '1' : '0';
     else if (k === 'theme') next[k] = /^(newyear|navruz)$/.test(String(values[k]).trim().toLowerCase()) ? String(values[k]).trim().toLowerCase() : '';
     else next[k] = multiline_(values[k], k.indexOf('story_') === 0 ? 3000 : 500);
   });
@@ -3347,6 +3356,11 @@ function idList_(text, max) {
 }
 
 function shopExtras8_(shop, st) {
+  // Волна 2в: «Пригости друга». Пока выключено или подарок не задан — в каталоге ничего нет и ссылки не выдаются.
+  var refGiftUa = String(st.referral_gift_ua || '').trim(), refGiftRu = String(st.referral_gift_ru || '').trim();
+  if (String(st.referral_on).trim() === '1' && (refGiftUa || refGiftRu)) {
+    shop.ref = { min: Math.max(0, Math.round(toNum_(st.referral_min_order))), gift: { ua: refGiftUa || refGiftRu, ru: refGiftRu || refGiftUa } };
+  }
   // Волна 2б: подборка «Спеції від батька» — товары и тексты из настроек. Пусто — блока нет.
   var fatherIds = idList_(st.father_ids, 20);
   if (fatherIds.length) {
@@ -5814,4 +5828,63 @@ function setupWave2c() {
   console.log(text);
   try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }
   return done;
+}
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2в · В3: «Пригости друга»                                   */
+/* ======================================================================== */
+/*
+ * Выключено по умолчанию (referral_on = 0). Денежных бонусов нет: только пробник, текст которого задаёт владелец.
+ * Новый клиент, пришедший по ссылке ?startapp=ref_<id>, получает пробник к первому заказу от referral_min_order;
+ * пригласивший — такой же пробник к своему следующему заказу. Один новый клиент засчитывается один раз,
+ * самоприглашение не работает. Учёт — лист «Запрошення», всё пишется в «Журнал».
+ */
+
+var SHEET_INVITES = 'Запрошення';
+var INVITE_HEAD = ['Дата', 'Хто запросив (id)', 'Кого запросили (id)', 'Замовлення запрошеного', 'Пробник', 'Замовлення запросившого (пробник видано)'];
+var IV = { date: 0, by: 1, who: 2, order: 3, gift: 4, byOrder: 5 };
+
+/**
+ * Пробники к этому заказу. Вызывается под блокировкой заказа, когда у заказа уже есть номер.
+ * Возвращает [{ ua, ru }] — так же, как остальные подарки.
+ */
+function referralGifts_(ref, o, refId, ordersSheet, col) {
+  var out = [];
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(SHEET_INVITES);
+    var rows = sheet && sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, INVITE_HEAD.length).getValues() : [];
+    refId = String(refId || '').trim();
+    // 1. Новый клиент пришёл по ссылке друга: первый заказ от минимальной суммы.
+    if (/^\d{5,15}$/.test(refId) && refId !== o.uid && o.total >= ref.min &&
+        !rows.some(function (row) { return String(row[IV.who]).trim() === o.uid; }) && !hadOrders_(ordersSheet, col, o.uid)) {
+      if (!sheet) {
+        sheet = ss.insertSheet(SHEET_INVITES);
+        sheet.getRange(1, 1, 1, INVITE_HEAD.length).setValues([INVITE_HEAD]).setFontWeight('bold');
+        sheet.setFrozenRows(1);
+      }
+      sheet.appendRow([new Date(), '\'' + refId, '\'' + o.uid, o.num, safeCell_(ref.gift.ua), '']);
+      sheet.getRange(sheet.getLastRow(), IV.date + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+      out.push({ ua: 'Пробник за запрошенням друга: ' + ref.gift.ua, ru: 'Пробник по приглашению друга: ' + ref.gift.ru });
+      logAction_('Запрошення: зараховано', 'клієнт ' + o.uid + ', замовлення ' + o.num, 'запросив ' + refId, ref.gift.ua);
+    }
+    // 2. Этот клиент сам кого-то пригласил, и пробник ему ещё не выдавали: один пробник на один заказ.
+    for (var r = 0; r < rows.length; r++) {
+      if (String(rows[r][IV.by]).trim() !== o.uid || String(rows[r][IV.byOrder]).trim()) continue;
+      sheet.getRange(r + 2, IV.byOrder + 1).setValue(o.num);
+      out.push({ ua: 'Пробник за запрошеного друга: ' + ref.gift.ua, ru: 'Пробник за приглашённого друга: ' + ref.gift.ru });
+      logAction_('Запрошення: пробник запросившому', 'клієнт ' + o.uid + ', замовлення ' + o.num, 'запрошений ' + String(rows[r][IV.who]).trim(), ref.gift.ua);
+      break;
+    }
+  } catch (err) {
+    console.error('referral: ' + (err && err.stack || err)); // сбой здесь заказ не отменяет
+  }
+  return out;
+}
+
+/** Были ли у клиента заказы раньше (любые, кроме тестовых). «Первый заказ» — это когда не было ни одного. */
+function hadOrders_(sheet, col, uid) {
+  if (col.uid < 0 || sheet.getLastRow() < 2) return false;
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  return values.some(function (row) { return String(row[col.uid]).trim() === String(uid) && cell_(row, col.source).indexOf('test') < 0; });
 }

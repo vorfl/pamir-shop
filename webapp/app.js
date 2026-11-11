@@ -1717,7 +1717,7 @@
     });
     html += '</ul>';
     if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
-    html += whCartHtml() + cartPerksHtml();
+    html += whCartHtml() + refCartHtml() + cartPerksHtml();
     html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
     html += railHtml(t('cartMore'), '', crossSell(), true);
     html += '<button type="button" class="btn btn--ghost btn--block" data-action="clear-cart">' + icon('trash-2') + esc(t('clearCart')) + '</button>';
@@ -1899,7 +1899,7 @@
       name: f.name, phone: f.phone.replace(/\s+/g, ''),
       delivery: f.delivery, city: f.delivery === 'np' ? f.city : '', branch: f.delivery === 'np' ? f.branch : '',
       npType: f.delivery === 'np' ? (f.npType || 'branch') : '', point: f.delivery === 'pickup' ? (f.point || '') : '',
-      pay: f.pay, comment: f.comment, lang: state.lang, total: cartTotal(),
+      pay: f.pay, comment: f.comment, lang: state.lang, total: cartTotal(), ref: refStored(),
       initData: inTelegram ? tg.initData : '', test: DEBUG
     };
   }
@@ -1978,7 +1978,7 @@
       state.done = { number: res.number || '', stub: !!res.stub, test: DEBUG && !res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay,
         npType: state.form.npType, point: state.form.delivery === 'pickup' && pointById(state.form.point) ? loc(pointById(state.form.point)) : '',
         gifts: Array.isArray(res.gifts) ? res.gifts : [] };
-      if (!res.stub) { store.set(HASORD_KEY, '1'); my.list = null; }
+      if (!res.stub) { store.set(HASORD_KEY, '1'); my.list = null; store.set(REF_KEY, ''); } // приглашение засчитывается только к первому заказу
       track('order', res.number || '', total);
       flushEvents(false);
       saveFormCloud();
@@ -2102,7 +2102,7 @@
     html += '<h3 class="sec">' + esc(t('ptsTitle')) + '</h3><button type="button" class="btn btn--block" data-w1="go" data-view="points">' + icon('pin') + esc(t('ptsBtn')) + '</button>' +
       (shop.story ? '<button type="button" class="btn btn--block" data-w1="go" data-view="story">' + icon('sprout') + esc(t('storyBtn')) + '</button>' : '') +
       (shop.contact ? '<button type="button" class="btn btn--block" data-w1="contact">' + esc(t('writeUs')) + '</button>' : '') +
-      (bizAvailable() ? '<button type="button" class="btn btn--block" data-w1="go" data-view="biz">' + esc(t('bizBtn')) + '</button>' : '');
+      (bizAvailable() ? '<button type="button" class="btn btn--block" data-w1="go" data-view="biz">' + esc(t('bizBtn')) + '</button>' : '') + refHtml();
     if (!points().length && (addr || hours)) {
       html += '<h3 class="sec">' + esc(t('meShop')) + '</h3><div class="facts facts--card">' +
         (addr ? '<p>' + icon('pin') + '<span>' + esc(addr) + '</span></p>' : '') +
@@ -2872,6 +2872,8 @@
       if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
       if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
       if (/^(gift|loyal)_text_/.test(f.k)) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
+      if (f.k === 'referral_on' || f.k === 'referral_min_order' || f.k === 'mail_every_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+      if (f.k.indexOf('referral_gift') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
       if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
       if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
       return fArea(f.k, f.label, f.v, 500);
@@ -3848,6 +3850,10 @@
       openUrl(b.getAttribute('data-url'));
     } else if (kind === 'contact') {
       openUrl(shopInfo().contact);
+    } else if (kind === 'ref-share') {
+      refShare(false);
+    } else if (kind === 'ref-copy') {
+      refShare(true);
     } else if (kind === 'rec') {
       openRecipe(b.getAttribute('data-id'));
     } else if (kind === 'rec-add') {
@@ -4065,6 +4071,10 @@
       howTitle: 'Як їсти', recTitle: 'Рецепти', recWith: 'Рецепти з цим товаром', recItems: 'Що знадобиться', recAdd: 'Додати інгредієнти в кошик', recOut: 'немає в наявності',
       recAdded: 'Додано в кошик: {n}.', recAlready: 'Усі інгредієнти вже в кошику.', recMissing: 'Зараз немає в наявності: {list}.', recNone: 'Цих товарів зараз немає в наявності.',
       recGone: 'Рецепт не знайдено.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для підбору', admTagsHint: 'Через кому: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      refTitle: 'Пригости друга', refText: 'Надішліть другові своє посилання. До першого замовлення він отримає пробник: {gift}. А ви — такий самий пробник до свого наступного замовлення.',
+      refTextMin: 'Надішліть другові своє посилання. До першого замовлення від {min} він отримає пробник: {gift}. А ви — такий самий пробник до свого наступного замовлення.',
+      refShare: 'Поділитися посиланням', refCopy: 'Скопіювати посилання', refCopied: 'Посилання скопійовано', refMsg: 'Пригощаю: PAMIR — горіхи та сухофрукти. За цим посиланням до першого замовлення дадуть пробник.',
+      refCart: 'Вас запросив друг: до першого замовлення — пробник ({gift}).', refCartMin: 'Вас запросив друг: до першого замовлення від {min} — пробник ({gift}).',
       quizBtn: 'Підібрати смаколики', quizTitle: 'Підібрати смаколики', quizQ1: 'Для чого обираєте?', quizQ2: 'Солодке чи солоне?', quizQ3: 'Скільки готові витратити на одну позицію?',
       quizAny: 'Байдуже', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без обмежень', quizStep: 'Питання {a} з {b}', quizResult: 'Ось що вам підійде', quizPopular: 'Точного збігу немає. Ось те, що зараз беруть найчастіше',
       quizAgain: 'Підібрати ще раз', quizBack: 'Назад',
@@ -4075,6 +4085,10 @@
       howTitle: 'Как есть', recTitle: 'Рецепты', recWith: 'Рецепты с этим товаром', recItems: 'Что понадобится', recAdd: 'Добавить ингредиенты в корзину', recOut: 'нет в наличии',
       recAdded: 'Добавлено в корзину: {n}.', recAlready: 'Все ингредиенты уже в корзине.', recMissing: 'Сейчас нет в наличии: {list}.', recNone: 'Этих товаров сейчас нет в наличии.',
       recGone: 'Рецепт не найден.', admHowUa: 'Як їсти (UA)', admHowRu: 'Как есть (RU)', admTags: 'Теги для подбора', admTagsHint: 'Через запятую: до чаю, перекус, подарунок, солодке, солоне, для плову, для випічки',
+      refTitle: 'Угости друга', refText: 'Отправьте другу свою ссылку. К первому заказу он получит пробник: {gift}. А вы — такой же пробник к своему следующему заказу.',
+      refTextMin: 'Отправьте другу свою ссылку. К первому заказу от {min} он получит пробник: {gift}. А вы — такой же пробник к своему следующему заказу.',
+      refShare: 'Поделиться ссылкой', refCopy: 'Скопировать ссылку', refCopied: 'Ссылка скопирована', refMsg: 'Угощаю: PAMIR — орехи и сухофрукты. По этой ссылке к первому заказу дадут пробник.',
+      refCart: 'Вас пригласил друг: к первому заказу — пробник ({gift}).', refCartMin: 'Вас пригласил друг: к первому заказу от {min} — пробник ({gift}).',
       quizBtn: 'Подобрать вкусности', quizTitle: 'Подобрать вкусности', quizQ1: 'Для чего выбираете?', quizQ2: 'Сладкое или солёное?', quizQ3: 'Сколько готовы потратить на одну позицию?',
       quizAny: 'Неважно', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без ограничений', quizStep: 'Вопрос {a} из {b}', quizResult: 'Вот что вам подойдёт', quizPopular: 'Точного совпадения нет. Вот то, что сейчас берут чаще всего',
       quizAgain: 'Подобрать ещё раз', quizBack: 'Назад',
@@ -4167,6 +4181,54 @@
     updateChrome();
     if (added) toast(tf('recAdded', { n: added }), t('open'), function () { go('cart'); });
   }
+  /* ---- В3. «Пригости друга» ---- */
+  /*
+   * Работает, только когда владелец включил функцию и задал пробник (тогда сервер присылает shop.ref).
+   * Пока выключено — ни блока, ни ссылок. Засчитывает приглашение сервер: один новый клиент — один раз, себя пригласить нельзя.
+   */
+  var REF_KEY = 'pamir_ref';
+  (function () { // пришли по ссылке друга ?startapp=ref_<id>: запоминаем до первого заказа
+    var m = String((inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || params.get('tgWebAppStartParam') || '').match(/^ref_(\d{5,15})$/);
+    if (m && tgUser && String(tgUser.id) !== m[1]) store.set(REF_KEY, m[1]);
+  })();
+  function refStored() {
+    var v = String(store.get(REF_KEY) || '');
+    return /^\d{5,15}$/.test(v) && shopInfo().ref ? v : '';
+  }
+  function refLink() {
+    return tgUser && cfg.BOT && cfg.APP ? 'https://t.me/' + cfg.BOT + '/' + cfg.APP + '?startapp=ref_' + tgUser.id : '';
+  }
+  function refHtml() {
+    var r = shopInfo().ref;
+    if (!r || !inTelegram || !refLink()) return '';
+    return '<h3 class="sec">' + esc(t('refTitle')) + '</h3><div class="bizcard refcard"><p class="bizcard__text">' +
+      esc(tf(r.min > 0 ? 'refTextMin' : 'refText', { gift: loc(r.gift), min: money(r.min) })) + '</p></div>' +
+      '<button type="button" class="btn btn--primary btn--block" data-w1="ref-share">' + esc(t('refShare')) + '</button>' +
+      '<button type="button" class="btn btn--block" data-w1="ref-copy">' + esc(t('refCopy')) + '</button>';
+  }
+  /** Подсказка в корзине тому, кого пригласили (пока он не сделал первый заказ). */
+  function refCartHtml() {
+    var r = shopInfo().ref;
+    if (!r || !refStored() || (my.list && my.list.length)) return '';
+    return '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf(r.min > 0 ? 'refCartMin' : 'refCart', { gift: loc(r.gift), min: money(r.min) })) + '</span></p>';
+  }
+  function refShare(copyOnly) {
+    var link = refLink();
+    if (!link) return;
+    if (copyOnly) {
+      var tmp = document.createElement('input');
+      tmp.value = link; tmp.setAttribute('readonly', ''); tmp.style.position = 'fixed'; tmp.style.opacity = '0';
+      document.body.appendChild(tmp);
+      copyText(link, tmp).then(function (ok) { document.body.removeChild(tmp); toast(t(ok ? 'refCopied' : 'admLinkFail')); });
+      return;
+    }
+    track('share', '', 'ref');
+    openTg('https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(t('refMsg')));
+  }
+  function openTg(url) {
+    try { tg.openTelegramLink(url); } catch (e) { window.open(url, '_blank'); }
+  }
+
   /* ---- В2. Квиз «Підібрати смаколики» ---- */
   /*
    * Подбор идёт только по тегам из колонки «Теги» и по настоящим ценам. Нет ни одного товара в наличии с тегами — квиза нет.

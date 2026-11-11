@@ -1309,5 +1309,56 @@ console.log('Волна 2в · В1: «Як їсти» и рецепты');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+console.log('Волна 2в · В3: «Пригости друга»');
+{
+  const g = fresh();
+  const one = (uid, total, extra) => order(g, U(uid), [{ id: 'NUT-007', g: 0, q: total / 85 }], total, extra);
+  const giftLines = () => { const r = g.sheets['Замовлення'].rows.slice(-1)[0]; try { return JSON.parse(r[16]).g || []; } catch (e) { return []; } };
+  const I = () => (g.sheets['Запрошення'] ? g.sheets['Запрошення'].rows : []);
+  // выключено по умолчанию
+  const f = adm(g, 900, 'admin.settings').fields;
+  ok(f.find(x => x.k === 'referral_on').v === '0' && f.find(x => x.k === 'referral_gift_ua').v === '' && f.find(x => x.k === 'referral_min_order').v === '0', 'по умолчанию: referral_on = 0, пробник пустой');
+  ok(!g.get({ action: 'catalog' }).shop.ref, 'выключено — в каталоге ничего про приглашения нет');
+  const off = one(951, 85, { ref: '950000' });
+  ok(off.ok && (!off.gifts || !off.gifts.length) && !g.sheets['Запрошення'], 'выключено — заказ по ссылке друга ничего не даёт и ничего не записывает', off);
+  settings(g, { referral_on: '1' });
+  ok(!g.get({ action: 'catalog' }).shop.ref, 'включено, но пробник не задан — функции по-прежнему нет');
+  settings(g, { referral_on: '0', referral_gift_ua: '50 г кураги' });
+  ok(!g.get({ action: 'catalog' }).shop.ref, 'пробник задан, но выключено — функции нет');
+  settings(g, { referral_on: 'так', referral_gift_ua: '50 г кураги', referral_min_order: '170' });
+  const sr = g.get({ action: 'catalog' }).shop.ref;
+  ok(sr && sr.min === 170 && sr.gift.ua === '50 г кураги' && sr.gift.ru === '50 г кураги' && g.sheets['Налаштування'].rows.find(r => r[0] === 'referral_on')[1] === '1', 'включено и пробник задан — функция работает', sr);
+  // пригласивший 960000 (у него уже есть заказ)
+  one(960000, 85);
+  ok(giftLines().length === 0, 'обычный заказ пригласившего — без пробника');
+  // новый клиент по ссылке
+  const low = one(961000, 85, { ref: '960000' });
+  ok(low.ok && (!low.gifts || !low.gifts.length) && I().length === 0, 'первый заказ меньше минимальной суммы: пробника нет, приглашение не засчитано', low);
+  const first = one(962000, 170, { ref: '960000', lang: 'ru' });
+  ok(first.ok && first.gifts.length === 1 && first.gifts[0] === 'Пробник по приглашению друга: 50 г кураги' && giftLines()[0] === 'Пробник за запрошенням друга: 50 г кураги', 'новый клиент по ссылке: пробник к первому заказу (клиенту — на его языке)', first.gifts);
+  ok(I().length === 2 && I()[1][1] === '960000' && I()[1][2] === '962000' && /^P-/.test(I()[1][3]) && I()[1][4] === '50 г кураги' && I()[1][5] === '', 'запись в листе «Запрошення»', I()[1]);
+  ok(/Пробник за запрошенням друга: 50 г кураги/.test(g.sent.filter(m => String(m.payload.chat_id) === '900' && /Замовлення P-/.test(m.payload.text || '')).pop().payload.text), 'в сообщении админу пометка о пробнике');
+  const second = one(962000, 170, { ref: '960000' });
+  ok(second.ok && (!second.gifts || !second.gifts.length) && I().length === 2, 'второй заказ того же клиента: пробник второй раз не даётся');
+  ok(!(one(961000, 170, { ref: '960000' }).gifts || []).length && I().length === 2, 'у клиента уже был заказ — по ссылке он не «новый»');
+  const self = one(963000, 170, { ref: '963000' });
+  ok(self.ok && (!self.gifts || !self.gifts.length) && I().length === 2, 'самоприглашение не работает', self);
+  ok(!(one(964000, 170, { ref: 'abc' }).gifts || []).length && !(one(965000, 170, { ref: '12' }).gifts || []).length && I().length === 2, 'мусор вместо id пригласившего игнорируется');
+  ok(!(g.post({ action: 'order', initData: g.initData(U(966000)), test: true, ref: '960000', items: [{ id: 'NUT-007', g: 0, q: 2 }], total: 170, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash' }).gifts || []).length && I().length === 2, 'тестовый заказ приглашением не считается');
+  one(967000, 170, { ref: '960000' });
+  ok(I().length === 3, 'второй приглашённый друг засчитан');
+  // пригласивший получает пробник к следующим заказам: по одному на заказ
+  const inv1 = one(960000, 85);
+  ok(inv1.gifts.length === 1 && inv1.gifts[0] === 'Пробник за запрошеного друга: 50 г кураги' && /^P-/.test(I()[1][5]) && I()[2][5] === '', 'пригласивший получил пробник к следующему заказу (минимальная сумма для него не нужна)', inv1.gifts);
+  const inv2 = one(960000, 85), inv3 = one(960000, 85);
+  ok(inv2.gifts.length === 1 && /^P-/.test(I()[2][5]) && (!inv3.gifts || !inv3.gifts.length), 'за второго друга — пробник к ещё одному заказу; дальше пробников нет', [inv2.gifts, inv3.gifts]);
+  ok(logRows(g, 'Запрошення: зараховано').length === 2 && logRows(g, 'Запрошення: пробник запросившому').length === 2, 'всё записано в «Журнал»');
+  // подарок от суммы и пробник складываются, сумма заказа не меняется
+  settings(g, { gift_from: '100', gift_text_ua: 'жменя родзинок' });
+  const both = one(968000, 170, { ref: '960000' });
+  ok(both.ok && both.gifts.length === 2 && g.sheets['Замовлення'].rows.slice(-1)[0][13] === 170, 'пробник не меняет сумму заказа и складывается с подарком от суммы', both.gifts);
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);
