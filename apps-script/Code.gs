@@ -64,7 +64,11 @@ var PRODUCT_COLS = {
   packPrices: ['ціни фасувань', 'ціна фасування'],
   // Волна 2б: состав специй и смесей. Необязательные колонки.
   compUa:  ['склад (ua)', 'склад'],
-  compRu:  ['состав (ru)', 'состав']
+  compRu:  ['состав (ru)', 'состав'],
+  // Волна 2в: «Як їсти» и теги для подбора. Необязательные колонки.
+  howUa:   ['як їсти (ua)', 'як їсти'],
+  howRu:   ['как есть (ru)', 'как есть'],
+  tags:    ['теги', 'тэги']
 };
 
 /** Бейдж товара: в таблице пишется словом, витрина получает код. */
@@ -162,13 +166,21 @@ function buildCatalog_() {
   products.forEach(function (p) { used[p.c] = true; });
   categories = categories.filter(function (c) { return used[c.code]; });
 
-  return {
+  var out = {
     ok: true,
     updated: new Date().toISOString(),
     shop: readShop_(),
     categories: categories,
     products: products
   };
+  // Рецепты (волна 2в): лист необязательный; нет листа или показываемых рецептов — поля нет.
+  try {
+    var recipes = readRecipes_(ss);
+    if (recipes.length) out.recipes = recipes;
+  } catch (err) {
+    console.warn('recipes: ' + err);
+  }
+  return out;
 }
 
 /** Настройки магазина для витрины: адрес, часы, способы оплаты, минимальная сумма, объявление. */
@@ -351,6 +363,12 @@ function readProducts_(ss, categories) {
     var compUa = cell_(row, col.compUa), compRu = cell_(row, col.compRu);
     if (compUa) p.cu = compUa;
     if (compRu && compRu !== compUa) p.cr = compRu;
+    // «Як їсти» (1–3 строки) и теги для квиза: только то, что написано в таблице.
+    var howUa = cell_(row, col.howUa), howRu = cell_(row, col.howRu);
+    if (howUa) p.eu = howUa.slice(0, 400);
+    if (howRu && howRu !== howUa) p.er = howRu.slice(0, 400);
+    var tags = tagList_(cell_(row, col.tags));
+    if (tags.length) p.tg = tags;
     products.push(p);
   }
   return products;
@@ -590,6 +608,7 @@ function onOpen() {
     .addItem('Етап 8: створити листи й колонки', 'setupStage8')
     .addItem('Етап 8.2: створити листи «Архів товарів» і «Клієнти»', 'setupWave2a')
     .addItem('Етап 8.3: створити листи й колонки (опт, розсилка, оплата)', 'setupWave2b')
+    .addItem('Етап 8.4: створити лист «Рецепти» і колонки (як їсти, теги)', 'setupWave2c')
     .addToUi();
 }
 
@@ -1636,6 +1655,7 @@ function handleAdmin_(body) {
   if (a === 'admin.mailTest') return deny('mail') || testMail_(String(body.id || ''), me, token);
   if (a === 'admin.mailSend') return deny('mail') || startMail_(String(body.id || ''), String(body.at || ''), token);
   if (a === 'admin.mailCancel') return deny('mail') || cancelMail_(String(body.id || ''));
+  if (a === 'admin.recipePhoto') return deny('mail') || recipePhoto_(String(body.id || '')); // фото рецепта для шаблона рассылки
   if (a === 'admin.wh') return deny('wh') || listWh_();
   if (a === 'admin.whDecide') return deny('wh') || decideWhApp_(String(body.id || ''), String(body.d || ''), token, null);
   if (a === 'admin.whRevoke') return deny('wh') || revokeWholesaler_(String(body.uid || ''));
@@ -1707,7 +1727,8 @@ function adminProduct_(row, col) {
     badge: badgeCode_(cell_(row, col.badge)), old: toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : 0),
     qty: (function () { var q = col.qty >= 0 ? leftQty_(row[col.qty]) : null; return q === null ? '' : String(q).replace('.', ','); })(),
     end: (function () { var e = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], 'Europe/Kiev') : null; return e ? e.day : ''; })(),
-    cUa: cell_(row, col.compUa), cRu: cell_(row, col.compRu)
+    cUa: cell_(row, col.compUa), cRu: cell_(row, col.compRu),
+    eUa: cell_(row, col.howUa), eRu: cell_(row, col.howRu), tags: tagList_(cell_(row, col.tags)).join(', ')
   };
 }
 
@@ -1834,7 +1855,11 @@ function updateProduct_(id, patch, create) {
       ensureCol('whMinKg', 'Опт: мін, кг');
       set(col.whMinKg, toNum_(patch.whn) > 0 ? Math.round(toNum_(patch.whn) * 1000) / 1000 : '');
     }
-    [['cUa', 'compUa', 'Склад (UA)'], ['cRu', 'compRu', 'Состав (RU)']].forEach(function (c) { // колонка создаётся, только когда состав впервые вписали
+    if (typeof patch.tags === 'string' && (patch.tags.trim() || col.tags >= 0)) {
+      ensureCol('tags', 'Теги');
+      set(col.tags, safeCell_(tagList_(patch.tags).join(', ')));
+    }
+    [['cUa', 'compUa', 'Склад (UA)'], ['cRu', 'compRu', 'Состав (RU)'], ['eUa', 'howUa', 'Як їсти (UA)'], ['eRu', 'howRu', 'Как есть (RU)']].forEach(function (c) { // колонка создаётся, только когда текст впервые вписали
       if (typeof patch[c[0]] !== 'string' || (!patch[c[0]].trim() && col[c[1]] < 0)) return;
       ensureCol(c[1], c[2]);
       set(col[c[1]], safeCell_(multiline_(patch[c[0]], 400)));
@@ -2585,7 +2610,7 @@ var ADMIN_COLS = (function () {
 })();
 /** Какое право нужно, чтобы изменить поле товара. */
 var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', img: 'photo',
-  ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
+  ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text', eUa: 'text', eRu: 'text', tags: 'text',
   price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', whn: 'price', packs: 'price', t: 'price' };
 var INVITE_TTL_MS = 24 * 3600 * 1000;
 var LOG_HEAD = ['Час', 'Хто', 'Chat id', 'Дія', 'Об\'єкт', 'Було', 'Стало'];
@@ -2784,7 +2809,7 @@ function listLog_() {
 /** Что изменилось в товаре: сравниваем то, что видит панель, до и после. */
 var PRODUCT_LOG_NAMES = { cat: 'категорія', ua: 'назва (UA)', ru: 'назва (RU)', t: 'тип', packs: 'фасування', price: 'ціна', stock: 'наявність',
   hidden: 'приховано', img: 'фото', dUa: 'опис (UA)', dRu: 'опис (RU)', wh: 'опт ціна', wm: 'опт мін. обсяг', badge: 'бейдж', old: 'стара ціна',
-  qty: 'залишок', end: 'акція до', cUa: 'склад (UA)', cRu: 'состав (RU)', whn: 'опт мін, кг' };
+  qty: 'залишок', end: 'акція до', cUa: 'склад (UA)', cRu: 'состав (RU)', whn: 'опт мін, кг', eUa: 'як їсти (UA)', eRu: 'как есть (RU)', tags: 'теги' };
 function logProductDiff_(before, after) {
   Object.keys(PRODUCT_LOG_NAMES).forEach(function (k) {
     var a = before ? before[k] : '', b = after[k];
@@ -5172,7 +5197,7 @@ var MAIL_HEAD = ['ID', 'Створено', 'Хто створив', 'Стату�
 var ML = { id: 0, created: 1, by: 2, status: 3, seg: 4, ua: 5, ru: 6, photo: 7, btn: 8, at: 9, sender: 10, total: 11, sent: 12, err: 13, blocked: 14, skipped: 15, clicks: 16, orders: 17, svc: 18 };
 var ML_NEW = 'створена', ML_PLAN = 'запланована', ML_RUN = 'йде', ML_DONE = 'завершена', ML_STOP = 'скасована';
 var MAIL_SEGMENTS = { all: 'усі клієнти', cat: 'купували категорію', prod: 'купували товар', idle: 'не замовляли 30+ днів', wh: 'оптовики', sub: 'чекають на товар' };
-var MAIL_BUTTONS = { none: '', shop: 'Відкрити магазин', prod: 'Відкрити товар', cat: 'Відкрити категорію' };
+var MAIL_BUTTONS = { none: '', shop: 'Відкрити магазин', prod: 'Відкрити товар', cat: 'Відкрити категорію', rec: 'Відкрити рецепт' };
 var MAIL_IDLE_DAYS = 30;
 var MAIL_BATCH = 120;          // сообщений за один запуск триггера
 var MAIL_RUN_MS = 4 * 60 * 1000; // запуск триггера работает не дольше (лимит Apps Script — 6 минут)
@@ -5361,12 +5386,12 @@ function mailInput_(body) {
   var btnK = MAIL_BUTTONS[body.btn && body.btn.k] !== undefined ? String(body.btn.k) : 'none';
   var segK = MAIL_SEGMENTS[body.seg && body.seg.k] ? String(body.seg.k) : 'all';
   var m = { ua: multiline_(body.ua, 3500), ru: multiline_(body.ru, 3500), photo: clean_(body.photo, 200),
-    btn: { k: btnK, v: btnK === 'prod' || btnK === 'cat' ? clean_(body.btn.v, 40).toUpperCase() : '' },
+    btn: { k: btnK, v: btnK === 'prod' || btnK === 'cat' || btnK === 'rec' ? clean_(body.btn.v, 40).toUpperCase() : '' },
     seg: { k: segK, v: segK === 'cat' || segK === 'prod' || segK === 'sub' ? clean_(body.seg.v, 40).toUpperCase() : '' } };
   if (!m.ua && !m.ru) return { error: 'bad_form' };
   if (m.photo && Math.max(m.ua.length, m.ru.length) > 1000) return { error: 'too_long' }; // подпись к фото в Telegram — до 1024 знаков
   if (m.photo && !/^https:\/\//i.test(m.photo) && !/^[A-Za-z0-9_-]{20,200}$/.test(m.photo)) return { error: 'bad_photo' };
-  if ((m.btn.k === 'prod' || m.btn.k === 'cat') && !m.btn.v) return { error: 'bad_form' };
+  if ((m.btn.k === 'prod' || m.btn.k === 'cat' || m.btn.k === 'rec') && !m.btn.v) return { error: 'bad_form' };
   if ((m.seg.k === 'cat' || m.seg.k === 'prod') && !m.seg.v) return { error: 'bad_form' };
   return { m: m };
 }
@@ -5436,7 +5461,9 @@ function mailKeyboard_(m, ru, webapp) {
     var q = 'm=' + encodeURIComponent(m.id);
     if (m.btn.k === 'prod') q += '&p=' + encodeURIComponent(m.btn.v);
     if (m.btn.k === 'cat') q += '&cat=' + encodeURIComponent(m.btn.v);
+    if (m.btn.k === 'rec') q += '&rec=' + encodeURIComponent(m.btn.v);
     var label = m.btn.k === 'prod' ? (ru ? '🛒 Открыть товар' : '🛒 Відкрити товар') : m.btn.k === 'cat' ? (ru ? '🛒 Открыть категорию' : '🛒 Відкрити категорію')
+      : m.btn.k === 'rec' ? (ru ? '📖 Открыть рецепт' : '📖 Відкрити рецепт')
       : (ru ? '🛒 Открыть магазин' : '🛒 Відкрити магазин');
     kb.push([{ text: label, web_app: { url: appUrl_(webapp, q) } }]);
   }
@@ -5693,4 +5720,98 @@ function mailUnsubscribe_(uid) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2в · В1: «Як їсти» и рецепты                                */
+/* ======================================================================== */
+/*
+ * Тексты «Як їсти» и рецептов пишет владелец в таблице. Сервер ничего не придумывает: свойств товара и пользы
+ * для здоровья в коде нет. Нет листа «Рецепти» или показываемых рецептов — на витрине ничего не появляется.
+ */
+
+var SHEET_RECIPES = 'Рецепти';
+var RECIPE_HEAD = ['ID', 'Назва (UA)', 'Название (RU)', 'Фото', 'Текст (UA)', 'Текст (RU)', 'Товари', 'Показувати'];
+var RECIPE_COLS = { id: ['id'], ua: ['назва (ua)', 'назва'], ru: ['название (ru)', 'название'], photo: ['фото'], textUa: ['текст (ua)', 'текст'],
+  textRu: ['текст (ru)'], items: ['товари', 'товары', 'інгредієнти'], show: ['показувати', 'показывать'] };
+var MAX_RECIPES = 40;
+
+/** «До чаю, Перекус; до чаю» → ['до чаю', 'перекус']: теги через запятую, в нижнем регистре, без повторов. */
+function tagList_(text) {
+  var out = [];
+  String(text === null || text === undefined ? '' : text).toLowerCase().split(/[,;\n]+/).forEach(function (s) {
+    s = s.replace(/\s+/g, ' ').trim().slice(0, 30);
+    if (s && out.indexOf(s) < 0 && out.length < 12) out.push(s);
+  });
+  return out;
+}
+
+/** Рецепты для витрины: только строки с «Показувати» = так. Фото на витрине — только ссылка https; код file_id годится лишь для рассылки. */
+function readRecipes_(ss) {
+  var sheet = (ss || SpreadsheetApp.getActiveSpreadsheet()).getSheetByName(SHEET_RECIPES);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getDataRange().getValues();
+  var col = mapHeaders_(values[0], RECIPE_COLS);
+  if (col.id < 0 || col.ua < 0) return [];
+  var out = [], seen = {};
+  for (var r = 1; r < values.length && out.length < MAX_RECIPES; r++) {
+    var row = values[r];
+    var id = cell_(row, col.id).toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9_-]/g, '').slice(0, 20);
+    var ua = cell_(row, col.ua);
+    if (!id || !ua || seen[id] || !isYes_(cell_(row, col.show))) continue;
+    seen[id] = true;
+    var rec = { id: id, ua: ua.slice(0, 120) };
+    var ru = cell_(row, col.ru);
+    if (ru && ru !== ua) rec.ru = ru.slice(0, 120);
+    var tUa = cell_(row, col.textUa), tRu = cell_(row, col.textRu);
+    if (tUa) rec.tUa = tUa.slice(0, 3000);
+    if (tRu && tRu !== tUa) rec.tRu = tRu.slice(0, 3000);
+    var photo = cell_(row, col.photo);
+    if (/^https:\/\//i.test(photo)) rec.img = normalizePhoto_(photo);
+    else if (/^[A-Za-z0-9_-]{20,200}$/.test(photo)) rec.fid = 1; // есть код фото для рассылки; сам код наружу не отдаётся
+    var items = idList_(cell_(row, col.items), 20);
+    if (items.length) rec.items = items;
+    out.push(rec);
+  }
+  return out;
+}
+
+/** Фото рецепта для шаблона рассылки (ссылка или file_id) — только админу с правом «Розсилка». */
+function recipePhoto_(id) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_RECIPES);
+  if (!sheet || sheet.getLastRow() < 2) return { ok: true, photo: '' };
+  var values = sheet.getDataRange().getValues();
+  var col = mapHeaders_(values[0], RECIPE_COLS);
+  for (var r = 1; r < values.length; r++) {
+    if (cell_(values[r], col.id).toUpperCase() !== String(id || '').toUpperCase()) continue;
+    var photo = cell_(values[r], col.photo);
+    return { ok: true, photo: /^https:\/\//i.test(photo) || /^[A-Za-z0-9_-]{20,200}$/.test(photo) ? photo : '' };
+  }
+  return { ok: true, photo: '' };
+}
+
+/** Меню PAMIR → «Етап 8.4: створити лист «Рецепти» і колонки». Создаёт только пустой лист с заголовками: тексты пишет владелец. */
+function setupWave2c() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var done = [];
+  if (!ss.getSheetByName(SHEET_RECIPES)) {
+    var sheet = ss.insertSheet(SHEET_RECIPES);
+    sheet.getRange(1, 1, 1, RECIPE_HEAD.length).setValues([RECIPE_HEAD]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    done.push('лист «' + SHEET_RECIPES + '» (порожній: рецепти вписуєте самі)');
+  }
+  var products = ss.getSheetByName(SHEET_PRODUCTS);
+  if (products) {
+    var pcol = mapHeaders_(headRow_(products), PRODUCT_COLS);
+    [['howUa', 'Як їсти (UA)'], ['howRu', 'Как есть (RU)'], ['tags', 'Теги']].forEach(function (c) {
+      if (pcol[c[0]] >= 0) return;
+      products.getRange(1, products.getLastColumn() + 1).setValue(c[1]).setFontWeight('bold');
+      done.push('колонка «' + c[1] + '» у «Товари»');
+    });
+  }
+  clearCatalogCache_();
+  var text = done.length ? 'Готово, створено:\n• ' + done.join('\n• ') : 'Усе вже створено раніше, нічого не змінено.';
+  console.log(text);
+  try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }
+  return done;
 }

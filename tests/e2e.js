@@ -1480,6 +1480,84 @@ const smallTargets = page => page.evaluate(() => {
     await m.page.context().close(); st.server.close();
   }
 
+  /* ---------------- 8. Этап 8, волна 2в ---------------- */
+  console.log('Волна 2в · В1: «Як їсти» и рецепты');
+  {
+    const st = await start(8825, undefined, s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], head = rows[0];
+      head.push('Як їсти (UA)', 'Как есть (RU)');
+      rows.slice(1).forEach(r => { r.push('', ''); });
+      const row = rows.find(r => r[0] === 'DRY-039');
+      row[head.indexOf('Як їсти (UA)')] = 'Просто так, до чаю.\nУ компот.';
+      row[head.indexOf('Как есть (RU)')] = 'Просто так, к чаю.\nВ компот.';
+      s.sheets['Рецепти'] = [['ID', 'Назва (UA)', 'Название (RU)', 'Фото', 'Текст (UA)', 'Текст (RU)', 'Товари', 'Показувати'],
+        ['REC-1', 'Узвар з кураги', 'Узвар из кураги', 'https://img.test/uzvar.svg', 'Промити курагу.\nВарити 15–20 хвилин.', 'Промыть курагу.\nВарить 15–20 минут.', 'DRY-039, NUT-008, NUT-001, NOPE-1', 'так'],
+        ['REC-2', 'Прихований рецепт', '', '', 'Текст', '', 'DRY-039', 'ні']];
+    });
+    const g = st.gas;
+    const { page, errors } = await open(browser, st.url, { uid: 700 });
+    await page.waitForSelector('.recs');
+    ok(await count(page, '.recs__item') === 1 && /Узвар з кураги/.test(await text(page, '.recs')), 'на главной блок «Рецепти» только с показываемым рецептом');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'главная с рецептами: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.locator('.main .mini[data-id="DRY-039"]').first().click();
+    await page.waitForSelector('.sheet .how');
+    ok(/Як їсти/.test(await text(page, '.sheet .how')) && /Просто так, до чаю\.\nУ компот\./.test(await text(page, '.sheet .how__text')), 'блок «Як їсти» на странице товара', await text(page, '.sheet .how'));
+    ok(/Рецепти з цим товаром/.test(await text(page, '#sheet')) && await count(page, '.sheet [data-w1="rec"]') === 1, 'на странице товара ссылка на рецепт, где он есть (скрытый рецепт не показан)');
+    await page.screenshot({ path: OUT + '/83-how.png' });
+    await page.click('.sheet [data-w1="rec"]');
+    await page.waitForSelector('.rec__p');
+    ok(/Узвар з кураги/.test(await text(page, '.page__title')) && await count(page, '.rec__p') === 2 && await count(page, '.page .card') === 3 && await count(page, '.page .story__img') === 1, 'экран рецепта: название, фото, текст по абзацам, три товара (несуществующий пропущен)');
+    ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'экран рецепта: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/84-recipe.png', fullPage: true });
+    await page.click('[data-w1="rec-add"]');
+    await page.waitForSelector('.page .note');
+    const cartIds = () => page.evaluate(() => JSON.parse(localStorage.getItem('pamir_cart_v1')).i.map(l => l.id).sort().join());
+    ok(await cartIds() === 'DRY-039,NUT-001' && /Додано в кошик: 2\. Зараз немає в наявності: Пекан\./.test(await text(page, '.page .note')), '«Додати інгредієнти»: в корзине только товары «є», про остальные — сообщение', [await cartIds(), await text(page, '.page .note')]);
+    await page.click('[data-w1="rec-add"]');
+    ok(await cartIds() === 'DRY-039,NUT-001' && /немає в наявності: Пекан/.test(await text(page, '.page .note')) && !/Додано/.test(await text(page, '.page .note')), 'повторное нажатие не добавляет товары второй раз', await text(page, '.page .note'));
+    await page.evaluate(() => window.__tg.back.cb());
+    await page.waitForSelector('.recs');
+    ok(await page.evaluate(() => document.body.getAttribute('data-view')) === 'catalog', '«Назад» Telegram возвращает из рецепта в каталог');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close();
+    // товар без «Як їсти»: блока нет
+    const n = await open(browser, st.url, { uid: 701, start: 'NUT-002' });
+    await n.page.waitForSelector('.sheet__title');
+    ok(await count(n.page, '.sheet .how') === 0, 'у товара без «Як їсти» и рецептов блоков нет');
+    await n.page.context().close();
+    // RU, тёмная тема, ссылка из рассылки
+    const r = await open(browser, st.url, { uid: 702, lc: 'ru', theme: 'dark', query: '?rec=REC-1&m=M-0001' });
+    await r.page.waitForSelector('.rec__p');
+    ok(/Узвар из кураги/.test(await text(r.page, '.page__title')) && /Промыть курагу/.test(await text(r.page, '.rec__p')) && /Добавить ингредиенты в корзину/.test(await text(r.page, '[data-w1="rec-add"]')) && await noOverflow(r.page), 'RU, тёмная тема: ссылка ?rec= открывает рецепт на русском');
+    await r.page.screenshot({ path: OUT + '/85-recipe-dark.png' });
+    ok(r.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', r.errors);
+    await r.page.context().close();
+    // панель: шаблон «Рецепт» и поля товара
+    const a = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await a.page.waitForSelector('.ord');
+    await a.page.locator('[data-tab="mail"]').click();
+    await a.page.waitForSelector('[data-mail-rec="REC-1"]');
+    await a.page.click('[data-mail-rec="REC-1"]');
+    await a.page.waitForSelector('#mailForm');
+    ok(/Рецепт: Узвар з кураги/.test(await a.page.inputValue('#m-ua')) && /Рецепт: Узвар из кураги/.test(await a.page.inputValue('#m-ru')) && await a.page.inputValue('#m-btnK') === 'rec' && await a.page.inputValue('#m-btnV') === 'REC-1' && await a.page.inputValue('#m-photo') === 'https://img.test/uzvar.svg',
+      'шаблон «Рецепт» одной кнопкой: тексты, фото и кнопка «Відкрити рецепт»', await a.page.inputValue('#m-ua'));
+    await a.page.click('[data-nav="back"]');
+    await a.page.locator('[data-tab="products"]').click();
+    await a.page.waitForSelector('.prod');
+    await a.page.fill('#admPQ', 'NUT-002');
+    await a.page.locator('[data-edit="NUT-002"]').click();
+    await a.page.waitForSelector('#a-eUa');
+    await a.page.fill('#a-eUa', 'До кави.');
+    await a.page.fill('#a-tags', 'Перекус, солоне');
+    await a.page.click('[data-action="adm-save"]');
+    await a.page.waitForSelector('.prod');
+    const saved = g.get({ action: 'catalog' }).products.find(p => p.id === 'NUT-002');
+    ok(saved.eu === 'До кави.' && saved.tg.join() === 'перекус,солоне', '«Як їсти» и теги вписываются в карточке товара в панели', saved);
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (админ)', a.errors);
+    await a.page.context().close(); st.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);

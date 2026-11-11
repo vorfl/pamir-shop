@@ -1265,5 +1265,49 @@ console.log('Волна 2б · Б1: рассылка');
   ok(g.sandbox.__errors.filter(e => !/обрив запуску/.test(e)).length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+/* ============================ Этап 8, волна 2в ============================ */
+console.log('Волна 2в · В1: «Як їсти» и рецепты');
+{
+  const g = fresh();
+  const P = g.sheets['Товари'].rows;
+  const cat0 = g.get({ action: 'catalog' });
+  ok(cat0.recipes === undefined && cat0.products.every(p => p.eu === undefined && p.tg === undefined), 'без листа «Рецепти» и колонок «Як їсти» в каталоге ничего нового нет');
+  ok(adm(g, 900, 'admin.products').products[0].eUa === '' && P[0].indexOf('Як їсти (UA)') < 0, 'панель работает и без новых колонок');
+  const made = g.call('setupWave2c');
+  ok(made.length === 4 && g.sheets['Рецепти'].rows.length === 1 && g.sheets['Рецепти'].rows[0].join('|') === 'ID|Назва (UA)|Название (RU)|Фото|Текст (UA)|Текст (RU)|Товари|Показувати' && P[0].indexOf('Теги') > 0,
+    'меню «Етап 8.4» создаёт пустой лист «Рецепти» и колонки «Як їсти», «Как есть», «Теги»', made);
+  ok(g.call('setupWave2c').length === 0 && g.get({ action: 'catalog' }).recipes === undefined, 'повторный запуск ничего не меняет; пустой лист рецептов на витрину не влияет');
+  // «Як їсти»
+  addAdmin(g, 840, 'manager', ['stock']);
+  ok(adm(g, 840, 'admin.product', { id: 'DRY-039', patch: { eUa: 'просто так' } }).error === 'no_perm', '«Як їсти» меняет только тот, у кого право «Тексти товарів»');
+  const sv = adm(g, 900, 'admin.product', { id: 'DRY-039', patch: { eUa: 'Просто так, до чаю.\nУ компот.', eRu: 'Просто так, к чаю.\nВ компот.', tags: ' До чаю, перекус; ДО ЧАЮ ' } });
+  ok(sv.ok && sv.product.eUa === 'Просто так, до чаю.\nУ компот.' && sv.product.tags === 'до чаю, перекус', '«Як їсти» и теги сохраняются из панели; теги приводятся к виду, без повторов', sv.product);
+  const p39 = g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039'), p1 = g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-001');
+  ok(p39.eu === 'Просто так, до чаю.\nУ компот.' && p39.er === 'Просто так, к чаю.\nВ компот.' && p39.tg.join() === 'до чаю,перекус' && p1.eu === undefined && p1.tg === undefined, 'в каталоге «Як їсти» и теги только у товара, где они заполнены', [p39.eu, p1.eu]);
+  // рецепты
+  const R = g.sheets['Рецепти'].rows;
+  R.push(['rec-1', 'Узвар з кураги', 'Узвар из кураги', 'https://img.test/uzvar.jpg', 'Промити курагу.\nВарити 15–20 хвилин.', '', 'dry-039, NUT-008, NOPE-1', 'так']);
+  R.push(['REC-2', 'Плов', 'Плов', 'AgACAgIAAxkBAAIBcGXfileIdExample123456', 'Текст плову', 'Текст плова', 'SPC-001;SPC-004', 'так']);
+  R.push(['REC-3', 'Прихований', '', '', 'Текст', '', 'DRY-039', 'ні']);
+  R.push(['REC-1', 'Дубль', '', '', 'Текст', '', '', 'так']);
+  R.push(['', 'Без ID', '', '', 'Текст', '', '', 'так']);
+  g.clearCache();
+  const rc = g.get({ action: 'catalog' }).recipes;
+  ok(rc.length === 2 && rc[0].id === 'REC-1' && rc[0].ua === 'Узвар з кураги' && rc[0].ru === 'Узвар из кураги' && rc[0].img === 'https://img.test/uzvar.jpg' && rc[0].tUa === 'Промити курагу.\nВарити 15–20 хвилин.' && rc[0].items.join() === 'DRY-039,NUT-008,NOPE-1',
+    'в каталоге только рецепты с «Показувати» = так, без дублей и строк без ID', rc);
+  ok(rc[1].id === 'REC-2' && rc[1].img === undefined && rc[1].fid === 1 && !/AgACAg/.test(JSON.stringify(rc)), 'код фото (file_id) на витрину не уходит — только отметка, что он есть');
+  ok(!/СЕКРЕТ|do-smaku|33%/.test(JSON.stringify(g.get({ action: 'catalog' }))), 'служебные колонки по-прежнему не уходят');
+  // шаблон «Рецепт» для рассылки
+  addAdmin(g, 841, 'manager', ['mail']);
+  ok(adm(g, 840, 'admin.recipePhoto', { id: 'REC-2' }).error === 'no_perm' && adm(g, 841, 'admin.recipePhoto', { id: 'rec-2' }).photo === 'AgACAgIAAxkBAAIBcGXfileIdExample123456' && adm(g, 841, 'admin.recipePhoto', { id: 'REC-9' }).photo === '', 'фото рецепта для рассылки получает только админ с правом «Розсилка»');
+  const ms = adm(g, 841, 'admin.mailSave', { ua: 'Рецепт: Плов', ru: '', photo: 'AgACAgIAAxkBAAIBcGXfileIdExample123456', btn: { k: 'rec', v: 'rec-2' }, seg: { k: 'all', v: '' } });
+  const b0 = g.sent.length;
+  adm(g, 841, 'admin.mailTest', { id: ms.mail.id });
+  const msg = g.sent.slice(b0).find(m => m.method === 'sendPhoto');
+  ok(ms.ok && ms.mail.btn.v === 'REC-2' && msg && /[?&]rec=REC-2/.test(msg.payload.reply_markup.inline_keyboard[0][0].web_app.url) && /Відкрити рецепт/.test(msg.payload.reply_markup.inline_keyboard[0][0].text), 'рассылка с кнопкой «Відкрити рецепт» и фото рецепта', msg && msg.payload);
+  ok(adm(g, 841, 'admin.mailSave', { ua: 'x', btn: { k: 'rec', v: '' }, seg: { k: 'all' } }).error === 'bad_form', 'кнопка «рецепт» без рецепта не принимается');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);
