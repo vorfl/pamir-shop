@@ -416,7 +416,7 @@
 
   var state = {
     lang: 'ua',
-    cat: '',          // код категории, '' = все
+    cat: String(params.get('cat') || '').toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9_-]/g, '').slice(0, 12), // код категории, '' = все; ?cat=SPC — кнопка «Відкрити категорію» из рассылки
     q: '',
     catalog: null,
     status: 'loading', // loading | ready | error
@@ -1547,9 +1547,9 @@
   function goBack() {
     if (state.sheet) { closeSheet(); return; }
     if (state.view === 'checkout') { readForm(); go('cart'); return; }
-    if (state.view === 'admin' && (adm.edit || adm.catEdit || adm.salesOpen || adm.admEdit || adm.logOpen || adm.archOpen)) {
+    if (state.view === 'admin' && (adm.edit || adm.catEdit || adm.salesOpen || adm.admEdit || adm.logOpen || adm.archOpen || adm.mailEdit)) {
       var reload = !!adm.invite;
-      adm.edit = ''; adm.catEdit = ''; adm.salesOpen = false; adm.admEdit = ''; adm.invite = null; adm.logOpen = false; adm.archOpen = false;
+      adm.edit = ''; adm.catEdit = ''; adm.salesOpen = false; adm.admEdit = ''; adm.invite = null; adm.logOpen = false; adm.archOpen = false; adm.mailEdit = null;
       renderPage();
       if (reload) loadAdmin(false);
       return;
@@ -2176,7 +2176,7 @@
   var ADMIN_STATUSES = ['новий', 'підтверджено', 'відправлено', 'виконано', 'немає в наявності'];
   var STATUS_BADGE = { 'новий': 'badge--opt', 'підтверджено': 'badge--stock', 'відправлено': 'badge--ship', 'немає в наявності': 'badge--out', 'скасовано': 'badge--out' };
   var STATUS_BTNS = [['c', 'stC', 'підтверджено'], ['n', 'stN', 'немає в наявності'], ['s', 'stS', 'відправлено'], ['d', 'stD', 'виконано']];
-  var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats', 'cats'], ['settings', 'admSettings', 'settings'], ['reviews', 'admReviews', 'reviews'], ['wh', 'admWh', 'wh'], ['admins', 'admAdmins', 'admins']];
+  var ADMIN_TABS = [['orders', 'admOrders'], ['products', 'admProducts'], ['cats', 'admCats', 'cats'], ['settings', 'admSettings', 'settings'], ['reviews', 'admReviews', 'reviews'], ['wh', 'admWh', 'wh'], ['mail', 'admMail', 'mail'], ['admins', 'admAdmins', 'admins']];
   /** Какое право нужно, чтобы менять поле товара (то же самое проверяет сервер). */
   var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
     price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', whn: 'price', packs: 'price', t: 'price' };
@@ -2213,10 +2213,10 @@
   var admAt = {};     // когда список получен: давно открытый обновляется в фоне
   var ADMIN_FRESH_MS = 30000;
   function adminKind() {
-    return adm.tab === 'orders' ? 'orders' : adm.tab === 'settings' ? 'settings' : adm.tab === 'admins' ? 'admins' : adm.tab === 'reviews' ? 'reviews' : adm.tab === 'wh' ? 'wh' : 'products';
+    return adm.tab === 'orders' ? 'orders' : adm.tab === 'settings' ? 'settings' : adm.tab === 'admins' ? 'admins' : adm.tab === 'reviews' ? 'reviews' : adm.tab === 'wh' ? 'wh' : adm.tab === 'mail' ? 'mail' : 'products';
   }
   function adminHave(kind) {
-    return kind === 'orders' ? adm.orders : kind === 'settings' ? adm.settings : kind === 'admins' ? adm.admins : kind === 'reviews' ? adm.reviews : kind === 'wh' ? adm.wh : adm.products;
+    return kind === 'orders' ? adm.orders : kind === 'settings' ? adm.settings : kind === 'admins' ? adm.admins : kind === 'reviews' ? adm.reviews : kind === 'wh' ? adm.wh : kind === 'mail' ? adm.mail : adm.products;
   }
   /** Один запрос списка панели. Данные кладутся в adm; права и подпись при каждом запросе проверяет сервер. */
   function fetchAdmin(kind) {
@@ -2232,6 +2232,7 @@
         else if (kind === 'reviews') adm.reviews = res.reviews || [];
         else if (kind === 'admins') { adm.admins = res.admins || []; adm.invites = res.invites || []; adm.permList = res.permList || []; }
         else if (kind === 'wh') adm.wh = { apps: res.apps || [], clients: res.clients || [] };
+        else if (kind === 'mail') adm.mail = { mails: res.mails || [], every: res.every || 0, trigger: res.trigger ? 1 : 0 };
         else { adm.products = res.products || []; adm.cats = res.categories || []; }
       } else if (res && res.error === 'forbidden') {
         store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true;
@@ -2252,7 +2253,7 @@
     if (kind === 'settings' || admFlight[kind] || adm.busy || Date.now() - (admAt[kind] || 0) < ADMIN_FRESH_MS) return;
     fetchAdmin(kind).then(function (res) {
       if (res && res.ok && state.view === 'admin' && adminKind() === kind && !adm.loading && !adm.busy &&
-          !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !state.sheet) renderAdminList();
+          !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !adm.mailEdit && !state.sheet) renderAdminList();
     }).catch(function () { /* останется прежний список */ });
   }
 
@@ -2284,6 +2285,7 @@
     if (adm.salesOpen) return html + salesHtml();
     if (adm.logOpen) return html + logHtml();
     if (adm.archOpen) return html + archiveHtml();
+    if (adm.mailEdit) return html + mailEditHtml();
     if (adm.admEdit) return html + adminFormHtml();
     if (!adminTabs().some(function (tab) { return tab[0] === adm.tab; })) adm.tab = 'orders';
     html += '<div class="tabs" role="group">' + adminTabs().map(function (tab) {
@@ -2402,6 +2404,7 @@
     if (adm.tab === 'admins') return adminsHtml();
     if (adm.tab === 'reviews') return reviewsAdminHtml();
     if (adm.tab === 'wh') return whAdminHtml();
+    if (adm.tab === 'mail') return mailListHtml();
     return settingsHtml();
   }
 
@@ -2558,6 +2561,7 @@
       (isNew ? '' : '<div class="field"><label class="label" for="a-link">' + esc(t('admLink')) + '</label>' +
         '<input class="input" id="a-link" type="text" readonly value="' + esc(productLink(p.id)) + '">' +
         '<button type="button" class="btn btn--block" data-action="adm-link">' + esc(t('admLinkCopy')) + '</button></div>') +
+      (!isNew && can('mail') && p.whn !== undefined ? '<button type="button" class="btn btn--block" data-action="mail-fresh">' + esc(t('mailFreshBtn')) + '</button>' : '') +
       (!isNew && can('text') ? '<div class="danger"><button type="button" class="btn btn--ghost-danger btn--block" data-action="adm-archive">' + icon('trash-2') + esc(t('archBtn')) + '</button>' +
         '<p class="field__hint">' + esc(t('archHint')) + '</p></div>' : '') + '</form>';
   }
@@ -2968,6 +2972,7 @@
     if (name === 'adm-invite-done') { goBack(); return true; }
     if (name === 'adm-log') { loadLog(); return true; }
     if (name === 'adm-arch') { loadArchive(); return true; }
+    if (mailClick(e, name, act)) return true;
     var whD = e.target.closest('[data-wh-d]');
     if (whD) { if (!whD.disabled) whDecide(whD.getAttribute('data-id'), whD.getAttribute('data-wh-d'), whD); return true; }
     var whR = e.target.closest('[data-wh-revoke]');
@@ -3973,7 +3978,27 @@
       whRevoke: 'Відкликати статус', whOff: 'статус відкликано', whActive: 'активний', whRevokeTitle: 'Відкликати статус оптовика?',
       whRevokeText: '«{name}» одразу бачитиме роздрібні ціни. Повернути статус можна новою схваленою заявкою.', whRevokeOk: 'Відкликати: {name}', whRevoked: 'Статус відкликано',
       whApproveTitle: 'Схвалити як оптового клієнта?', whApproveText: '«{name}» ({id}) одразу отримає оптові ціни й повідомлення в Telegram.', whApproveOk: 'Схвалити: {name}',
-      whRejectTitle: 'Відхилити заявку?', whRejectText: '«{name}» ({id}) отримає повідомлення про відмову.', whRejectOk: 'Відхилити: {name}'
+      whRejectTitle: 'Відхилити заявку?', whRejectText: '«{name}» ({id}) отримає повідомлення про відмову.', whRejectOk: 'Відхилити: {name}',
+      admMail: 'Розсилка', mailNew: 'Нова розсилка', mailEmpty: 'Розсилок поки немає.', mailFreshBtn: 'Розсилка «Свіжа поставка»',
+      mailFreshUa: 'Свіжа поставка 🌿\n{name} уже на прилавку й у магазині.', mailFreshRu: 'Свежая поставка 🌿\n{name} уже на прилавке и в магазине.',
+      mailUa: 'Текст українською', mailRu: 'Текст російською', mailLangHint: 'Кожен отримає текст своєю мовою. Якщо один із текстів порожній, усі отримають другий.',
+      mailPhoto: 'Фото (необов’язково)', mailPhotoHint: 'Надішліть фото боту в чат — він відповість кодом. Вставте код сюди. З фото текст — до 1000 знаків.',
+      mailBtn: 'Кнопка під повідомленням', mailBtn_none: 'Без кнопки', mailBtn_shop: 'Відкрити магазин', mailBtn_prod: 'Відкрити товар', mailBtn_cat: 'Відкрити категорію',
+      mailBtnProd: 'ID товару, наприклад DRY-039', mailSeg: 'Кому надіслати', mailSeg_all: 'Усім клієнтам', mailSeg_cat: 'Хто купував категорію', mailSeg_prod: 'Хто купував товар',
+      mailSeg_idle: 'Хто не замовляв 30+ днів', mailSeg_wh: 'Оптовикам', mailSeg_sub: 'Хто чекає на товар («Повідомити»)', mailSegProd: 'ID товару',
+      mailPreview: 'Як побачать клієнти', mailUnsub: 'Не надсилати мені розсилки', mailTest: 'Зберегти й надіслати тільки мені',
+      mailTestHint: 'Спочатку розсилка приходить лише вам — обома мовами. Перевірте текст, фото й кнопку в чаті з ботом.',
+      mailTested: 'Перевірте повідомлення в чаті з ботом. Якщо все гаразд — надсилайте.', mailCount: 'Отримувачів: {n}', mailSkip: 'Пропустимо {n}: вони нещодавно вже отримували розсилку (ліміт — раз на {d} дн.).',
+      mailNone: 'Немає отримувачів', mailNow: 'Надіслати зараз: {n}', mailAt: 'Або надіслати пізніше (час київський)', mailPlan: 'Запланувати', mailBack: 'Змінити текст',
+      mailSendTitle: 'Надіслати розсилку?', mailSendText: 'Отримувачів: {n}. Повідомлення піде одразу, скасувати не вийде.', mailSendOk: 'Надіслати {n} отримувачам',
+      mailPlanTitle: 'Запланувати розсилку?', mailPlanText: 'Отримувачів зараз: {n}. Розсилка піде {at} за київським часом (точність — близько 10 хвилин). До старту її можна скасувати.', mailPlanOk: 'Запланувати на {at}',
+      mailSent: 'Розсилку запущено', mailPlanned: 'Розсилку заплановано на {at}', mailCancel: 'Скасувати розсилку', mailCancelTitle: 'Скасувати розсилку?',
+      mailCancelText: 'Розсилка {id} не піде далі. Уже надіслані повідомлення не повернути.', mailCancelOk: 'Скасувати {id}', mailCanceled: 'Розсилку скасовано', mailEditBtn: 'Продовжити',
+      mailErr_bad_form: 'Заповніть текст. Для кнопки «товар» або «категорія» вкажіть, що саме відкрити.', mailErr_too_long: 'З фото текст має бути до 1000 знаків.', mailErr_bad_photo: 'Фото: вставте код від бота або посилання https://',
+      mailErr_need_test: 'Спочатку надішліть розсилку тільки собі.', mailErr_no_recipients: 'Немає отримувачів.', mailErr_bad_time: 'Вкажіть час у майбутньому (не далі ніж за 60 днів).',
+      mailErr_locked: 'Цю розсилку вже запущено або скасовано.', mailErr_send_failed: 'Telegram не прийняв повідомлення. Перевірте код фото.',
+      mailNoTrigger: 'Відкладена відправка й довгі розсилки потребують таймера: таблиця → меню PAMIR → «Увімкнути щоденні повідомлення клієнтам».',
+      mailStat: 'надіслано {s} з {t}', mailStatErr: 'помилок {n}', mailStatBl: 'заблокували {n}', mailStatSkip: 'пропущено {n}', mailStatClick: 'натиснули {n}', mailStatOrd: 'замовили за 3 дні {n}', mailAtLabel: 'на {at} (Київ)'
     },
     ru: {
       payState: 'Оплата', pay_unpaid: 'не оплачено', pay_paid: 'оплачено', pay_refund: 'возвращено', payMark: 'Оплачено', payRefund: 'Возвращено',
@@ -3995,11 +4020,238 @@
       whRevoke: 'Отозвать статус', whOff: 'статус отозван', whActive: 'активный', whRevokeTitle: 'Отозвать статус оптовика?',
       whRevokeText: '«{name}» сразу будет видеть розничные цены. Вернуть статус можно новой одобренной заявкой.', whRevokeOk: 'Отозвать: {name}', whRevoked: 'Статус отозван',
       whApproveTitle: 'Одобрить как оптового клиента?', whApproveText: '«{name}» ({id}) сразу получит оптовые цены и сообщение в Telegram.', whApproveOk: 'Одобрить: {name}',
-      whRejectTitle: 'Отклонить заявку?', whRejectText: '«{name}» ({id}) получит сообщение об отказе.', whRejectOk: 'Отклонить: {name}'
+      whRejectTitle: 'Отклонить заявку?', whRejectText: '«{name}» ({id}) получит сообщение об отказе.', whRejectOk: 'Отклонить: {name}',
+      admMail: 'Рассылка', mailNew: 'Новая рассылка', mailEmpty: 'Рассылок пока нет.', mailFreshBtn: 'Рассылка «Свежая поставка»',
+      mailFreshUa: 'Свіжа поставка 🌿\n{name} уже на прилавку й у магазині.', mailFreshRu: 'Свежая поставка 🌿\n{name} уже на прилавке и в магазине.',
+      mailUa: 'Текст на украинском', mailRu: 'Текст на русском', mailLangHint: 'Каждый получит текст на своём языке. Если один из текстов пустой, все получат второй.',
+      mailPhoto: 'Фото (необязательно)', mailPhotoHint: 'Отправьте фото боту в чат — он ответит кодом. Вставьте код сюда. С фото текст — до 1000 знаков.',
+      mailBtn: 'Кнопка под сообщением', mailBtn_none: 'Без кнопки', mailBtn_shop: 'Открыть магазин', mailBtn_prod: 'Открыть товар', mailBtn_cat: 'Открыть категорию',
+      mailBtnProd: 'ID товара, например DRY-039', mailSeg: 'Кому отправить', mailSeg_all: 'Всем клиентам', mailSeg_cat: 'Кто покупал категорию', mailSeg_prod: 'Кто покупал товар',
+      mailSeg_idle: 'Кто не заказывал 30+ дней', mailSeg_wh: 'Оптовикам', mailSeg_sub: 'Кто ждёт товар («Сообщить»)', mailSegProd: 'ID товара',
+      mailPreview: 'Как увидят клиенты', mailUnsub: 'Не присылать мне рассылки', mailTest: 'Сохранить и отправить только мне',
+      mailTestHint: 'Сначала рассылка приходит только вам — на обоих языках. Проверьте текст, фото и кнопку в чате с ботом.',
+      mailTested: 'Проверьте сообщение в чате с ботом. Если всё в порядке — отправляйте.', mailCount: 'Получателей: {n}', mailSkip: 'Пропустим {n}: они недавно уже получали рассылку (лимит — раз в {d} дн.).',
+      mailNone: 'Нет получателей', mailNow: 'Отправить сейчас: {n}', mailAt: 'Или отправить позже (время киевское)', mailPlan: 'Запланировать', mailBack: 'Изменить текст',
+      mailSendTitle: 'Отправить рассылку?', mailSendText: 'Получателей: {n}. Сообщение уйдёт сразу, отменить не получится.', mailSendOk: 'Отправить {n} получателям',
+      mailPlanTitle: 'Запланировать рассылку?', mailPlanText: 'Получателей сейчас: {n}. Рассылка уйдёт {at} по киевскому времени (точность — около 10 минут). До старта её можно отменить.', mailPlanOk: 'Запланировать на {at}',
+      mailSent: 'Рассылка запущена', mailPlanned: 'Рассылка запланирована на {at}', mailCancel: 'Отменить рассылку', mailCancelTitle: 'Отменить рассылку?',
+      mailCancelText: 'Рассылка {id} дальше не пойдёт. Уже отправленные сообщения не вернуть.', mailCancelOk: 'Отменить {id}', mailCanceled: 'Рассылка отменена', mailEditBtn: 'Продолжить',
+      mailErr_bad_form: 'Заполните текст. Для кнопки «товар» или «категория» укажите, что именно открыть.', mailErr_too_long: 'С фото текст должен быть до 1000 знаков.', mailErr_bad_photo: 'Фото: вставьте код от бота или ссылку https://',
+      mailErr_need_test: 'Сначала отправьте рассылку только себе.', mailErr_no_recipients: 'Нет получателей.', mailErr_bad_time: 'Укажите время в будущем (не дальше чем через 60 дней).',
+      mailErr_locked: 'Эта рассылка уже запущена или отменена.', mailErr_send_failed: 'Telegram не принял сообщение. Проверьте код фото.',
+      mailNoTrigger: 'Отложенная отправка и длинные рассылки требуют таймера: таблица → меню PAMIR → «Увімкнути щоденні повідомлення клієнтам».',
+      mailStat: 'отправлено {s} из {t}', mailStatErr: 'ошибок {n}', mailStatBl: 'заблокировали {n}', mailStatSkip: 'пропущено {n}', mailStatClick: 'нажали {n}', mailStatOrd: 'заказали за 3 дня {n}', mailAtLabel: 'на {at} (Киев)'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_2B[lang]).forEach(function (k) { I18N[lang][k] = I18N_2B[lang][k]; });
+  });
+
+  /* ---- Б1. Рассылка (панель) ---- */
+  /*
+   * Порядок жёсткий: текст → «Зберегти й надіслати тільки мені» → экран с числом получателей и точным текстом → отправка.
+   * Его же проверяет сервер: без шага «тільки мені» рассылка не уйдёт, даже если обойти панель.
+   */
+  function mailErrText(res) {
+    var key = 'mailErr_' + (res && res.error);
+    return res && res.error === 'no_perm' ? t('admNoPerm') : t(key) === key ? t('admFail') : t(key) + (res.why ? ' (' + res.why + ')' : '');
+  }
+  function mailStatText(m) {
+    var parts = [tf('mailStat', { s: m.sent, t: m.total })];
+    if (m.err) parts.push(tf('mailStatErr', { n: m.err }));
+    if (m.blocked) parts.push(tf('mailStatBl', { n: m.blocked }));
+    if (m.skipped) parts.push(tf('mailStatSkip', { n: m.skipped }));
+    if (m.clicks) parts.push(tf('mailStatClick', { n: m.clicks }));
+    if (m.orders) parts.push(tf('mailStatOrd', { n: m.orders }));
+    return parts.join(' · ');
+  }
+  function mailSegLabel(seg) { return t('mailSeg_' + seg.k) + (seg.v ? ': ' + seg.v : ''); }
+  function mailListHtml() {
+    var d = adm.mail || { mails: [] };
+    var html = '<button type="button" class="btn btn--primary btn--block" data-action="mail-new">' + icon('plus') + esc(t('mailNew')) + '</button>' +
+      (d.trigger ? '' : '<p class="info info__muted">' + esc(t('mailNoTrigger')) + '</p>');
+    if (!d.mails.length) return html + '<p class="state__text adm__msg">' + esc(t('mailEmpty')) + '</p>';
+    return html + '<ul class="lines">' + d.mails.map(function (m) {
+      var cls = m.status === 'завершена' ? 'badge--stock' : m.status === 'скасована' ? 'badge--out' : m.status === 'створена' ? '' : 'badge--opt';
+      var started = m.status !== 'створена' && m.status !== 'запланована';
+      return '<li class="my"><div class="my__head"><span class="ord__num">' + esc(m.id) + '</span><span class="badge ' + cls + '">' + esc(m.status) + '</span><span class="my__date">' + esc(m.created) + '</span></div>' +
+        '<p class="rv__text mail__text">' + esc((m.ua || m.ru).split('\n')[0].slice(0, 90)) + '</p>' +
+        '<p class="prod__sub">' + esc(mailSegLabel(m.seg)) + (m.status === 'запланована' ? ' · ' + esc(tf('mailAtLabel', { at: m.at })) : '') + '</p>' +
+        (started || m.status === 'запланована' ? '<p class="prod__sub">' + esc(started ? mailStatText(m) : tf('mailCount', { n: m.total })) + '</p>' : '') +
+        (m.status === 'створена' ? '<button type="button" class="btn btn--block" data-mail-edit="' + esc(m.id) + '">' + esc(t('mailEditBtn')) + '</button>' : '') +
+        (m.status === 'запланована' || m.status === 'йде' ? '<button type="button" class="btn btn--ghost-danger btn--block" data-mail-cancel="' + esc(m.id) + '">' + esc(t('mailCancel')) + '</button>' : '') + '</li>';
+    }).join('') + '</ul>';
+  }
+  function mailOpen(src) {
+    adm.tab = 'mail';
+    adm.edit = '';
+    adm.mailEdit = { id: src.id || '', ua: src.ua || '', ru: src.ru || '', photo: src.photo || '', btnK: (src.btn && src.btn.k) || 'none', btnV: (src.btn && src.btn.v) || '',
+      segK: (src.seg && src.seg.k) || 'all', segV: (src.seg && src.seg.v) || '', step: 'edit', n: 0, skip: 0, at: '' };
+    renderPage(); window.scrollTo(0, 0);
+  }
+  /** Предпросмотр: так сообщение увидит клиент на каждом языке (пустой язык показывает текст второго). */
+  function mailPreviewHtml(d) {
+    function bubble(lang, text) {
+      var label = d.btnK === 'none' ? '' : I18N[lang === 'RU' ? 'ru' : 'ua']['mailBtn_' + d.btnK]; // подпись кнопки — на языке этого сообщения
+      return '<div class="mailpv"><p class="mailpv__lang">' + lang + '</p>' + (d.photo ? '<p class="mailpv__photo">' + esc(t('mailPhoto').split(' ')[0]) + '</p>' : '') +
+        '<p class="mailpv__text">' + esc(text) + '</p>' + (label ? '<p class="mailpv__btn">' + esc(label) + (d.btnV ? ': ' + esc(d.btnV) : '') + '</p>' : '') +
+        '<p class="mailpv__btn mailpv__btn--muted">' + esc(I18N[lang === 'RU' ? 'ru' : 'ua'].mailUnsub) + '</p></div>';
+    }
+    var ua = d.ua || d.ru, ru = d.ru || d.ua;
+    if (!ua && !ru) return '';
+    return '<p class="label">' + esc(t('mailPreview')) + '</p>' + bubble('UA', ua) + bubble('RU', ru);
+  }
+  function mailEditHtml() {
+    var d = adm.mailEdit;
+    var cats = state.catalog ? state.catalog.categories : [];
+    function catSelect(id, value) {
+      return '<select class="input" id="' + id + '">' + cats.map(function (c) { return '<option value="' + esc(c.code) + '"' + (c.code === value ? ' selected' : '') + '>' + esc(c.ua) + '</option>'; }).join('') + '</select>';
+    }
+    if (d.step === 'confirm') { // шаг 2: число получателей и точный текст; отсюда — отправка
+      var every = (adm.mail && adm.mail.every) || 0;
+      return '<div class="form"><p class="label">' + esc(d.id) + '</p><p class="note note--opt">' + esc(t('mailTested')) + '</p>' +
+        '<p class="mail__count" id="mailCount">' + esc(d.n ? tf('mailCount', { n: d.n }) : t('mailNone')) + '</p>' +
+        (d.skip ? '<p class="info info__muted">' + esc(tf('mailSkip', { n: d.skip, d: every })) + '</p>' : '') +
+        '<p class="prod__sub">' + esc(mailSegLabel({ k: d.segK, v: d.segV })) + '</p>' + mailPreviewHtml(d) +
+        '<p class="form__err" id="mailErr" role="alert" hidden></p>' +
+        '<button type="button" class="btn btn--primary btn--block" data-action="mail-now"' + (d.n ? '' : ' disabled') + '>' + esc(d.n ? tf('mailNow', { n: d.n }) : t('mailNone')) + '</button>' +
+        '<div class="field"><label class="label" for="m-at">' + esc(t('mailAt')) + '</label><input class="input" id="m-at" type="datetime-local" value="' + esc(d.at) + '"></div>' +
+        '<button type="button" class="btn btn--block" data-action="mail-plan"' + (d.n ? '' : ' disabled') + '>' + esc(t('mailPlan')) + '</button>' +
+        '<button type="button" class="btn btn--ghost btn--block" data-action="mail-back">' + esc(t('mailBack')) + '</button></div>';
+    }
+    return '<form class="form" id="mailForm" novalidate><p class="label">' + esc(d.id || t('mailNew')) + '</p><p class="form__err" id="mailErr" role="alert" hidden></p>' +
+      '<div class="field"><label class="label" for="m-ua">' + esc(t('mailUa')) + '</label><textarea class="input input--area" id="m-ua" rows="4" maxlength="3500">' + esc(d.ua) + '</textarea></div>' +
+      '<div class="field"><label class="label" for="m-ru">' + esc(t('mailRu')) + '</label><textarea class="input input--area" id="m-ru" rows="4" maxlength="3500">' + esc(d.ru) + '</textarea>' +
+      '<p class="field__hint">' + esc(t('mailLangHint')) + '</p></div>' +
+      '<div class="field"><label class="label" for="m-photo">' + esc(t('mailPhoto')) + '</label><input class="input" id="m-photo" type="text" maxlength="200" autocomplete="off" value="' + esc(d.photo) + '">' +
+      '<p class="field__hint">' + esc(t('mailPhotoHint')) + '</p></div>' +
+      '<div class="field"><label class="label" for="m-btnK">' + esc(t('mailBtn')) + '</label><select class="input" id="m-btnK">' + ['none', 'shop', 'prod', 'cat'].map(function (k) {
+        return '<option value="' + k + '"' + (d.btnK === k ? ' selected' : '') + '>' + esc(t('mailBtn_' + k)) + '</option>'; }).join('') + '</select>' +
+      (d.btnK === 'prod' ? '<input class="input" id="m-btnV" type="text" maxlength="40" autocapitalize="characters" autocomplete="off" placeholder="' + esc(t('mailBtnProd')) + '" aria-label="' + esc(t('mailBtnProd')) + '" value="' + esc(d.btnV) + '">' : '') +
+      (d.btnK === 'cat' ? catSelect('m-btnV', d.btnV) : '') + '</div>' +
+      '<div class="field"><label class="label" for="m-segK">' + esc(t('mailSeg')) + '</label><select class="input" id="m-segK">' + ['all', 'cat', 'prod', 'idle', 'wh', 'sub'].map(function (k) {
+        return '<option value="' + k + '"' + (d.segK === k ? ' selected' : '') + '>' + esc(t('mailSeg_' + k)) + '</option>'; }).join('') + '</select>' +
+      (d.segK === 'prod' || d.segK === 'sub' ? '<input class="input" id="m-segV" type="text" maxlength="40" autocapitalize="characters" autocomplete="off" placeholder="' + esc(t('mailSegProd')) + '" aria-label="' + esc(t('mailSegProd')) + '" value="' + esc(d.segV) + '">' : '') +
+      (d.segK === 'cat' ? catSelect('m-segV', d.segV) : '') + '</div>' +
+      '<div id="mailPv">' + mailPreviewHtml(d) + '</div>' +
+      '<p class="info info__muted">' + esc(t('mailTestHint')) + '</p>' +
+      '<button type="button" class="btn btn--primary btn--block" data-action="mail-test">' + esc(t('mailTest')) + '</button></form>';
+  }
+  /** Поля редактора → adm.mailEdit (форма перерисовывается при смене кнопки и сегмента, введённое не должно теряться). */
+  function mailRead() {
+    var d = adm.mailEdit;
+    if (!d || d.step !== 'edit') return;
+    function v(id) { var x = document.getElementById(id); return x ? x.value : null; }
+    if (v('m-ua') !== null) d.ua = v('m-ua').trim();
+    if (v('m-ru') !== null) d.ru = v('m-ru').trim();
+    if (v('m-photo') !== null) d.photo = v('m-photo').trim();
+    if (v('m-btnK') !== null) d.btnK = v('m-btnK');
+    if (v('m-segK') !== null) d.segK = v('m-segK');
+    d.btnV = d.btnK === 'prod' || d.btnK === 'cat' ? (v('m-btnV') !== null ? v('m-btnV').trim().toUpperCase() : d.btnV) : '';
+    d.segV = d.segK === 'prod' || d.segK === 'cat' || d.segK === 'sub' ? (v('m-segV') !== null ? v('m-segV').trim().toUpperCase() : d.segV) : '';
+  }
+  function mailFail(res, btn) {
+    btnFree(btn);
+    haptic('error');
+    var box = document.getElementById('mailErr');
+    if (box) { box.textContent = typeof res === 'string' ? res : mailErrText(res); box.hidden = false; box.scrollIntoView({ block: 'center' }); }
+  }
+  /** «Зберегти й надіслати тільки мені»: черновик сохраняется, автор получает сообщение на обоих языках. */
+  function mailTestSend(btn) {
+    var d = adm.mailEdit;
+    if (!d || adm.busy) return;
+    mailRead();
+    if (!d.ua && !d.ru) { mailFail({ error: 'bad_form' }, null); return; } // пустую рассылку на сервер не отправляем
+    adm.busy = true; btnBusy(btn);
+    api('admin.mailSave', { id: d.id, ua: d.ua, ru: d.ru, photo: d.photo, btn: { k: d.btnK, v: d.btnV }, seg: { k: d.segK, v: d.segV } }).then(function (res) {
+      if (!res || !res.ok) { adm.busy = false; mailFail(res, btn); return null; }
+      d.id = res.mail.id;
+      return api('admin.mailTest', { id: d.id });
+    }).then(function (res) {
+      if (res === null) return;
+      adm.busy = false;
+      if (!res || !res.ok) { mailFail(res, btn); return; }
+      d.n = res.n; d.skip = res.skip; d.step = 'confirm';
+      adm.mail = null; // список обновится при возврате
+      haptic('success');
+      renderPage(); window.scrollTo(0, 0);
+    }).catch(function () { adm.busy = false; mailFail(t('admFail'), btn); });
+  }
+  function mailStart(at) {
+    var d = adm.mailEdit;
+    if (!d) return;
+    var shown = at ? at.slice(8, 10) + '.' + at.slice(5, 7) + '.' + at.slice(0, 4) + ' ' + at.slice(11, 16) : '';
+    askConfirm({
+      title: t(at ? 'mailPlanTitle' : 'mailSendTitle'), text: tf(at ? 'mailPlanText' : 'mailSendText', { n: d.n, at: shown }),
+      html: mailPreviewHtml(d), ok: tf(at ? 'mailPlanOk' : 'mailSendOk', { n: d.n, at: shown }),
+      run: function (done) {
+        api('admin.mailSend', { id: d.id, at: at || '' }).then(function (res) {
+          if (!res || !res.ok) { done(mailErrText(res)); return; }
+          adm.mailEdit = null; adm.mail = null; adm.loading = false;
+          done();
+          haptic('success');
+          toast(at ? tf('mailPlanned', { at: res.at }) : t('mailSent'));
+          renderPage(); window.scrollTo(0, 0);
+          loadAdmin(true);
+        }).catch(function () { done(t('admFail')); });
+      }
+    });
+  }
+  function mailCancelAsk(id) {
+    askConfirm({ title: t('mailCancelTitle'), text: tf('mailCancelText', { id: id }), ok: tf('mailCancelOk', { id: id }), danger: true,
+      run: function (done) {
+        api('admin.mailCancel', { id: id }).then(function (res) {
+          if (!res || !res.ok) { done(mailErrText(res)); return; }
+          ((adm.mail && adm.mail.mails) || []).forEach(function (m, i) { if (m.id === id) adm.mail.mails[i] = res.mail; });
+          done();
+          haptic('success'); toast(t('mailCanceled'));
+          renderAdminList();
+        }).catch(function () { done(t('admFail')); });
+      } });
+  }
+  /** Нажатия во вкладке «Розсилка» и кнопка шаблона «Свіжа поставка» в карточке товара. */
+  function mailClick(e, name, act) {
+    var ed = e.target.closest('[data-mail-edit]');
+    if (ed) {
+      var found = null;
+      ((adm.mail && adm.mail.mails) || []).forEach(function (m) { if (m.id === ed.getAttribute('data-mail-edit')) found = m; });
+      if (found) mailOpen(found);
+      return true;
+    }
+    var cn = e.target.closest('[data-mail-cancel]');
+    if (cn) { mailCancelAsk(cn.getAttribute('data-mail-cancel')); return true; }
+    if (name === 'mail-new') { mailOpen({}); return true; }
+    if (name === 'mail-fresh') {
+      var p = adminProduct(adm.edit);
+      if (p) mailOpen({ ua: I18N.ua.mailFreshUa.replace('{name}', p.ua), ru: I18N.ru.mailFreshRu.replace('{name}', p.ru || p.ua), btn: { k: 'prod', v: p.id }, seg: { k: 'all', v: '' } });
+      return true;
+    }
+    if (name === 'mail-test') { if (!act.disabled) mailTestSend(act); return true; }
+    if (name === 'mail-back') { adm.mailEdit.step = 'edit'; renderPage(); window.scrollTo(0, 0); return true; }
+    if (name === 'mail-now') { if (!act.disabled) mailStart(''); return true; }
+    if (name === 'mail-plan') {
+      var at = (document.getElementById('m-at') || {}).value || '';
+      if (adm.mailEdit) adm.mailEdit.at = at;
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(at)) { mailFail(t('mailErr_bad_time'), null); return true; }
+      mailStart(at.slice(0, 16));
+      return true;
+    }
+    return false;
+  }
+  el.page.addEventListener('input', function (e) {
+    if (state.view !== 'admin' || !adm.mailEdit || adm.mailEdit.step !== 'edit' || !/^m-/.test(e.target.id || '')) return;
+    mailRead();
+    var pv = document.getElementById('mailPv');
+    if (pv) pv.innerHTML = mailPreviewHtml(adm.mailEdit);
+  });
+  el.page.addEventListener('change', function (e) {
+    if (state.view !== 'admin' || !adm.mailEdit || (e.target.id !== 'm-btnK' && e.target.id !== 'm-segK')) return;
+    mailRead();
+    if (adm.mailEdit.btnK === 'cat' && !adm.mailEdit.btnV && state.catalog && state.catalog.categories[0]) adm.mailEdit.btnV = state.catalog.categories[0].code;
+    if (adm.mailEdit.segK === 'cat' && !adm.mailEdit.segV && state.catalog && state.catalog.categories[0]) adm.mailEdit.segV = state.catalog.categories[0].code;
+    var y = window.scrollY;
+    renderPage(); // появляется или исчезает поле «какой товар / какая категория»
+    window.scrollTo(0, y);
   });
 
   /* ---- Б2. Опт ---- */
@@ -4677,6 +4929,7 @@
   bind();
   el.adminBtn.hidden = !adminHint;
   track('open', deepId ? deepId.toUpperCase() : '', params.get('view') || '');
+  if (params.get('m')) track('mail', String(params.get('m')).replace(/[^\w-]/g, '').slice(0, 12)); // пришли по кнопке из рассылки — для её статистики
   loadCatalog();
   // Оптовые цены — отдельным запросом и только одобренному оптовику (остальным сервер их не отдаёт).
   setTimeout(function () { loadWh(false); }, 900);

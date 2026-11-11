@@ -1383,6 +1383,103 @@ const smallTargets = page => page.evaluate(() => {
     await r.page.context().close(); st.server.close();
   }
 
+  console.log('Волна 2б · Б1: рассылка');
+  {
+    const st = await start(8824, undefined, s => { withPhotos(s); });
+    const g = st.gas, n = action => st.log.filter(x => x.action === action).length;
+    const tgStart = (uid, lc) => g.post({ update_id: 5000 + uid, message: { chat: { id: uid, type: 'private' }, from: { id: uid, first_name: 'Клієнт' + uid, language_code: lc || 'uk' }, text: '/start' } }, { src: 'tg', key: 'whsec' });
+    [691, 692, 693, 900].forEach(u => tgStart(u)); // админ тоже нажимал /start — он тоже получатель
+    g.post({ action: 'order', initData: g.initData({ id: 692, first_name: 'Рус' }), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ru', rid: 'ml1' });
+    const mailTo = uid => g.sent.filter(m => String(m.payload.chat_id) === String(uid) && m.payload.reply_markup && JSON.stringify(m.payload.reply_markup).indexOf('"mu"') >= 0);
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    await page.locator('[data-tab="mail"]').click();
+    await page.waitForSelector('[data-action="mail-new"]');
+    ok(/Розсилок поки немає/.test(await text(page, '#admList')), 'вкладка «Розсилка»: пока пусто');
+    await page.click('[data-action="mail-new"]');
+    await page.waitForSelector('#mailForm');
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'конструктор рассылки: поля и кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.click('[data-action="mail-test"]');
+    await page.waitForFunction(() => !document.getElementById('mailErr').hidden);
+    ok(/Заповніть текст/.test(await text(page, '#mailErr')) && !g.sheets['Розсилки'], 'пустая рассылка не сохраняется');
+    await page.fill('#m-ua', 'Свіжа курага 🌿\nУже в магазині.');
+    await page.selectOption('#m-btnK', 'cat');
+    await page.waitForSelector('select#m-btnV');
+    await page.selectOption('#m-btnV', 'DRY');
+    await page.fill('#m-ru', 'Свежая курага 🌿\nУже в магазине.');
+    const pv = await page.locator('#mailPv .mailpv').allInnerTexts();
+    ok(pv.length === 2 && /Свіжа курага/.test(pv[0]) && /Відкрити категорію: DRY/.test(pv[0]) && /Не надсилати мені розсилки/.test(pv[0]) && /Свежая курага/.test(pv[1]) && /Не присылать мне рассылки/.test(pv[1]), 'предпросмотр обоих языков с кнопками', pv);
+    await page.screenshot({ path: OUT + '/80-mail-form.png', fullPage: true });
+    st.opt.delay = 300;
+    await page.evaluate(() => { const b = document.querySelector('[data-action="mail-test"]'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('[data-action="mail-test"]'); return b.classList.contains('is-busy') && b.disabled; }), 'кнопка «…надіслати тільки мені» показывает индикатор и блокируется');
+    await page.waitForSelector('#mailCount');
+    st.opt.delay = 0;
+    ok(n('admin.mailSave') === 1 && n('admin.mailTest') === 1 && mailTo(900).length === 2 && [691, 692, 693].every(u => mailTo(u).length === 0), '«тільки мені»: один запрос, автор получил оба языка, клиенты — ничего', [n('admin.mailSave'), mailTo(900).length]);
+    ok((await text(page, '#mailCount')).trim() === 'Отримувачів: 4' && /Свіжа курага/.test(await text(page, '.page')) && /Усім клієнтам/.test(await text(page, '.page')), 'экран подтверждения: число получателей (3 клиента и сам админ) и точный текст', await text(page, '#mailCount'));
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'экран подтверждения: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/81-mail-confirm.png', fullPage: true });
+    // отложенная отправка и отмена
+    await page.click('[data-action="mail-plan"]');
+    ok(/Вкажіть час у майбутньому/.test(await text(page, '#mailErr')) && n('admin.mailSend') === 0, 'без времени запланировать нельзя');
+    const when = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' }).format(new Date(Date.now() + 3 * 3600e3)).replace(' ', 'T');
+    await page.fill('#m-at', when);
+    await page.click('[data-action="mail-plan"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Запланувати розсилку\?/.test(await text(page, '#sheet')) && /за київським часом/.test(await text(page, '#sheet')) && /Свіжа курага/.test(await text(page, '#sheet')), 'подтверждение: время по Киеву, число получателей и точный текст', await text(page, '#sheet'));
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForSelector('[data-mail-cancel]');
+    ok(g.sheets['Розсилки'].rows[1][3] === 'запланована' && /запланована/.test(await text(page, '#admList')) && /\(Київ\)/.test(await text(page, '#admList')) && [691, 692, 693].every(u => mailTo(u).length === 0), 'рассылка запланирована, клиентам пока ничего не ушло');
+    await page.click('[data-mail-cancel]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger')) && /Скасувати M-0001/.test(await text(page, '[data-action="cf-ok"]')), 'отмена — красная кнопка с номером рассылки');
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Розсилку скасовано/.test(document.getElementById('toastText').textContent));
+    ok(g.sheets['Розсилки'].rows[1][3] === 'скасована', 'рассылка отменена до старта');
+
+    // шаблон «Свіжа поставка» из карточки товара → отправка сейчас
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('.prod');
+    await page.fill('#admPQ', 'DRY-039');
+    await page.locator('[data-edit="DRY-039"]').click();
+    await page.waitForSelector('[data-action="mail-fresh"]');
+    await page.click('[data-action="mail-fresh"]');
+    await page.waitForSelector('#mailForm');
+    ok(await page.inputValue('#m-ua') === 'Свіжа поставка 🌿\nКурага натуральна Бобої без кісточок уже на прилавку й у магазині.' && /Свежая поставка 🌿\nКурага натуральная Бобои без косточек уже на прилавке и в магазине\./.test(await page.inputValue('#m-ru')) &&
+      await page.inputValue('#m-btnK') === 'prod' && await page.inputValue('#m-btnV') === 'DRY-039', 'шаблон «Свіжа поставка»: тексты UA и RU с названием товара, кнопка «Відкрити товар»', await page.inputValue('#m-ua'));
+    await page.click('[data-action="mail-test"]');
+    await page.waitForSelector('#mailCount');
+    await page.click('[data-action="mail-now"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok((await text(page, '[data-action="cf-ok"]')).trim() === 'Надіслати 4 отримувачам' && /Отримувачів: 4/.test(await text(page, '#sheet')), 'подтверждение отправки с числом получателей', await text(page, '[data-action="cf-ok"]'));
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /завершена/.test((document.getElementById('admList') || {}).textContent || ''));
+    ok([691, 692, 693].every(u => mailTo(u).length === 1) && /Свежая поставка/.test(mailTo(692)[0].payload.text) && /Свіжа поставка/.test(mailTo(691)[0].payload.text), 'рассылка ушла: каждому одно сообщение на его языке');
+    ok(/надіслано 4 з 4/.test(await text(page, '#admList')), 'в списке видна статистика «надіслано 4 з 4»', await text(page, '#admList'));
+    await page.screenshot({ path: OUT + '/82-mail-list.png', fullPage: true });
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (админ)', errors);
+    await page.context().close();
+
+    // клиент пришёл по кнопке из рассылки: открыта категория, нажатие учтено
+    const url = mailTo(691)[0].payload.reply_markup.inline_keyboard[0][0].web_app.url;
+    ok(/[?&]m=M-0002/.test(url) && /[?&]p=DRY-039/.test(url), 'кнопка в сообщении ведёт на товар и несёт номер рассылки', url);
+    const c = await open(browser, st.url, { uid: 691, query: '?m=M-0002&cat=NUT' });
+    await c.page.waitForSelector('#grid .card');
+    ok(await c.page.locator('.chip[data-cat="NUT"]').getAttribute('aria-pressed') === 'true' && /Знайдено/.test(await text(c.page, '#gridHead')), 'ссылка «Відкрити категорію» открывает магазин сразу в категории');
+    await c.page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+    await c.page.waitForTimeout(500);
+    ok((g.sheets['Події'] ? g.sheets['Події'].rows : []).some(r => r[3] === 'mail' && r[4] === 'M-0002' && String(r[1]) === '691'), 'нажатие кнопки рассылки записано в «Події»');
+    ok(c.errors.length === 0, 'в консоли браузера нет ошибок (клиент)', c.errors);
+    await c.page.context().close();
+
+    // менеджер без права «Розсилка» вкладки не видит
+    g.call('writeAdminRow_', { id: '745', name: 'Без розсилки', username: '', role: 'manager', perms: { st: true }, notify: false, active: true, by: 'тест' });
+    const m = await open(browser, st.url, { uid: 745, query: '?admin=1' });
+    await m.page.waitForSelector('.ord');
+    ok(await count(m.page, '[data-tab="mail"]') === 0 && await count(m.page, '[data-tab="wh"]') === 0, 'без прав «Розсилка» и «Опт» этих вкладок нет');
+    await m.page.context().close(); st.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);
