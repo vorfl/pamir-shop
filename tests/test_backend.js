@@ -782,5 +782,78 @@ console.log('Волна 2а · А5: лист «Клієнти»');
   ok(g.sandbox.__errors.length === 0 && g2.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+/* ============================ Скорость админ-панели ============================ */
+console.log('Скорость админ-панели: меньше обращений, тот же результат');
+{
+  const g = fresh();
+  const one = (fn) => { g.resetOps(); const res = fn(); return { res, ops: Object.assign({}, g.ops) }; };
+  // права и подпись по-прежнему проверяются при каждом запросе
+  ok(adm(g, 5555, 'admin.orders').error === 'forbidden', 'посторонний в панель не входит');
+  ok(g.post({ action: 'admin.orders', initData: g.initData(U(900)).replace(/hash=[0-9a-f]{6}/, 'hash=000000') }).error === 'forbidden', 'поддельная подпись отклоняется');
+  addAdmin(g, 760, 'manager', ['stock']);
+  ok(adm(g, 760, 'admin.product', { id: 'NUT-002', patch: { price: 1 } }).error === 'no_perm', 'менеджер без права на цены цену не меняет');
+  g.sheets['Адміни'].rows.find(r => String(r[0]) === '760')[g.sheets['Адміни'].rows[0].indexOf('Активний')] = '';
+  ok(adm(g, 760, 'admin.orders').error === 'forbidden', 'админа отключили прямо в таблице — следующий же запрос отклонён (права не кэшируются)');
+
+  const o = one(() => adm(g, 900, 'admin.orders'));
+  ok(o.res.ok && o.ops.prop === 1 && o.ops.read === 2, 'список заказов: свойства скрипта одним обращением, по одному чтению листов «Адміни» и «Замовлення»', o.ops);
+  const p = one(() => adm(g, 900, 'admin.products'));
+  ok(p.res.ok && p.ops.prop === 1 && p.ops.read === 3, 'список товаров: три чтения (админы, товары, категории)', p.ops);
+
+  // ответ после сохранения собирается без повторного чтения строки — и совпадает с тем, что лежит в таблице
+  const patches = [{ price: 655.5, old: 700, end: '2099-03-01', badge: 'sale' }, { qty: '2,5', hidden: true, dUa: '=небезпечний опис', ua: 'Кеш’ю +новий' },
+    { cat: 'Сухофрукти', t: 'p', packs: '200 г', price: 99 }, { stock: false, hidden: false, qty: '', end: '', badge: '', old: 0 }, { stock: true, wh: 500, wm: 'від 3 кг', img: 'https://img.test/x.jpg' }];
+  let same = true, reads = [];
+  patches.forEach(patch => {
+    const s = one(() => adm(g, 900, 'admin.product', { id: 'NUT-002', patch }));
+    const inTable = adm(g, 900, 'admin.products').products.find(x => x.id === 'NUT-002');
+    if (!s.res.ok || JSON.stringify(s.res.product) !== JSON.stringify(inTable)) { same = false; console.log('     ', JSON.stringify(s.res.product), JSON.stringify(inTable)); }
+    reads.push(s.ops.read);
+  });
+  ok(same, 'ответ «сохранено» совпадает с таблицей для всех видов правок (цена, акция, остаток, тексты, категория, тип, фото)');
+  ok(reads[0] === 2 && reads[1] === 2, 'правка товара: два чтения (админы и товары), строка не перечитывается', reads);
+  ok(reads[2] === 3, 'лист «Категорії» читается, только когда меняется категория', reads);
+  const added = adm(g, 900, 'admin.productAdd', { patch: { cat: 'Горіхи', t: 'w', ua: 'Новий', price: 120, stock: true, qty: '4' } });
+  ok(added.ok && JSON.stringify(added.product) === JSON.stringify(adm(g, 900, 'admin.products').products.find(x => x.id === added.product.id)), 'новый товар: ответ совпадает с таблицей', added.product);
+
+  // журнал: все строки запроса одной записью, порядок и автор сохранены
+  const before = g.sheets['Журнал'].rows.length;
+  const s3 = one(() => adm(g, 900, 'admin.product', { id: 'NUT-005', patch: { price: 530, dUa: 'Опис', old: 600 } }));
+  const added3 = g.sheets['Журнал'].rows.slice(before);
+  ok(added3.length === 3 && added3.every(r => r[4] === 'NUT-005 Фундук смажений' && /Тест900/.test(r[1]) && String(r[2]) === '900') && added3.map(r => r[3]).join() === 'Товар: ціна,Товар: опис (UA),Товар: стара ціна',
+    'три изменения — три строки в «Журнале», в том же порядке, с автором', added3.map(r => r[3]));
+  ok(!s3.ops.append && s3.ops.write >= 4, 'строки журнала записаны одной операцией, а не тремя', s3.ops);
+  const s1 = one(() => adm(g, 900, 'admin.product', { id: 'NUT-005', patch: { stock: false } }));
+  ok(s1.ops.append === 1 && g.sheets['Журнал'].rows.length === before + 4, 'одно изменение — одна строка (appendRow)', s1.ops);
+  ok(g.call('logAction_', 'Перевірка', 'поза запитом', '', '') === undefined && g.sheets['Журнал'].rows.slice(-1)[0][3] === 'Перевірка', 'вне запроса (меню, триггеры) журнал пишется сразу');
+
+  // смена статуса: сообщения админов — одной пачкой, клиенту — отдельно; настройки без нужды не читаются
+  g.call('writeAdminRow_', { id: '761', name: 'Другий', username: '', role: 'admin', perms: {}, notify: true, active: true, by: 'тест' });
+  const num = order(g, U(42), [{ id: 'NUT-007', g: 0, q: 1 }], 85).number;
+  const sent0 = g.sent.length;
+  const st = one(() => adm(g, 900, 'admin.status', { num, code: 's' }));
+  const out = g.sent.slice(sent0);
+  ok(st.res.ok && st.res.told === true && out.filter(m => m.method === 'editMessageText').length === 2 && out.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '42').length === 1,
+    'статус: сообщение о заказе обновлено у обоих админов, клиент получил одно сообщение', out.map(m => m.method));
+  ok(st.ops.tgBatch === 1 && st.ops.tg === 1 && st.ops.read === 2, 'правки сообщений админов ушли одной пачкой; листы «Налаштування» и «Точки» не читались', st.ops);
+  ok(g.sheets['Замовлення'].rows.find(r => r[0] === num)[2] === 'відправлено' && logRows(g, 'Замовлення: статус').some(r => r[4] === num && r[6] === 'відправлено'), 'статус записан в таблицу и в «Журнал»');
+  g.setTelegramFail((method, payload) => method === 'editMessageText' ? { ok: false, description: 'message is not modified' } : null);
+  const st2 = adm(g, 900, 'admin.status', { num, code: 'd' });
+  ok(st2.ok && st2.told === true, 'сбой правки сообщений у админов не мешает сменить статус и написать клиенту', st2);
+  g.setTelegramFail(false);
+
+  // замер времени: выключен по умолчанию, включается свойством PERF_LOG
+  ok(adm(g, 900, 'admin.orders')._t === undefined, 'без PERF_LOG в ответе нет замеров');
+  g.props.PERF_LOG = '1';
+  const t = adm(g, 900, 'admin.status', { num, code: 'c' });
+  ok(t.ok && t._t && typeof t._t.total === 'number' && t._t.marks.map(m => m[0]).join() === 'підпис і права,таблиця,Telegram,дія,журнал' && t._t.marks.every(m => typeof m[1] === 'number'),
+    'с PERF_LOG = 1 ответ несёт время по этапам: подпись и права, таблица, Telegram, журнал', t._t);
+  ok(JSON.stringify(adm(g, 5555, 'admin.orders')) === JSON.stringify({ ok: false, error: 'forbidden' }), 'постороннему замеры не уходят: в ответе только отказ', adm(g, 5555, 'admin.orders'));
+  ok(JSON.stringify(g.post({ action: 'admin.orders', initData: 'x' })) === JSON.stringify({ ok: false, error: 'forbidden' }), 'запросу без подписи замеры не уходят');
+  ['orders.my', 'cart', 'notify', 'ev'].forEach(a => { const r = g.post({ action: a, initData: g.initData(U(44)), items: [], events: [{ e: 'open', t: Date.now() }], id: 'NUT-008' }); ok(r._t === undefined, 'запрос покупателя «' + a + '»: замеров в ответе нет', r); });
+  ok(g.get({ action: 'catalog' })._t === undefined && order(g, U(43), [{ id: 'NUT-007', g: 0, q: 1 }], 85)._t === undefined, 'в каталог и заказ замеры не попадают');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

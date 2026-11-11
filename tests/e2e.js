@@ -665,13 +665,13 @@ const smallTargets = page => page.evaluate(() => {
     await page.locator('[data-edit="NUT-004"]').click();
     await page.waitForSelector('#a-ua');
     await page.fill('#a-dUa', 'Перевірка відгуку кнопки');
+    // «Збережено» держится на кнопке треть секунды и не задерживает переход — ловим его наблюдателем
+    await page.evaluate(() => { window.__saved = ''; new MutationObserver(() => { const b = document.querySelector('[data-action="adm-save"].is-saved'); if (b) window.__saved = b.textContent; }).observe(document.getElementById('page'), { subtree: true, attributes: true, childList: true }); });
     await page.evaluate(() => { const b = document.querySelector('[data-action="adm-save"]'); b.click(); b.click(); });
     ok(await page.evaluate(() => { const b = document.querySelector('[data-action="adm-save"]'); return b.classList.contains('is-busy') && b.disabled; }), '«Зберегти» сразу показывает индикатор и блокируется');
     await page.locator('[data-action="adm-save"]').screenshot({ path: OUT + '/51-busy-save.png' });
-    await page.waitForSelector('[data-action="adm-save"].is-saved');
-    ok(/Збережено/.test(await text(page, '[data-action="adm-save"]')), 'после ответа на кнопке галочка и «Збережено»');
-    await page.locator('[data-action="adm-save"]').screenshot({ path: OUT + '/52-saved.png' });
     await page.waitForSelector('.prod');
+    ok(/Збережено/.test(await page.evaluate(() => window.__saved)), 'после ответа на кнопке галочка и «Збережено»', await page.evaluate(() => window.__saved));
     ok(n('admin.product') === before + 1, 'двойное нажатие на «Зберегти» — один запрос', n('admin.product') - before);
 
     // галочка «Приховати» в карточке товара сохраняется сразу
@@ -1051,6 +1051,99 @@ const smallTargets = page => page.evaluate(() => {
     ok(await count(c.page, '.mini[data-id="NUT-001"]') === 0 && await count(c.page, '.mini[data-id="DRY-039"]') > 0, 'в подборках «Купити знову» и «Ваше звичне» архивного товара нет');
     ok(c.errors.length === 0, 'в консоли браузера нет ошибок (покупатель)', c.errors);
     await c.page.context().close(); st.server.close();
+  }
+
+  console.log('Скорость админ-панели');
+  {
+    const st = await start(8820);
+    const n = action => st.log.filter(x => x.action === action).length;
+    // покупатель: запросов панели нет
+    const c = await open(browser, st.url, { uid: 650 });
+    await c.page.waitForSelector('.card');
+    await c.page.waitForTimeout(2200);
+    ok(st.log.every(x => String(x.action).indexOf('admin.') !== 0), 'у покупателя запросов админ-панели нет');
+    await c.page.context().close();
+
+    // админ открыл магазин: заказы подгружаются заранее, панель открывается сразу
+    const { page, errors } = await open(browser, st.url, { uid: 900 });
+    await page.evaluate(() => localStorage.setItem('pamir_admin', '1'));
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('.card');
+    for (let i = 0; i < 40 && n('admin.orders') === 0; i++) await page.waitForTimeout(100);
+    ok(n('admin.orders') === 1 && await count(page, '.ord') === 0, 'пока админ смотрит магазин, заказы уже запрошены заранее', n('admin.orders'));
+    await page.waitForTimeout(300);
+    st.opt.delay = 700; // дальше сервер отвечает медленно
+    await page.click('#adminBtn');
+    ok(await count(page, '.ord') === 7 && n('admin.orders') === 1, 'панель открылась сразу с заказами, без второго запроса и без ожидания', [await count(page, '.ord'), n('admin.orders')]);
+    // вкладка «Товари» тоже подгружается заранее
+    await page.reload({ waitUntil: 'networkidle' });
+    st.opt.delay = 0;
+    await page.click('#adminBtn');
+    await page.waitForSelector('.ord');
+    for (let i = 0; i < 40 && n('admin.products') === 0; i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(300);
+    const prodCalls = n('admin.products');
+    st.opt.delay = 700;
+    await page.locator('[data-tab="products"]').click();
+    ok(prodCalls === 1 && await count(page, '.prod') === 20 && n('admin.products') === 1, '«Товари» открываются мгновенно: список загружен заранее одним запросом', [prodCalls, await count(page, '.prod')]);
+
+    // быстрое переключение вкладок во время загрузки не оставляет пустой экран
+    await page.locator('[data-tab="reviews"]').click();
+    await page.locator('[data-tab="admins"]').click();
+    await page.waitForSelector('#admList .prod');
+    ok(/Власник/.test(await text(page, '#admList')) && await count(page, '.form__err') === 0, 'переключили вкладку, не дождавшись ответа, — открылась нужная, без ошибки');
+    await page.locator('[data-tab="reviews"]').click();
+    ok(n('admin.reviews') === 1 && !/Завантаж/.test(await text(page, '#admList')), 'вкладка, загруженная в фоне, открывается без повторного запроса', n('admin.reviews'));
+
+    // статус заказа: новый статус виден сразу, до ответа сервера
+    await page.locator('[data-tab="orders"]').click();
+    await page.waitForSelector('.ord');
+    await page.locator('.ord__head').first().click();
+    await page.waitForSelector('[data-st="c"]:not([disabled])');
+    const badge = () => page.locator('.ord').first().locator('.ord__head .badge').first().innerText();
+    const was = await badge();
+    await page.click('[data-st="c"]');
+    ok(was === 'новий' && await badge() === 'підтверджено' && n('admin.status') <= 1 && await page.evaluate(() => !!document.querySelector('.ord__acts .is-busy')), 'статус на экране сменился сразу, кнопка ещё показывает индикатор', [was, await badge()]);
+    await page.waitForFunction(() => !document.querySelector('.ord__acts .is-busy'));
+    ok(await badge() === 'підтверджено' && st.gas.sheets['Замовлення'].rows.slice(-1)[0][2] === 'підтверджено', 'после ответа сервера статус тот же и записан в таблицу');
+    // сервер отказал: статус возвращается назад с сообщением
+    st.opt.failAction = 'admin.status';
+    await page.click('[data-st="s"]');
+    ok(await badge() === 'відправлено', 'второй статус тоже показан сразу');
+    await page.waitForFunction(() => /повернули попередній/.test(document.getElementById('toastText').textContent));
+    ok(await badge() === 'підтверджено' && st.gas.sheets['Замовлення'].rows.slice(-1)[0][2] === 'підтверджено' && await page.evaluate(() => !document.querySelector('.ord__acts .is-busy')), 'сервер ответил ошибкой — на экране снова прежний статус, показано сообщение');
+    st.opt.failAction = '';
+    st.opt.delay = 0;
+
+    // несколько правок подряд — каталог для витрины перезапрашивается один раз
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('[data-stock="NUT-002"]');
+    const cat0 = n('GET catalog');
+    for (const id of ['NUT-002', 'NUT-003', 'NUT-004']) { await page.click('[data-stock="' + id + '"]'); await page.waitForFunction(i => !document.querySelector('[data-stock="' + i + '"]').disabled, id); }
+    await page.waitForTimeout(1800);
+    ok(n('GET catalog') === cat0 + 1 && n('admin.product') === 3, 'три переключателя подряд — три сохранения и одно обновление каталога', [n('GET catalog') - cat0, n('admin.product')]);
+
+    // замер времени: только когда включён на сервере
+    ok(await count(page, '#perfLine') === 0, 'без PERF_LOG строки с замерами на экране нет');
+    st.gas.props.PERF_LOG = '1';
+    await page.click('[data-stock="NUT-002"]');
+    await page.waitForSelector('#perfLine');
+    ok(/product: \d+ мс = сервер \d+ \(підпис і права \d+, таблиця \d+, дія \d+, журнал \d+\) \+ мережа й Google \d+/.test(await text(page, '#perfLine')), 'с PERF_LOG = 1 внизу экрана видно время по этапам', await text(page, '#perfLine'));
+    ok(await noOverflow(page), 'строка с замерами не ломает вёрстку');
+    // строка замеров живёт только в админ-панели
+    await page.click('[data-nav="back"]');
+    await page.waitForSelector('.card');
+    ok(await page.locator('#perfLine').isVisible() === false, 'админ вышел из панели в магазин — строки с замерами не видно');
+    const cust = await open(browser, st.url, { uid: 651, query: '?view=orders' });
+    await cust.page.waitForSelector('.page__title');
+    await cust.page.click('.tabbar [data-go="catalog"]');
+    await cust.page.waitForSelector('.card');
+    await cust.page.locator('.card [data-quick="1"]').first().click().catch(() => {});
+    await cust.page.waitForTimeout(600);
+    ok(await count(cust.page, '#perfLine') === 0 && st.gas.props.PERF_LOG === '1', 'у покупателя строки с замерами нет, даже когда PERF_LOG включён');
+    await cust.page.context().close();
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await page.context().close(); st.server.close();
   }
 
   await browser.close();

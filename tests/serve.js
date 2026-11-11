@@ -10,7 +10,8 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascr
 function start(port, codePath, tweak) {
   const s = seed();
   if (tweak) tweak(s);
-  const gas = createGas(codePath || path.join(__dirname, '..', 'apps-script', 'Code.gs'), s);
+  // PAMIR_CODE_GS — путь к другому Code.gs: так проверяется, что новая витрина работает со старым бэкендом и наоборот
+  const gas = createGas(codePath || process.env.PAMIR_CODE_GS || path.join(__dirname, '..', 'apps-script', 'Code.gs'), s);
   const log = []; // запросы к API — тесты смотрят, что и сколько раз вызывалось
   const opt = { delay: 0, failAction: '' }; // delay — задержка ответа, мс (как у настоящего Apps Script); failAction — действие, на которое стенд отвечает ошибкой
   const server = http.createServer((req, res) => {

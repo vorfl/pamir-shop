@@ -2193,39 +2193,81 @@
   function api(action, data) {
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
     Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
+    var started = Date.now();
     return fetch(cfg.API_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body)
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
+    }).then(function (res) {
+      if (res && res._t) perfShow(action, Date.now() - started, res._t); // замер включён на сервере (PERF_LOG = 1)
+      return res;
     });
   }
 
-  function loadAdmin(force) {
-    var kind = adm.tab === 'orders' ? 'orders' : adm.tab === 'settings' ? 'settings' : adm.tab === 'admins' ? 'admins' : adm.tab === 'reviews' ? 'reviews' : 'products';
-    var have = kind === 'orders' ? adm.orders : kind === 'settings' ? adm.settings : kind === 'admins' ? adm.admins : kind === 'reviews' ? adm.reviews : adm.products;
-    if (adm.loading || (!force && have)) return;
-    adm.loading = true; adm.error = '';
-    renderAdminList();
-    api('admin.' + kind).then(function (res) {
-      adm.loading = false;
-      btnFree(document.querySelector('[data-action="adm-refresh"]'));
-      if (!res || !res.ok) {
-        adm.error = res && res.error === 'forbidden' ? 'admForbidden' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admError';
-        if (res && res.error === 'forbidden') { store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true; }
-      } else {
+  var admFlight = {}; // запросы списков, которые уже в пути: второй такой же не отправляется
+  var admAt = {};     // когда список получен: давно открытый обновляется в фоне
+  var ADMIN_FRESH_MS = 30000;
+  function adminKind() {
+    return adm.tab === 'orders' ? 'orders' : adm.tab === 'settings' ? 'settings' : adm.tab === 'admins' ? 'admins' : adm.tab === 'reviews' ? 'reviews' : 'products';
+  }
+  function adminHave(kind) {
+    return kind === 'orders' ? adm.orders : kind === 'settings' ? adm.settings : kind === 'admins' ? adm.admins : kind === 'reviews' ? adm.reviews : adm.products;
+  }
+  /** Один запрос списка панели. Данные кладутся в adm; права и подпись при каждом запросе проверяет сервер. */
+  function fetchAdmin(kind) {
+    if (admFlight[kind]) return admFlight[kind];
+    admFlight[kind] = api('admin.' + kind).then(function (res) {
+      delete admFlight[kind];
+      if (res && res.ok) {
         store.set(ADMIN_KEY, '1');
+        admAt[kind] = Date.now();
         if (res.me) adm.me = res.me;
         if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; }
         else if (kind === 'settings') adm.settings = res.fields || [];
         else if (kind === 'reviews') adm.reviews = res.reviews || [];
         else if (kind === 'admins') { adm.admins = res.admins || []; adm.invites = res.invites || []; adm.permList = res.permList || []; }
         else { adm.products = res.products || []; adm.cats = res.categories || []; }
+      } else if (res && res.error === 'forbidden') {
+        store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true;
       }
-      if (state.view === 'admin') renderPage();
-    }).catch(function () {
-      adm.loading = false; adm.error = 'admError';
+      return res;
+    }, function (err) { delete admFlight[kind]; throw err; });
+    return admFlight[kind];
+  }
+  /** Список загружается заранее, пока админ ещё не открыл вкладку: к нажатию данные уже на месте. */
+  function prefetchAdmin(kind) {
+    if (!cfg.API_URL || !inTelegram || adminHave(kind) || admFlight[kind]) return;
+    fetchAdmin(kind).then(function () {
+      if (state.view === 'admin' && adminKind() === kind && !adm.loading) renderPage();
+    }).catch(function () { /* не получилось заранее — загрузится при открытии вкладки */ });
+  }
+  /** Список уже на экране, но получен давно: показываем его сразу и тихо обновляем. Форму настроек не трогаем — в ней могут печатать. */
+  function refreshAdminQuietly(kind) {
+    if (kind === 'settings' || admFlight[kind] || adm.busy || Date.now() - (admAt[kind] || 0) < ADMIN_FRESH_MS) return;
+    fetchAdmin(kind).then(function (res) {
+      if (res && res.ok && state.view === 'admin' && adminKind() === kind && !adm.loading && !adm.busy &&
+          !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !state.sheet) renderAdminList();
+    }).catch(function () { /* останется прежний список */ });
+  }
+
+  function loadAdmin(force) {
+    var kind = adminKind();
+    if (adm.loading === kind) return;
+    if (!force && adminHave(kind)) { adm.loading = false; refreshAdminQuietly(kind); return; }
+    adm.loading = kind; adm.error = '';
+    renderAdminList();
+    fetchAdmin(kind).then(function (res) {
       btnFree(document.querySelector('[data-action="adm-refresh"]'));
+      if (adm.loading !== kind) return; // пока шёл ответ, открыли другую вкладку: данные сохранены, экран не трогаем
+      adm.loading = false;
+      if (!res || !res.ok) adm.error = res && res.error === 'forbidden' ? 'admForbidden' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admError';
+      if (state.view === 'admin') renderPage();
+      if (res && res.ok && kind === 'orders') prefetchAdmin('products'); // следующая вкладка, куда обычно идут
+    }).catch(function () {
+      btnFree(document.querySelector('[data-action="adm-refresh"]'));
+      if (adm.loading !== kind) return;
+      adm.loading = false; adm.error = 'admError';
       if (state.view === 'admin') renderAdminList();
     });
   }
@@ -2379,8 +2421,9 @@
           '<p>' + esc(o.delivery) + (o.city ? ': ' + esc(o.city) + ', ' + esc(o.branch) : '') + '<br>' + esc(o.pay) + '</p>' +
           (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) +
           (can('st') ? '<div class="ord__acts">' + STATUS_BTNS.map(function (b) {
-            return '<button type="button" class="btn' + (o.status === b[2] ? ' btn--soft' : '') + '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' +
-              (o.status === b[2] ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
+            var pend = adm.stPending && adm.stPending.num === o.num; // статус уже показан новым, сервер ещё отвечает
+            return '<button type="button" class="btn' + (o.status === b[2] ? ' btn--soft' : '') + (pend && adm.stPending.code === b[0] ? ' is-busy" aria-busy="true' : '') +
+              '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' + (o.status === b[2] || pend ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
           }).join('') + '</div>' : '') +
           '<button type="button" class="btn btn--block" data-chat="' + esc(o.username ? 'https://t.me/' + o.username.replace(/^@/, '') : 'https://t.me/' + o.phone) + '">' +
           esc(t('admWrite')) + '</button></div>';
@@ -2544,7 +2587,7 @@
         if (!res || !res.ok) throw new Error('fail');
         adm.products.push(res.product);
         toast(t('admSaved') + ': ' + res.product.id);
-        loadCatalog();
+        catalogSoon();
         btnSaved(btn, function () {
           if (adm.edit !== '+') return;
           adm.edit = res.product.id; // остаёмся в карточке: теперь можно добавить фото
@@ -2577,7 +2620,7 @@
       if (!res || !res.ok) throw new Error('fail');
       Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
       if (!quiet) toast(t('admSaved'));
-      loadCatalog(); // витрина сразу подхватывает правку
+      catalogSoon(); // витрина сразу подхватывает правку
       done(true);
     }).catch(function () { adm.busy = false; toast(t('admFail')); done(false); });
   }
@@ -2617,7 +2660,7 @@
       if (!res || !res.ok) throw new Error('fail');
       Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
       toast(t('admSaved'));
-      loadCatalog();
+      catalogSoon();
       if (state.view === 'admin' && adm.edit === p.id) renderPage();
     }).catch(function () {
       adm.busy = false;
@@ -2669,7 +2712,7 @@
       if (!res || !res.ok) { btnFree(btn); fErr(res && res.error === 'exists' ? 'admErrExists' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admFail'); return; }
       adm.cats = res.categories;
       adm.products = null; // названия категорий в товарах могли измениться
-      loadCatalog();
+      catalogSoon();
       btnSaved(btn, function () { if (!adm.catEdit) return; adm.catEdit = ''; renderPage(); window.scrollTo(0, 0); });
     }).catch(function () { adm.busy = false; btnFree(btn); fErr('admFail'); });
   }
@@ -2824,7 +2867,7 @@
       adm.busy = false;
       if (!res || !res.ok) { btnFree(btn); fErr(res && res.error === 'no_payment' ? 'admErrPay' : 'admFail'); return; }
       adm.settings = res.fields;
-      loadCatalog();
+      catalogSoon();
       btnSaved(btn); // форма остаётся на экране: «Збережено» видно на самой кнопке
     }).catch(function () { adm.busy = false; btnFree(btn); fErr('admFail'); });
   }
@@ -2864,15 +2907,24 @@
       var order = null;
       adm.orders.forEach(function (o) { if (o.num === st.getAttribute('data-num')) order = o; });
       if (!order || adm.busy) return true;
-      adm.busy = true; btnBusy(st, '.ord__acts');
-      api('admin.status', { num: order.num, code: st.getAttribute('data-st') }).then(function (res) {
-        adm.busy = false;
-        if (res && res.error === 'no_perm') { toast(t('admNoPerm')); renderAdminList(); return; }
+      // Новый статус показываем сразу, не дожидаясь сервера; если сервер откажет — возвращаем прежний и говорим об этом.
+      var stCode = st.getAttribute('data-st'), stWas = order.status, stNext = stWas;
+      STATUS_BTNS.forEach(function (b) { if (b[0] === stCode) stNext = b[2]; });
+      adm.busy = true; adm.stPending = { num: order.num, code: stCode };
+      order.status = stNext;
+      renderAdminList();
+      var stDone = function (text, back) {
+        adm.busy = false; adm.stPending = null;
+        if (back) { order.status = stWas; haptic('error'); }
+        toast(text);
+        if (state.view === 'admin') renderAdminList();
+      };
+      api('admin.status', { num: order.num, code: stCode }).then(function (res) {
+        if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
         if (!res || !res.ok) throw new Error('fail');
         order.status = res.status;
-        toast(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''));
-        renderAdminList();
-      }).catch(function () { adm.busy = false; toast(t('admFail')); renderAdminList(); });
+        stDone(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''), false);
+      }).catch(function () { stDone(t('admStBack'), true); });
       return true;
     }
     var chat = e.target.closest('[data-chat]');
@@ -3825,7 +3877,8 @@
   /* ======================================================================== */
   var I18N_W2 = {
     ua: {
-      admSwFail: 'Не вдалося зберегти — повернули, як було.',
+      admSwFail: 'Не вдалося зберегти — повернули, як було.', admStBack: 'Не вдалося змінити статус — повернули попередній.',
+      perfServer: 'сервер', perfNet: 'мережа й Google', perfMs: 'мс',
       admFltOut: 'Немає в наявності', admFltHidden: 'Приховані', admFltNoPhoto: 'Без фото',
       cfCancel: 'Скасувати', repeatGone: 'Деяких товарів більше немає.', repeatGoneAll: 'Цих товарів більше немає в магазині.', repeatAdded: 'Додано позицій: {a} з {b}.',
       archTitle: 'Архів товарів', archBtn: 'В архів', archHint: 'Товар зникне з вітрини. З архіву його можна відновити або видалити назавжди.',
@@ -3849,7 +3902,8 @@
       pgRange: 'Товари {a}–{b} з {n}', pgPrev: 'Попередня сторінка', pgNext: 'Наступна сторінка', pgNav: 'Сторінки', pgPage: 'Сторінка {n}'
     },
     ru: {
-      admSwFail: 'Не удалось сохранить — вернули, как было.',
+      admSwFail: 'Не удалось сохранить — вернули, как было.', admStBack: 'Не удалось сменить статус — вернули прежний.',
+      perfServer: 'сервер', perfNet: 'сеть и Google', perfMs: 'мс',
       admFltOut: 'Нет в наличии', admFltHidden: 'Скрытые', admFltNoPhoto: 'Без фото',
       cfCancel: 'Отмена', repeatGone: 'Некоторых товаров больше нет.', repeatGoneAll: 'Этих товаров больше нет в магазине.', repeatAdded: 'Добавлено позиций: {a} из {b}.',
       archTitle: 'Архив товаров', archBtn: 'В архив', archHint: 'Товар исчезнет с витрины. Из архива его можно восстановить или удалить навсегда.',
@@ -3876,6 +3930,33 @@
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_W2[lang]).forEach(function (k) { I18N[lang][k] = I18N_W2[lang][k]; });
   });
+
+  /* ---- Скорость админ-панели ---- */
+  /** Витрина после правок в панели обновляется один раз, а не после каждого нажатия: несколько правок подряд — один запрос каталога. */
+  var catalogTimer = null;
+  function catalogSoon() {
+    clearTimeout(catalogTimer);
+    catalogTimer = setTimeout(loadCatalog, 1200);
+  }
+  /**
+   * Замер времени. Виден, только когда владелец включил его на сервере (свойство скрипта PERF_LOG = 1):
+   * внизу экрана — последние нажатия: всё время от нажатия до ответа, сколько из него работал сервер (по этапам)
+   * и сколько ушло на сеть и на сам Google.
+   */
+  var perfLines = [];
+  function perfShow(action, total, srv) {
+    var marks = (srv.marks || []).map(function (m) { return m[0] + ' ' + m[1]; }).join(', ');
+    perfLines.push(action.replace('admin.', '') + ': ' + total + ' ' + t('perfMs') + ' = ' + t('perfServer') + ' ' + srv.total + (marks ? ' (' + marks + ')' : '') +
+      ' + ' + t('perfNet') + ' ' + Math.max(0, total - srv.total));
+    perfLines = perfLines.slice(-4);
+    var box = document.getElementById('perfLine');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'perfLine'; box.className = 'perfline';
+      document.body.appendChild(box);
+    }
+    box.textContent = perfLines.join('\n');
+  }
 
   /* ---- А1. Отклик кнопок ---- */
   /**
@@ -3912,7 +3993,7 @@
       btn.classList.remove('is-saved');
       btn.disabled = false;
       btn.innerHTML = html;
-    }, then ? 650 : 1600);
+    }, then ? 300 : 1400);
   }
   function saveBtnEl() { return document.querySelector('#page [data-action="adm-save"]'); }
 
@@ -3930,7 +4011,7 @@
       if (!res || !res.ok) throw new Error(res && res.error === 'no_perm' ? 'admNoPerm' : 'admSwFail');
       Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
       delete adm.pending[p.id];
-      loadCatalog();
+      catalogSoon();
       if (state.view === 'admin') renderAdminList();
     }).catch(function (err) {
       delete adm.pending[p.id];
@@ -3959,7 +4040,7 @@
       finish();
       haptic('success');
       toast(t('admSaved'));
-      loadCatalog();
+      catalogSoon();
     }).catch(function (err) {
       finish();
       if (document.body.contains(input)) input.checked = !want;
@@ -4075,7 +4156,7 @@
           renderPage(); window.scrollTo(0, 0);
           haptic('success');
           toast(t('archDone'), t('archTitle'), loadArchive);
-          loadCatalog();
+          catalogSoon();
         }).catch(function () { done(t('admFail')); });
       }
     });
@@ -4144,7 +4225,7 @@
       haptic('success');
       toast(tf('archRestored', { name: p.ua }));
       dropFromArchive(id);
-      loadCatalog();
+      catalogSoon();
     }).catch(function () { adm.busy = false; haptic('error'); toast(t('admFail')); renderArchiveList(); });
   }
   function askPurge(id) {
@@ -4204,7 +4285,7 @@
         renderPage(); window.scrollTo(0, 0);
         haptic('success');
         toast(res.moved ? tf('catDelMoved', { n: res.moved }) : t('catDelDone'));
-        loadCatalog();
+        catalogSoon();
       }).catch(function () { done(t('admFail')); });
     };
     askConfirm(o);
@@ -4254,6 +4335,8 @@
   el.adminBtn.hidden = !adminHint;
   track('open', deepId ? deepId.toUpperCase() : '', params.get('view') || '');
   loadCatalog();
+  // Админу заказы подгружаются заранее, пока он смотрит магазин: панель открывается уже с данными, бэкенд к этому моменту «разогрет».
+  if (adminHint && params.get('admin') !== '1') setTimeout(function () { if (state.view !== 'admin') prefetchAdmin('orders'); }, 1500);
   if (adminHint && params.get('admin') === '1') go('admin');
   else if (/^(points|story|cart)$/.test(params.get('view') || '')) go(params.get('view')); // кнопки в сообщениях бота
   else if (params.get('view') === 'orders') go('orders'); // кнопка «Повторити замовлення» в сообщении бота
