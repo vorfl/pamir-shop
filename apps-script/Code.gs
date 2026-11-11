@@ -46,7 +46,8 @@ var PRODUCT_COLS = {
   descUa:  ['опис (ua)'],
   descRu:  ['описание (ru)'],
   whPrice: ['опт: ціна', 'опт ціна'],
-  whMin:   ['опт: мін', 'опт мін'],
+  whMin:   ['опт: мін. обсяг', 'опт: мін', 'опт мін'],
+  whMinKg: ['опт: мін, кг'], // необязательная числовая колонка: если заполнена — главнее текста из «Опт: мін. обсяг»
   p100:    ['ціна за 100 г'],
   hidden:  ['приховати', 'прихован'],
   badge:   ['бейдж', 'мітка'],
@@ -317,12 +318,10 @@ function readProducts_(ss, categories) {
     if (dUa) p.dUa = dUa;
     if (dRu) p.dRu = dRu;
 
+    // Оптовая цена и минимальный объём в общий каталог не идут: их получает только одобренный оптовик отдельным запросом.
+    // Здесь лишь отметка wb — «для этого товара есть оптовая цена» (по ней витрина показывает ссылку на форму для бизнеса).
     var wh = toNum_(col.whPrice >= 0 ? row[col.whPrice] : '');
-    if (wh > 0) {
-      p.w = wh;
-      var whMin = cell_(row, col.whMin);
-      if (whMin) p.wm = whMin;
-    }
+    if (wh > 0 && parseWhMin_(price.t, col.whMinKg >= 0 ? row[col.whMinKg] : '', cell_(row, col.whMin))) p.wb = 1;
     if (oldP > base && base > 0) {
       p.o = Math.round(oldP * 100) / 100;
       if (!badge) badge = 'sale';
@@ -590,6 +589,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Етап 8: створити листи й колонки', 'setupStage8')
     .addItem('Етап 8.2: створити листи «Архів товарів» і «Клієнти»', 'setupWave2a')
+    .addItem('Етап 8.3: створити листи й колонки (опт, розсилка, оплата)', 'setupWave2b')
     .addToUi();
 }
 
@@ -624,6 +624,11 @@ function checkCatalogText_() {
   if (noPrice.length) {
     lines.push('');
     lines.push('Без ціни або фасування: ' + noPrice.slice(0, 30).join(', ') + (noPrice.length > 30 ? ' …' : ''));
+  }
+  var whBad = wholesaleMap_().bad;
+  if (whBad.length) {
+    lines.push('');
+    lines.push('Оптова ціна є, а мінімальний обсяг не зрозумілий (оптова ціна не діє): ' + whBad.slice(0, 30).join(', ') + (whBad.length > 30 ? ' …' : ''));
   }
   // ID товара, удалённого навсегда, нельзя давать новому товару: путаются статистика и «Повторити замовлення».
   var gone = deletedIdSet_();
@@ -689,6 +694,9 @@ function doPost(e) {
     else if (body.action === 'ev') out = handleEvents_(body);
     else if (body.action === 'notify') out = handleNotify_(body);
     else if (body.action === 'cart') out = handleCart_(body);
+    else if (body.action === 'wh.prices') out = handleWhPrices_(body);
+    else if (body.action === 'wh.apply') out = handleWhApply_(body);
+    else if (body.action === 'wh.pricelist') out = handleWhPricelist_(body);
     else if (isAdmin) out = handleAdmin_(body);
     else out = { ok: false, error: 'unknown_action' };
   } catch (err) {
@@ -766,6 +774,7 @@ function handleOrder_(body) {
   var compact = []; // [id, граммы, количество] — по этому «Повторить заказ» собирает корзину заново
   var total = 0;
   var bad = false;
+  var picked = [];
   body.items.forEach(function (it) {
     var id = String((it && it.id) || '');
     var g = Number(it && it.g) || 0;
@@ -777,9 +786,22 @@ function handleOrder_(body) {
       else if (g === 0) price = p.p;
     }
     if (!(price > 0)) { bad = true; return; }
-    lines.push(p.ua + (p.t === 'w' ? ' ' + weightLabel_(g) : '') + ' × ' + q + ' = ' + price * q + ' ₴');
-    compact.push([id, g, q]);
-    total += price * q;
+    picked.push({ p: p, id: id, g: g, q: q, price: price });
+  });
+  // Опт: статус оптовика проверяется при каждом заказе; объём считается по сумме всех фасовок одного товара.
+  var whIds = [];
+  if (!bad && user && isWholesaler_(user.id)) {
+    var whMap = wholesaleMap_().map, whQty = {};
+    picked.forEach(function (x) { whQty[x.id] = (whQty[x.id] || 0) + (x.p.t === 'w' ? x.g * x.q / 1000 : x.q); });
+    picked.forEach(function (x) {
+      var wp = wholesaleUnit_(whMap[x.id], x.p.t, x.g, whQty[x.id]);
+      if (wp > 0 && wp < x.price) { x.price = wp; x.wh = true; if (whIds.indexOf(x.id) < 0) whIds.push(x.id); }
+    });
+  }
+  picked.forEach(function (x) {
+    lines.push(x.p.ua + (x.p.t === 'w' ? ' ' + weightLabel_(x.g) : '') + (x.wh ? ' (опт)' : '') + ' × ' + x.q + ' = ' + x.price * x.q + ' ₴');
+    compact.push([x.id, x.g, x.q]);
+    total += x.price * x.q;
   });
   if (bad || Number(body.total) !== total) return { ok: false, error: 'changed' };
   if (shop.min > 0 && total < shop.min) return { ok: false, error: 'min_order', min: shop.min };
@@ -814,6 +836,7 @@ function handleOrder_(body) {
     o.giftsClient = gifts.map(function (x) { return o.lang === 'ru' ? x.ru : x.ua; });
     var svc = { i: compact };
     if (o.gifts.length) svc.g = o.gifts;
+    if (whIds.length) { svc.w = whIds; o.wh = true; } // позиции по оптовой цене — для отметки «ОПТ» у админа
     o.num = nextOrderNumber_(sheet, col);
     var row = [];
     for (var i = 0; i < sheet.getLastColumn(); i++) row.push('');
@@ -1058,7 +1081,7 @@ function adminText_(o, statusNote) {
   if (o.uid) who = '<a href="tg://user?id=' + o.uid + '">' + who + '</a>';
   if (o.username) who += ' (' + escHtml_(o.username) + ')';
   var lines = [
-    (o.status === STATUS_NEW ? '🆕 ' : '') + '<b>Замовлення ' + o.num + '</b>' + (isTest ? ' · 🧪 ТЕСТ' : ''),
+    (o.status === STATUS_NEW ? '🆕 ' : '') + '<b>Замовлення ' + o.num + '</b>' + (isTest ? ' · 🧪 ТЕСТ' : '') + (orderIsWh_(o) ? ' · 🏷 <b>ОПТ</b>' : ''),
     'Статус: <b>' + escHtml_(o.status) + '</b>' + (statusNote ? ' (' + escHtml_(statusNote) + ')' : ''),
     '',
     '👤 ' + who,
@@ -1284,6 +1307,14 @@ function handleCallback_(cq, token, admins) {
   // Права проверяются при каждом нажатии: по тому, кто нажал (или по чату, если это чат из ADMIN_CHAT_IDS).
   var me = adminAccess_(fromId, props) || adminAccess_(chatId, props);
   if (!me) { answer('Немає доступу'); return; }
+  var wa = String(cq.data || '').match(/^wa:(W-\d+):([tar])$/);
+  if (wa) { // заявка на опт: «Взяти в роботу / Схвалити / Відхилити»
+    if (!me.perms.wh) { answer('У вас немає права «Опт»'); return; }
+    actor_ = { id: fromId, name: clean_((cq.from && cq.from.first_name) || me.name || '', 60) };
+    var waRes = decideWhApp_(wa[1], wa[2], token, cq.message ? [chatId, cq.message.message_id] : null);
+    answer(waRes.error === 'not_found' ? 'Заявку ' + wa[1] + ' не знайдено' : waRes.same ? 'Уже: ' + waRes.status : waRes.ok ? 'Заявка ' + wa[1] + ': ' + waRes.status : 'Не вдалося');
+    return;
+  }
   var pay = String(cq.data || '').match(/^pay:(P-\d+)$/);
   if (pay) { // «💳 Оплачено» под сообщением о заказе
     if (!me.perms.st) { answer('У вас немає права змінювати статуси замовлень'); return; }
@@ -1589,6 +1620,9 @@ function handleAdmin_(body) {
   if (a === 'admin.adminSave') return deny('admins') || saveAdmin_(me, body, props, token);
   if (a === 'admin.log') return deny('admins') || listLog_();
   if (a === 'admin.ttn') return deny('st') || setTtn_(String(body.num || ''), String(body.ttn || ''), token);
+  if (a === 'admin.wh') return deny('wh') || listWh_();
+  if (a === 'admin.whDecide') return deny('wh') || decideWhApp_(String(body.id || ''), String(body.d || ''), token, null);
+  if (a === 'admin.whRevoke') return deny('wh') || revokeWholesaler_(String(body.uid || ''));
   if (a === 'admin.paid') return deny('st') || setOrderPaid_(String(body.num || ''), String(body.state || ''), token, null); // «Оплачено» / «Повернено»
   if (a === 'admin.reviews') return deny('reviews') || listReviews_();
   if (a === 'admin.review') return deny('reviews') || moderateReview_(String(body.id || ''), body.ok === true, token);
@@ -1629,7 +1663,7 @@ function listOrders_() {
         phone: cell_(row, col.phone), delivery: cell_(row, col.delivery), city: cell_(row, col.city),
         branch: cell_(row, col.branch), pay: cell_(row, col.pay), comment: cell_(row, col.comment),
         items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(cell_(row, col.svc)),
-        paid: paidCode_(cell_(row, col.paid))
+        paid: paidCode_(cell_(row, col.paid)), wh: orderIsWh_({ svc: cell_(row, col.svc) }) ? 1 : 0
       });
     }
   }
@@ -1653,6 +1687,7 @@ function adminProduct_(row, col) {
     stock: isInStock_(cell_(row, col.stock)) ? 1 : 0, hidden: isYes_(cell_(row, col.hidden)) ? 1 : 0,
     img: normalizePhoto_(cell_(row, col.photo)), dUa: cell_(row, col.descUa), dRu: cell_(row, col.descRu),
     wh: toNum_(col.whPrice >= 0 ? row[col.whPrice] : 0), wm: cell_(row, col.whMin),
+    whn: (function () { var n = col.whMinKg >= 0 ? toNum_(row[col.whMinKg]) : 0; return n > 0 ? String(n).replace('.', ',') : ''; })(),
     badge: badgeCode_(cell_(row, col.badge)), old: toNum_(col.oldPrice >= 0 ? row[col.oldPrice] : 0),
     qty: (function () { var q = col.qty >= 0 ? leftQty_(row[col.qty]) : null; return q === null ? '' : String(q).replace('.', ','); })(),
     end: (function () { var e = col.saleEnd >= 0 ? saleEnd_(row[col.saleEnd], 'Europe/Kiev') : null; return e ? e.day : ''; })(),
@@ -1707,6 +1742,7 @@ function updateProduct_(id, patch, create) {
     if (patch.old !== undefined && !(Number(patch.old) >= 0 && Number(patch.old) < 1000000)) return { ok: false, error: 'bad_form' };
     if (patch.badge !== undefined && patch.badge !== '' && !BADGE_UA[patch.badge]) return { ok: false, error: 'bad_form' };
     if (patch.qty !== undefined && patch.qty !== '' && !(toNum_(patch.qty) >= 0 && toNum_(patch.qty) < 100000)) return { ok: false, error: 'bad_form' };
+    if (patch.whn !== undefined && patch.whn !== '' && !(toNum_(patch.whn) >= 0 && toNum_(patch.whn) < 100000)) return { ok: false, error: 'bad_form' };
     if (patch.end !== undefined && patch.end !== '' && !saleEnd_(patch.end, 'Europe/Kiev')) return { ok: false, error: 'bad_form' };
     if (typeof patch.ua === 'string' && !clean_(patch.ua, 120)) return { ok: false, error: 'bad_form' };
     if (typeof patch.img === 'string' && patch.img && !/^https:\/\//i.test(patch.img)) return { ok: false, error: 'bad_form' };
@@ -1777,6 +1813,10 @@ function updateProduct_(id, patch, create) {
     if (patch.qty !== undefined && (patch.qty !== '' || col.qty >= 0)) {
       ensureCol('qty', 'Залишок');
       set(col.qty, patch.qty === '' ? '' : Math.round(toNum_(patch.qty) * 1000) / 1000);
+    }
+    if (patch.whn !== undefined && (toNum_(patch.whn) > 0 || col.whMinKg >= 0)) {
+      ensureCol('whMinKg', 'Опт: мін, кг');
+      set(col.whMinKg, toNum_(patch.whn) > 0 ? Math.round(toNum_(patch.whn) * 1000) / 1000 : '');
     }
     [['cUa', 'compUa', 'Склад (UA)'], ['cRu', 'compRu', 'Состав (RU)']].forEach(function (c) { // колонка создаётся, только когда состав впервые вписали
       if (typeof patch[c[0]] !== 'string' || (!patch[c[0]].trim() && col[c[1]] < 0)) return;
@@ -1956,8 +1996,8 @@ var SETTINGS_DEF = [
   ['welcome_photo', 'Фото у привітанні бота: посилання https:// або file_id (надішліть фото боту — він відповість кодом). Порожньо — картинка PAMIR', ''],
   ['welcome_video_note', 'Відеокружок перед привітанням: file_id (надішліть кружок боту — він відповість кодом). Порожньо — без кружка', ''],
   ['contact', 'Кнопка «Написати нам»: @username або номер +380… Порожньо — кнопки немає', ''],
-  ['biz_soon_ua', 'Текст кнопки «Для бізнесу (опт)» у боті (UA)', 'Працюємо з кафе, магазинами та офісами. Форма заявки з’явиться зовсім скоро, а поки напишіть нам — обговоримо умови.'],
-  ['biz_soon_ru', 'Текст кнопки «Для бизнеса (опт)» в боте (RU)', 'Работаем с кафе, магазинами и офисами. Форма заявки появится совсем скоро, а пока напишите нам — обсудим условия.'],
+  ['biz_soon_ua', 'Текст кнопки «Для бізнесу (опт)» у боті (UA)', 'Працюємо з кафе, магазинами та офісами. Заповніть коротку заявку — відповімо тут, у Telegram.'],
+  ['biz_soon_ru', 'Текст кнопки «Для бизнеса (опт)» в боте (RU)', 'Работаем с кафе, магазинами и офисами. Заполните короткую заявку — ответим здесь, в Telegram.'],
   ['confirm_ua', 'Текст клієнту після прийняття замовлення (UA)', 'Ми підтвердимо наявність і напишемо вам сюди.'],
   ['confirm_ru', 'Текст клиенту после принятия заказа (RU)', 'Мы подтвердим наличие и напишем вам сюда.'],
   ['gift_from', 'Подарунок від суми замовлення, ₴ (0 — вимкнено)', '0'],
@@ -2528,7 +2568,7 @@ var ADMIN_COLS = (function () {
 /** Какое право нужно, чтобы изменить поле товара. */
 var PATCH_PERM = { stock: 'stock', qty: 'stock', hidden: 'stock', img: 'photo',
   ua: 'text', ru: 'text', dUa: 'text', dRu: 'text', cat: 'text', cUa: 'text', cRu: 'text',
-  price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', packs: 'price', t: 'price' };
+  price: 'price', old: 'price', badge: 'price', end: 'price', wh: 'price', wm: 'price', whn: 'price', packs: 'price', t: 'price' };
 var INVITE_TTL_MS = 24 * 3600 * 1000;
 var LOG_HEAD = ['Час', 'Хто', 'Chat id', 'Дія', 'Об\'єкт', 'Було', 'Стало'];
 var LOG_KEEP_ROWS = 5000;
@@ -2726,7 +2766,7 @@ function listLog_() {
 /** Что изменилось в товаре: сравниваем то, что видит панель, до и после. */
 var PRODUCT_LOG_NAMES = { cat: 'категорія', ua: 'назва (UA)', ru: 'назва (RU)', t: 'тип', packs: 'фасування', price: 'ціна', stock: 'наявність',
   hidden: 'приховано', img: 'фото', dUa: 'опис (UA)', dRu: 'опис (RU)', wh: 'опт ціна', wm: 'опт мін. обсяг', badge: 'бейдж', old: 'стара ціна',
-  qty: 'залишок', end: 'акція до', cUa: 'склад (UA)', cRu: 'состав (RU)' };
+  qty: 'залишок', end: 'акція до', cUa: 'склад (UA)', cRu: 'состав (RU)', whn: 'опт мін, кг' };
 function logProductDiff_(before, after) {
   Object.keys(PRODUCT_LOG_NAMES).forEach(function (k) {
     var a = before ? before[k] : '', b = after[k];
@@ -3040,7 +3080,12 @@ function handleMenuCallback_(cq, kind, token, props) {
     }
     if (hasApp) kb.push([{ text: ru ? '🛒 Открыть в магазине' : '🛒 Відкрити в магазині', web_app: { url: found ? appUrl_(webapp, 'p=' + encodeURIComponent(fid)) : webapp } }]);
   } else if (kind === 'biz') {
+    if (isWholesaler_(chatId)) { // оптовику — сразу прайс
+      sendWhPricelist_(token, chatId, ru);
+      return;
+    }
     text = '💼 ' + (ru ? st.biz_soon_ru : st.biz_soon_ua);
+    if (hasApp) kb.push([{ text: ru ? '📝 Заполнить заявку' : '📝 Заповнити заявку', web_app: { url: appUrl_(webapp, 'view=biz') } }]);
     var contact = contactUrl_(st);
     if (contact) kb.push([{ text: ru ? '✍️ Написать нам' : '✍️ Написати нам', url: contact }]);
   } else {
@@ -4680,3 +4725,413 @@ var PayProvider_ = {
   /** Принять уведомление провайдера (callback): проверить подпись и вызвать setOrderPaid_. */
   callback: function (e) { return { ok: false, error: 'not_configured' }; }
 };
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2б · Б2: опт                                                */
+/* ======================================================================== */
+/*
+ * Оптовые цены видит только одобренный оптовик. В общий каталог они не попадают: оптовик получает их отдельным
+ * запросом по подписи Telegram, а его статус проверяется при каждом запросе и каждом заказе.
+ */
+
+var SHEET_WH_APPS = 'Опт-заявки';
+var WH_APP_HEAD = ['ID', 'Дата', 'Telegram user id', '@username', 'Тип бізнесу', 'Назва', 'Місто', 'Контактна особа', 'Телефон',
+  'Категорії', 'Обсяг', 'Як часто', 'Коментар', 'Статус', 'Хто вирішив', 'Мова', 'Службове'];
+var WA = { id: 0, date: 1, uid: 2, username: 3, type: 4, name: 5, city: 6, contact: 7, phone: 8, cats: 9, volume: 10, freq: 11, comment: 12, status: 13, by: 14, lang: 15, svc: 16 };
+var WA_NEW = 'нова', WA_WORK = 'в роботі', WA_OK = 'схвалено', WA_NO = 'відхилено';
+var SHEET_WH_CLIENTS = 'Оптові клієнти';
+var WH_CLIENT_HEAD = ['Telegram user id', 'Контактна особа', 'Назва', 'Місто', 'Телефон', 'Статус', 'Дата', 'Хто вирішив', 'Заявка'];
+var WC = { uid: 0, contact: 1, name: 2, city: 3, phone: 4, status: 5, date: 6, by: 7, app: 8 };
+var WC_ON = 'активний', WC_OFF = 'відкликано';
+var WH_TYPES = { cafe: 'кафе', shop: 'магазин', office: 'офіс', other: 'інше' };
+var MAX_WH_APPS_PER_DAY = 3;
+
+/**
+ * Минимальный объём для оптовой цены. t — тип товара (w — весовой, иначе упаковка или штука).
+ * Число из колонки «Опт: мін, кг» главнее текста. Возвращает { n, unit: 'kg' | 'pcs' } или null, если понять нельзя.
+ *   «5» → 5 кг для весового, 5 упаковок для остальных; «від 5 кг», «от 5кг», «5,5 кг» → кг; «500 г» → 0,5 кг;
+ *   «10 шт», «10 уп», «10 упаковок» → штуки. Единица не подходит к типу товара или числа нет → null.
+ */
+function parseWhMin_(t, numCell, textCell) {
+  var kg = t === 'w';
+  var n = typeof numCell === 'number' ? numCell : (String(numCell === null || numCell === undefined ? '' : numCell).trim() ? toNum_(numCell) : 0);
+  if (n > 0) return { n: kg ? n : Math.ceil(n), unit: kg ? 'kg' : 'pcs' };
+  var s = String(textCell === null || textCell === undefined ? '' : textCell).toLowerCase().replace(/[\s ]+/g, ' ').trim();
+  var m = s.match(/(\d+(?:[.,]\d+)?)\s*([a-zа-яіїєґ]*)/);
+  if (!m) return null;
+  var v = parseFloat(m[1].replace(',', '.'));
+  if (!(v > 0)) return null;
+  var u = m[2];
+  if (!u) return { n: kg ? v : Math.ceil(v), unit: kg ? 'kg' : 'pcs' };
+  if (/^(кг|kg|кіло|кило)/.test(u)) return kg ? { n: v, unit: 'kg' } : null;
+  if (/^(г|гр|g|грам\S*|грамм\S*)$/.test(u)) return kg ? { n: v / 1000, unit: 'kg' } : null;
+  if (/^(шт|уп|пач|pcs)/.test(u)) return kg ? null : { n: Math.ceil(v), unit: 'pcs' };
+  return null;
+}
+
+/** Оптовые цены из таблицы: { map: { id: { p, n, u } }, bad: [id, у которых цена есть, а объём не понять] }. Наружу целиком не отдаётся. */
+var whMapMemo_ = null;
+function wholesaleMap_() {
+  if (whMapMemo_) return whMapMemo_;
+  var out = { map: {}, bad: [] };
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
+  if (!sheet) return out;
+  var values = sheet.getDataRange().getValues();
+  var col = productCols_(sheet, values[0]);
+  if (col.whPrice < 0) { whMapMemo_ = out; return out; }
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var id = cell_(row, col.id);
+    var wh = toNum_(row[col.whPrice]);
+    if (!id || !(wh > 0) || out.map[id]) continue;
+    var t = priceInfo_(cell_(row, col.type), '', 0, 0).t;
+    var min = parseWhMin_(t, col.whMinKg >= 0 ? row[col.whMinKg] : '', cell_(row, col.whMin));
+    if (!min) { out.bad.push(id); continue; }
+    out.map[id] = { p: Math.round(wh * 100) / 100, n: Math.round(min.n * 1000) / 1000, u: min.unit };
+  }
+  if (out.bad.length) console.warn('опт: мінімальний обсяг не зрозумілий: ' + out.bad.slice(0, 20).join(', '));
+  whMapMemo_ = out;
+  return out;
+}
+
+/** Оптовая цена одной позиции или 0, если порог объёма не набран. Одинаково считают сервер и витрина. */
+function wholesaleUnit_(w, t, grams, have) {
+  if (!w || !(have + 1e-9 >= w.n)) return 0;
+  if ((t === 'w') !== (w.u === 'kg')) return 0;
+  return t === 'w' ? Math.round(w.p * grams / 1000) : Math.round(w.p);
+}
+
+function orderIsWh_(o) {
+  if (o.wh) return true;
+  try { var w = JSON.parse(o.svc || '{}').w; return Array.isArray(w) && w.length > 0; } catch (err) { return false; }
+}
+
+function ensureWhSheet_(name, head) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    sheet.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function whRows_(name, width) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, width).getValues();
+}
+
+/** Действующий оптовик? Проверяется по листу «Оптові клієнти» при каждом запросе и заказе, без кэша. */
+function isWholesaler_(uid) {
+  uid = String(uid === null || uid === undefined ? '' : uid).trim();
+  if (!/^\d+$/.test(uid)) return false;
+  return whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length).some(function (row) {
+    return String(row[WC.uid]).trim() === uid && String(row[WC.status]).trim().toLowerCase() === WC_ON;
+  });
+}
+
+function whUser_(body) {
+  var token = scriptProps_().getProperty('BOT_TOKEN');
+  if (!token) return { error: 'not_configured' };
+  var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
+  if (!user) return { error: 'bad_auth' };
+  return { user: user, uid: String(user.id), token: token };
+}
+
+/** Последняя заявка этого человека: её статус показывает экран «Для бізнесу». */
+function lastWhApp_(uid) {
+  var rows = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length);
+  for (var r = rows.length - 1; r >= 0; r--) if (String(rows[r][WA.uid]).trim() === uid) return String(rows[r][WA.status]).trim() || WA_NEW;
+  return '';
+}
+
+/** Оптовые цены — только одобренному оптовику. Остальным: { wh: false } и статус последней заявки. */
+function handleWhPrices_(body) {
+  var who = whUser_(body);
+  if (who.error) return { ok: false, error: who.error };
+  if (!isWholesaler_(who.uid)) return { ok: true, wh: false, app: lastWhApp_(who.uid) };
+  var map = wholesaleMap_().map, prices = {};
+  JSON.parse(getCatalogJson_()).products.forEach(function (p) { // только товары, которые есть на витрине
+    var w = map[p.id];
+    if (w && (p.t === 'w') === (w.u === 'kg')) prices[p.id] = [w.p, w.n, w.u];
+  });
+  return { ok: true, wh: true, prices: prices };
+}
+
+function nextWhAppId_(rows) {
+  var max = 0;
+  rows.forEach(function (row) { var m = String(row[WA.id]).match(/^W-(\d+)$/); if (m) max = Math.max(max, parseInt(m[1], 10)); });
+  var n = String(max + 1);
+  while (n.length < 4) n = '0' + n;
+  return 'W-' + n;
+}
+
+function whAppText_(a) {
+  return '💼 <b>Заявка на опт ' + escHtml_(a.id) + '</b>\nСтатус: <b>' + escHtml_(a.status) + '</b>' + (a.by ? ' (' + escHtml_(a.by) + ')' : '') + '\n\n' +
+    'Тип: ' + escHtml_(a.type) + '\nНазва: ' + escHtml_(a.name) + '\nМісто: ' + escHtml_(a.city) +
+    '\n👤 ' + (a.uid ? '<a href="tg://user?id=' + a.uid + '">' + escHtml_(a.contact) + '</a>' : escHtml_(a.contact)) + (a.username ? ' (' + escHtml_(a.username) + ')' : '') +
+    '\n📞 ' + escHtml_(a.phone) + (a.cats ? '\nКатегорії: ' + escHtml_(a.cats) : '') + (a.volume ? '\nОбсяг: ' + escHtml_(a.volume) : '') +
+    (a.freq ? '\nЯк часто: ' + escHtml_(a.freq) : '') + (a.comment ? '\n💬 ' + escHtml_(a.comment) : '');
+}
+
+function whAppKeyboard_(a) {
+  if (a.status === WA_OK || a.status === WA_NO) return { inline_keyboard: [] };
+  var rows = [];
+  if (a.status === WA_NEW) rows.push([{ text: '🛠 Взяти в роботу', callback_data: 'wa:' + a.id + ':t' }]);
+  rows.push([{ text: '✅ Схвалити як оптового клієнта', callback_data: 'wa:' + a.id + ':a' }]);
+  rows.push([{ text: '❌ Відхилити', callback_data: 'wa:' + a.id + ':r' }]);
+  return { inline_keyboard: rows };
+}
+
+function whAppFromRow_(row) {
+  return { id: String(row[WA.id]).trim(), uid: String(row[WA.uid]).trim(), username: String(row[WA.username] || ''), type: String(row[WA.type] || ''),
+    name: String(row[WA.name] || ''), city: String(row[WA.city] || ''), contact: String(row[WA.contact] || ''), phone: String(row[WA.phone] || ''),
+    cats: String(row[WA.cats] || ''), volume: String(row[WA.volume] || ''), freq: String(row[WA.freq] || ''), comment: String(row[WA.comment] || ''),
+    status: String(row[WA.status] || '').trim() || WA_NEW, by: String(row[WA.by] || ''), lang: String(row[WA.lang]).trim() === 'ru' ? 'ru' : 'ua', svc: String(row[WA.svc] || '') };
+}
+
+/** Форма «Для бізнесу»: заявка в лист «Опт-заявки» и уведомление админам с правом «Опт». */
+function handleWhApply_(body) {
+  var who = whUser_(body);
+  if (who.error) return { ok: false, error: who.error };
+  var props = scriptProps_();
+  if (isWholesaler_(who.uid)) return { ok: true, wh: true };
+  var a = {
+    uid: who.uid, username: who.user.username ? '@' + who.user.username : '',
+    type: WH_TYPES[body.type] || '', name: clean_(body.name, 80), city: clean_(body.city, 60), contact: clean_(body.contact, 60),
+    phone: String(body.phone || '').replace(/[^\d+]/g, '').slice(0, 16),
+    cats: (Array.isArray(body.cats) ? body.cats : []).slice(0, 12).map(function (c) { return clean_(c, 40); }).filter(Boolean).join(', '),
+    volume: clean_(body.volume, 80), freq: clean_(body.freq, 80), comment: clean_(body.comment, 300),
+    lang: body.lang === 'ru' ? 'ru' : 'ua', status: WA_NEW, by: ''
+  };
+  if (!a.type || a.name.length < 2 || a.city.length < 2 || a.contact.length < 2 || !/^\+\d{10,15}$/.test(a.phone)) return { ok: false, error: 'bad_form' };
+  var rowIndex;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = ensureWhSheet_(SHEET_WH_APPS, WH_APP_HEAD);
+    var rows = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length);
+    var dayAgo = Date.now() - 24 * 3600 * 1000, mine = 0;
+    rows.forEach(function (row) {
+      var d = row[WA.date];
+      if (String(row[WA.uid]).trim() === who.uid && Object.prototype.toString.call(d) === '[object Date]' && d.getTime() > dayAgo) mine++;
+    });
+    if (mine >= MAX_WH_APPS_PER_DAY) return { ok: false, error: 'rate_limit' };
+    a.id = nextWhAppId_(rows);
+    sheet.appendRow([a.id, new Date(), '\'' + a.uid, safeCell_(a.username), a.type, safeCell_(a.name), safeCell_(a.city), safeCell_(a.contact), '\'' + a.phone,
+      safeCell_(a.cats), safeCell_(a.volume), safeCell_(a.freq), safeCell_(a.comment), a.status, '', a.lang, '']);
+    rowIndex = sheet.getLastRow();
+    sheet.getRange(rowIndex, WA.date + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  touchClient_(who.user, a.lang, true);
+  // Уведомления. Заявка уже записана: сбой Telegram не должен её отменять.
+  try {
+    var sent = [];
+    adminList_(props).filter(function (x) { return x.active && x.perms.wh; }).forEach(function (x) {
+      var res = tg_(who.token, 'sendMessage', { chat_id: x.id, text: whAppText_(a), parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: whAppKeyboard_(a) });
+      if (res.ok) sent.push([x.id, res.result.message_id]);
+    });
+    if (sent.length) SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_WH_APPS).getRange(rowIndex, WA.svc + 1).setValue(JSON.stringify({ m: sent }));
+    tg_(who.token, 'sendMessage', { chat_id: who.uid, text: a.lang === 'ru'
+      ? '💼 Заявку ' + a.id + ' получили. Ответим здесь, в Telegram.' : '💼 Заявку ' + a.id + ' отримали. Відповімо тут, у Telegram.' });
+  } catch (err) {
+    console.error('wh notify: ' + (err && err.stack || err));
+  }
+  return { ok: true, id: a.id };
+}
+
+/**
+ * Решение по заявке: t — взять в работу, a — одобрить как оптового клиента, r — отклонить.
+ * Одна функция для кнопок в Telegram и для панели. Повторное нажатие ничего не меняет и клиенту второй раз не пишет.
+ */
+function decideWhApp_(id, d, token, extraTarget) {
+  var next = { t: WA_WORK, a: WA_OK, r: WA_NO }[d];
+  if (!next) return { ok: false, error: 'bad_form' };
+  var a, was;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_WH_APPS);
+    var rows = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length);
+    var r = -1;
+    for (var i = rows.length - 1; i >= 0; i--) if (String(rows[i][WA.id]).trim() === id) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' };
+    a = whAppFromRow_(rows[r]);
+    was = a.status;
+    if (was === next) return { ok: true, same: true, status: was };
+    if (was === WA_OK || was === WA_NO) return { ok: true, same: true, status: was }; // решение уже принято; отзыв статуса — отдельным действием
+    a.status = next;
+    a.by = actor_ ? actor_.name : '';
+    sheet.getRange(r + 2, WA.status + 1, 1, 2).setValues([[a.status, safeCell_(clean_(a.by, 80))]]);
+    if (d === 'a') upsertWholesaler_(a);
+    SpreadsheetApp.flush();
+    logAction_('Опт: заявка', a.id + ' ' + a.name, was, a.status);
+  } finally {
+    lock.releaseLock();
+  }
+  var targets = [];
+  try { targets = (JSON.parse(a.svc || '{}').m) || []; } catch (err) { targets = []; }
+  if (extraTarget && !targets.some(function (t) { return String(t[0]) === String(extraTarget[0]) && t[1] === extraTarget[1]; })) targets.push(extraTarget);
+  var text = whAppText_(a), kb = whAppKeyboard_(a);
+  tgAll_(token, targets.map(function (t) {
+    return ['editMessageText', { chat_id: t[0], message_id: t[1], text: text, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: kb }];
+  }));
+  var told = null;
+  if (d !== 't' && a.uid) {
+    var ru = a.lang === 'ru';
+    var msg = { chat_id: a.uid, text: d === 'a'
+      ? (ru ? '✅ Заявку ' + a.id + ' одобрили. Оптовые цены уже действуют: откройте магазин и положите в корзину нужный объём.'
+            : '✅ Заявку ' + a.id + ' схвалили. Оптові ціни вже діють: відкрийте магазин і покладіть у кошик потрібний обсяг.')
+      : (ru ? 'По заявке ' + a.id + ' сейчас не можем предложить оптовые условия. Напишите нам, если хотите обсудить.'
+            : 'За заявкою ' + a.id + ' зараз не можемо запропонувати оптові умови. Напишіть нам, якщо хочете обговорити.') };
+    var webapp = scriptProps_().getProperty('WEBAPP_URL');
+    if (d === 'a' && /^https:\/\//.test(webapp || '')) {
+      msg.reply_markup = { inline_keyboard: [[{ text: ru ? '🛒 Открыть магазин' : '🛒 Відкрити магазин', web_app: { url: appUrl_(webapp, 'view=biz') } }]] };
+    }
+    told = !!tg_(token, 'sendMessage', msg).ok;
+  }
+  return { ok: true, status: a.status, told: told };
+}
+
+/** Одобренная заявка → строка в листе «Оптові клієнти» (или возврат статуса «активний» существующей). Вызывается под блокировкой. */
+function upsertWholesaler_(a) {
+  var sheet = ensureWhSheet_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD);
+  var rows = whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length);
+  var by = safeCell_(clean_(actor_ ? actor_.name : '', 80));
+  for (var r = 0; r < rows.length; r++) {
+    if (String(rows[r][WC.uid]).trim() !== a.uid) continue;
+    sheet.getRange(r + 2, WC.contact + 1, 1, 8).setValues([[safeCell_(a.contact), safeCell_(a.name), safeCell_(a.city), '\'' + a.phone, WC_ON, new Date(), by, a.id]]);
+    return;
+  }
+  sheet.appendRow(['\'' + a.uid, safeCell_(a.contact), safeCell_(a.name), safeCell_(a.city), '\'' + a.phone, WC_ON, new Date(), by, a.id]);
+  sheet.getRange(sheet.getLastRow(), WC.date + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+}
+
+/** Отзыв статуса оптовика: цены у него сразу розничные (статус проверяется при каждом запросе и заказе). */
+function revokeWholesaler_(uid) {
+  uid = String(uid || '').trim();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_WH_CLIENTS);
+    var rows = whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length);
+    var r = -1;
+    for (var i = 0; i < rows.length; i++) if (String(rows[i][WC.uid]).trim() === uid) { r = i; break; }
+    if (!sheet || r < 0) return { ok: false, error: 'not_found' };
+    if (String(rows[r][WC.status]).trim().toLowerCase() === WC_ON) {
+      sheet.getRange(r + 2, WC.status + 1, 1, 3).setValues([[WC_OFF, new Date(), safeCell_(clean_(actor_ ? actor_.name : '', 80))]]);
+      SpreadsheetApp.flush();
+      logAction_('Опт: статус відкликано', (String(rows[r][WC.name]) || 'id ' + uid) + ', id ' + uid, WC_ON, WC_OFF);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return listWh_();
+}
+
+/** Заявки и оптовые клиенты для панели (право «Опт»). */
+function listWh_() {
+  function day(d) { return Object.prototype.toString.call(d) === '[object Date]' && !isNaN(d.getTime()) ? Utilities.formatDate(d, 'Europe/Kiev', 'dd.MM.yyyy') : String(d || ''); }
+  var apps = whRows_(SHEET_WH_APPS, WH_APP_HEAD.length).slice(-100).reverse().map(function (row) {
+    var a = whAppFromRow_(row);
+    return { id: a.id, date: day(row[WA.date]), type: a.type, name: a.name, city: a.city, contact: a.contact, phone: a.phone, username: a.username,
+      cats: a.cats, volume: a.volume, freq: a.freq, comment: a.comment, status: a.status, by: a.by };
+  });
+  var clients = whRows_(SHEET_WH_CLIENTS, WH_CLIENT_HEAD.length).reverse().map(function (row) {
+    return { uid: String(row[WC.uid]).trim(), contact: String(row[WC.contact] || ''), name: String(row[WC.name] || ''), city: String(row[WC.city] || ''),
+      phone: String(row[WC.phone] || ''), on: String(row[WC.status]).trim().toLowerCase() === WC_ON ? 1 : 0, date: day(row[WC.date]), by: String(row[WC.by] || ''), app: String(row[WC.app] || '') };
+  }).filter(function (c) { return c.uid; });
+  return { ok: true, apps: apps, clients: clients };
+}
+
+/**
+ * «Прайс для бізнесу» сообщением: товары в наличии с оптовой ценой, по категориям. Длинный прайс — несколькими сообщениями.
+ * Собирается только из клиентских полей и оптовой цены; служебные колонки (закупка, маржа и т. п.) сюда не попадают.
+ */
+function whPricelistTexts_(ru) {
+  var catalog = JSON.parse(getCatalogJson_());
+  var map = wholesaleMap_().map;
+  var blocks = [];
+  catalog.categories.forEach(function (c) {
+    var lines = [];
+    catalog.products.forEach(function (p) {
+      var w = map[p.id];
+      if (p.c !== c.code || !p.a || !w || (p.t === 'w') !== (w.u === 'kg')) return;
+      var n = String(w.n).replace('.', ',');
+      var unit = p.t === 'w' ? (ru ? '₴/кг, от ' + n + ' кг' : '₴/кг, від ' + n + ' кг')
+        : p.t === 'u' ? (ru ? '₴/шт, от ' + n + ' шт' : '₴/шт, від ' + n + ' шт') : (ru ? '₴/уп., от ' + n + ' уп.' : '₴/уп., від ' + n + ' уп.');
+      lines.push('• ' + ((ru && p.ru) || p.ua) + ' — ' + String(w.p).replace('.', ',') + ' ' + unit);
+    });
+    if (lines.length) blocks.push('<b>' + escHtml_(ru ? c.ru : c.ua) + '</b>\n' + lines.map(escHtml_).join('\n'));
+  });
+  if (!blocks.length) return [];
+  var head = '💼 <b>' + (ru ? 'Прайс для бизнеса' : 'Прайс для бізнесу') + ' · PAMIR</b> · ' + Utilities.formatDate(new Date(), 'Europe/Kiev', 'dd.MM.yyyy');
+  var out = [], cur = head;
+  blocks.forEach(function (b) {
+    while (b.length > 3500) { // одна очень длинная категория режется по строкам
+      var cut = b.lastIndexOf('\n', 3500);
+      if (cut < 1) cut = 3500;
+      if (cur) { out.push(cur); cur = ''; }
+      out.push(b.slice(0, cut));
+      b = b.slice(cut + 1);
+    }
+    if ((cur + '\n\n' + b).length > 3500) { out.push(cur); cur = b; } else cur = cur ? cur + '\n\n' + b : b;
+  });
+  if (cur) out.push(cur);
+  return out;
+}
+
+function sendWhPricelist_(token, chatId, ru) {
+  var texts = whPricelistTexts_(ru);
+  if (!texts.length) {
+    tg_(token, 'sendMessage', { chat_id: chatId, text: ru ? 'Сейчас нет товаров с оптовой ценой в наличии.' : 'Зараз немає товарів з оптовою ціною в наявності.' });
+    return 0;
+  }
+  texts.forEach(function (text) { tg_(token, 'sendMessage', { chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true }); });
+  return texts.length;
+}
+
+/** Кнопка «Надіслати прайс у чат» в магазине: только оптовику, не чаще 3 раз в час. */
+function handleWhPricelist_(body) {
+  var who = whUser_(body);
+  if (who.error) return { ok: false, error: who.error };
+  if (!isWholesaler_(who.uid)) return { ok: false, error: 'no_perm' };
+  var cache = CacheService.getScriptCache();
+  var n = parseInt(cache.get('whpl_' + who.uid), 10) || 0;
+  if (n >= 3) return { ok: false, error: 'rate_limit' };
+  cache.put('whpl_' + who.uid, String(n + 1), 3600);
+  return { ok: true, n: sendWhPricelist_(who.token, who.uid, body.lang === 'ru') };
+}
+
+/** Меню PAMIR → «Етап 8.3: створити листи й колонки (опт, розсилка)». Можно запускать повторно: существующие данные не трогает. */
+function setupWave2b() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var done = [];
+  [[SHEET_WH_APPS, WH_APP_HEAD], [SHEET_WH_CLIENTS, WH_CLIENT_HEAD]].forEach(function (s) {
+    if (!ss.getSheetByName(s[0])) { ensureWhSheet_(s[0], s[1]); done.push('лист «' + s[0] + '»'); }
+  });
+  var products = ss.getSheetByName(SHEET_PRODUCTS);
+  if (products) {
+    var pcol = mapHeaders_(headRow_(products), PRODUCT_COLS);
+    [['whMinKg', 'Опт: мін, кг'], ['compUa', 'Склад (UA)'], ['compRu', 'Состав (RU)']].forEach(function (c) {
+      if (pcol[c[0]] >= 0) return;
+      products.getRange(1, products.getLastColumn() + 1).setValue(c[1]).setFontWeight('bold');
+      done.push('колонка «' + c[1] + '» у «Товари»');
+    });
+  }
+  var orders = ensureOrdersSheet_();
+  if (orderCols_(orders).paid < 0) {
+    orders.getRange(1, orders.getLastColumn() + 1).setValue(PAID_HEAD).setFontWeight('bold');
+    done.push('колонка «' + PAID_HEAD + '» у «Замовлення»');
+  }
+  clearCatalogCache_();
+  var text = done.length ? 'Готово, створено:\n• ' + done.join('\n• ') : 'Усе вже створено раніше, нічого не змінено.';
+  console.log(text);
+  try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }
+  return done;
+}

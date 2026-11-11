@@ -377,7 +377,7 @@ console.log('Приветствие бота');
   tgPress(g, 800, 'm:pts');
   ok(/Центральний ринок/.test(lastTo(g, 800).payload.text), 'кнопка «Наші точки» присылает адрес и часы');
   tgPress(g, 800, 'm:biz');
-  ok(/кафе/.test(lastTo(g, 800).payload.text) && lastTo(g, 800).payload.reply_markup.inline_keyboard[0][0].url === 'https://t.me/pamir_help', 'кнопка «Для бізнесу» — заглушка с контактом');
+  ok(/кафе/.test(lastTo(g, 800).payload.text) && /view=biz/.test(lastTo(g, 800).payload.reply_markup.inline_keyboard[0][0].web_app.url) && lastTo(g, 800).payload.reply_markup.inline_keyboard[1][0].url === 'https://t.me/pamir_help', 'кнопка «Для бізнесу»: форма заявки (волна 2б) и контакт');
   ok(!/сірк|серы/i.test(JSON.stringify(g.get({ action: 'catalog' }).shop) + JSON.stringify(adm(g, 900, 'admin.settings'))), 'в текстах по умолчанию нет утверждений про серу');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
@@ -936,6 +936,136 @@ console.log('Волна 2б · Б4: специи и смеси отца');
   ok(c4.cu === 'Зіра, барбарис, паприка, куркума' && c4.cr === 'Зира, барбарис, паприка, куркума' && c5.cu === undefined && c5.cr === undefined, 'состав уходит на витрину только у товара, где он заполнен', [c4.cu, c5.cu]);
   ok(logRows(g, 'Товар: склад (UA)').length === 1, 'изменение состава записано в «Журнал»');
   ok(!/СЕКРЕТ|do-smaku|33%/.test(JSON.stringify(g.get({ action: 'catalog' }))), 'служебные колонки по-прежнему не уходят');
+  ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Волна 2б · Б2: опт — разбор минимального объёма');
+{
+  const g = fresh();
+  const pm = (t, num, text) => { const r = g.call('parseWhMin_', t, num, text); return r ? r.n + ' ' + r.unit : null; };
+  ok(pm('w', '', '5') === '5 kg' && pm('p', '', '5') === '5 pcs' && pm('u', '', '5') === '5 pcs', '«5» — 5 кг для весового, 5 упаковок для «упаковка» и «шт»');
+  ok(pm('w', '', '5 кг') === '5 kg' && pm('w', '', 'від 5 кг') === '5 kg' && pm('w', '', 'от 5кг') === '5 kg' && pm('w', '', '5,5 кг') === '5.5 kg', '«5 кг», «від 5 кг», «от 5кг», «5,5 кг» — число в кг');
+  ok(pm('p', '', '10 шт') === '10 pcs' && pm('p', '', '10 уп') === '10 pcs' && pm('u', '', 'від 10 упаковок') === '10 pcs', '«10 шт», «10 уп», «10 упаковок» — число штук');
+  ok(pm('w', '', '500 г') === '0.5 kg', '«500 г» — 0,5 кг');
+  ok(pm('w', '', '') === null && pm('w', '', 'за домовленістю') === null && pm('p', '', 'багато') === null, 'пусто или текст без числа — оптовой цены нет');
+  ok(pm('p', '', '5 кг') === null && pm('w', '', '10 шт') === null && pm('w', '', '5 ящиків') === null, 'единица не подходит к типу товара или непонятна — оптовой цены нет');
+  ok(pm('w', 7, 'від 5 кг') === '7 kg' && pm('p', 12, '10 шт') === '12 pcs' && pm('w', '', 'від 5 кг') === '5 kg' && pm('w', 0, 'від 5 кг') === '5 kg', 'число в «Опт: мін, кг» главнее текста; пустое или 0 — действует текст');
+}
+
+console.log('Волна 2б · Б2: опт — цены, заявки, заказы');
+{
+  const g = fresh();
+  const P = g.sheets['Товари'].rows, head = P[0], cell = (id, name, v) => { P.find(r => r[0] === id)[head.indexOf(name)] = v; };
+  // оптовые цены: курага 320 ₴/кг «від 5 кг» (из стенда), мигдаль 500 ₴/кг от 2 кг, арахис 70 ₴/уп. от 10 уп., фисташки — объём не понять
+  cell('NUT-001', 'Опт: ціна', 500); cell('NUT-001', 'Опт: мін. обсяг', '2 кг');
+  cell('NUT-007', 'Опт: ціна', 70); cell('NUT-007', 'Опт: мін. обсяг', '10 уп');
+  cell('NUT-003', 'Опт: ціна', 700); cell('NUT-003', 'Опт: мін. обсяг', 'за домовленістю');
+  cell('NUT-008', 'Опт: ціна', 900); cell('NUT-008', 'Опт: мін. обсяг', '1 кг'); // «немає»
+  g.clearCache();
+  const secret = /СЕКРЕТ|do-smaku|33%|"(?:999|111|222)"|:999[,}]|:111[,}]|:222[,}]/;
+  const catText = JSON.stringify(g.get({ action: 'catalog' }));
+  const by = {}; JSON.parse(catText).products.forEach(p => { by[p.id] = p; });
+  ok(!/"w":|"wm":|"whn":|від 5 кг|10 уп/.test(catText) && JSON.parse(catText).products.every(p => p.w === undefined && p.wm === undefined) && by['DRY-039'].k === 380, 'каталог обычного клиента не содержит оптовой цены и минимального объёма', by['DRY-039']);
+  ok(by['DRY-039'].wb === 1 && by['NUT-001'].wb === 1 && by['NUT-007'].wb === 1 && by['NUT-003'].wb === undefined && by['NUT-002'].wb === undefined, 'у товаров с оптовой ценой — только отметка «есть опт»; если объём не понять, отметки нет');
+  ok(/NUT-003/.test(g.call('checkCatalogText_')) && /мінімальний обсяг не зрозумілий/.test(g.call('checkCatalogText_')), '«Перевірити каталог» предупреждает о непонятном минимальном объёме');
+
+  // обычный клиент оптовых цен не получает
+  const wp = uid => g.post({ action: 'wh.prices', initData: g.initData(U(uid)) });
+  ok(g.post({ action: 'wh.prices' }).error === 'bad_auth' && g.post({ action: 'wh.prices', initData: g.initData(U(50)).replace(/hash=[0-9a-f]{6}/, 'hash=000000') }).error === 'bad_auth', 'оптовые цены без подписи Telegram не отдаются');
+  const none = wp(50);
+  ok(none.ok && none.wh === false && none.prices === undefined && none.app === '', 'обычный клиент: wh = false, цен нет', none);
+  ok(g.post({ action: 'wh.pricelist', initData: g.initData(U(50)) }).error === 'no_perm', 'прайс обычному клиенту не отправляется');
+
+  // заявка
+  const form = { type: 'cafe', name: 'Кав’ярня «Зерно»', city: 'Харків', contact: 'Ірина', phone: '+380501112233', cats: ['Горіхи', 'Сухофрукти'], volume: '10 кг на тиждень', freq: 'щотижня', comment: '=небезпечно', lang: 'ua' };
+  const apply = (uid, extra) => g.post(Object.assign({ action: 'wh.apply', initData: g.initData(U(uid)) }, form, extra || {}));
+  addAdmin(g, 790, 'manager', ['wh']);
+  addAdmin(g, 791, 'manager', ['st']);
+  ok(g.post(Object.assign({ action: 'wh.apply' }, form)).error === 'bad_auth', 'заявка без подписи Telegram не принимается');
+  ok(apply(50, { type: 'sets' }).error === 'bad_form' && apply(50, { phone: '123' }).error === 'bad_form' && apply(50, { name: 'x' }).error === 'bad_form', 'неполная заявка и неизвестный тип бизнеса («Корпоративні набори» нет) отклоняются');
+  const sent0 = g.sent.length;
+  const a1 = apply(50);
+  const A = g.sheets['Опт-заявки'].rows;
+  ok(a1.ok && a1.id === 'W-0001' && A.length === 2 && A[1][0] === 'W-0001' && A[1][2] === '50' && A[1][4] === 'кафе' && A[1][5] === 'Кав’ярня «Зерно»' && A[1][9] === 'Горіхи, Сухофрукти' && A[1][13] === 'нова', 'заявка записана в лист «Опт-заявки»', A[1]);
+  const toAdmins = g.sent.slice(sent0).filter(m => m.method === 'sendMessage' && /Заявка на опт W-0001/.test(m.payload.text));
+  ok(toAdmins.length === 2 && toAdmins.map(m => String(m.payload.chat_id)).sort().join() === '790,900' && toAdmins[0].payload.reply_markup.inline_keyboard.map(r => r[0].callback_data).join() === 'wa:W-0001:t,wa:W-0001:a,wa:W-0001:r',
+    'уведомление получили только админы с правом «Опт», с кнопками «Взяти в роботу / Схвалити / Відхилити»', toAdmins.map(m => m.payload.chat_id));
+  ok(!secret.test(JSON.stringify(g.sent.slice(sent0))) && /Заявку W-0001 отримали/.test(lastTo(g, 50).payload.text), 'клиенту — подтверждение, что заявка получена');
+  ok(wp(50).app === 'нова', 'статус заявки виден на экране «Для бізнесу»');
+  apply(50); apply(50);
+  ok(apply(50).error === 'rate_limit' && A.length === 4, 'не больше 3 заявок в сутки с одного аккаунта');
+  ok(apply(51).ok && A.length === 5, 'другой аккаунт заявку подать может');
+
+  // решения
+  tgPress(g, 791, 'wa:W-0001:a');
+  ok(A[1][13] === 'нова' && !g.sheets['Оптові клієнти'] && /немає права/.test(g.sent.filter(m => m.method === 'answerCallbackQuery').pop().payload.text), 'без права «Опт» заявку не одобрить');
+  ok(adm(g, 791, 'admin.whDecide', { id: 'W-0001', d: 'a' }).error === 'no_perm' && adm(g, 791, 'admin.wh').error === 'no_perm' && adm(g, 5555, 'admin.wh').error === 'forbidden', 'и прямым запросом — тоже');
+  tgPress(g, 790, 'wa:W-0001:t');
+  ok(A[1][13] === 'в роботі' && /Гість790/.test(A[1][14]) && g.sent.filter(m => m.method === 'editMessageText' && /в роботі/.test(m.payload.text)).length >= 2, '«Взяти в роботу»: статус записан, сообщения админов обновлены');
+  const told0 = g.sent.filter(m => String(m.payload.chat_id) === '50').length;
+  tgPress(g, 790, 'wa:W-0001:a');
+  const C = g.sheets['Оптові клієнти'].rows;
+  ok(A[1][13] === 'схвалено' && C.length === 2 && C[1][0] === '50' && C[1][2] === 'Кав’ярня «Зерно»' && C[1][5] === 'активний' && C[1][8] === 'W-0001', '«Схвалити»: клиент появился в листе «Оптові клієнти»', C[1]);
+  ok(/Заявку W-0001 схвалили/.test(lastTo(g, 50).payload.text) && /view=biz/.test(lastTo(g, 50).payload.reply_markup.inline_keyboard[0][0].web_app.url), 'клиенту — сообщение о решении');
+  tgPress(g, 790, 'wa:W-0001:a'); tgPress(g, 900, 'wa:W-0001:r');
+  ok(A[1][13] === 'схвалено' && g.sent.filter(m => String(m.payload.chat_id) === '50').length === told0 + 1, 'повторные нажатия ничего не меняют и клиенту второй раз не пишут');
+  const rej = adm(g, 790, 'admin.whDecide', { id: 'W-0004', d: 'r' });
+  ok(rej.ok && rej.status === 'відхилено' && A[4][13] === 'відхилено' && /не можемо запропонувати/.test(lastTo(g, 51).payload.text) && C.length === 2, '«Відхилити» из панели: клиенту сообщение, оптовиком он не стал', rej);
+  ok(logRows(g, 'Опт: заявка').length === 3, 'решения по заявкам записаны в «Журнал»', logRows(g, 'Опт: заявка'));
+
+  // оптовик получает цены
+  const w = wp(50);
+  ok(w.ok && w.wh === true && JSON.stringify(w.prices['DRY-039']) === '[320,5,"kg"]' && JSON.stringify(w.prices['NUT-001']) === '[500,2,"kg"]' && JSON.stringify(w.prices['NUT-007']) === '[70,10,"pcs"]' && !w.prices['NUT-003'], 'оптовик получает оптовые цены и пороги; товар с непонятным объёмом — без оптовой цены', w.prices);
+  ok(!secret.test(JSON.stringify(w)) && wp(51).wh === false && wp(52).wh === false, 'в ответе нет служебных колонок; остальные клиенты цен не получают');
+  ok(apply(50).wh === true && A.length === 5, 'оптовику повторная заявка не нужна');
+
+  // заказы оптовика: ниже порога, ровно, выше, несколько фасовок
+  const o = (uid, items, total) => order(g, U(uid), items, total);
+  ok(o(50, [{ id: 'DRY-039', g: 1000, q: 4 }], 380 * 4).ok, 'ниже порога (4 кг из 5): розничная цена 380 ₴/кг');
+  ok(o(50, [{ id: 'DRY-039', g: 1000, q: 4 }], 320 * 4).error === 'changed', 'ниже порога оптовая сумма отклоняется');
+  const exact = o(50, [{ id: 'DRY-039', g: 1000, q: 5 }], 320 * 5);
+  const last = () => g.sheets['Замовлення'].rows.slice(-1)[0];
+  ok(exact.ok && last()[13] === 1600 && /Курага.*1 кг \(опт\) × 5 = 1600 ₴/.test(last()[12]), 'ровно порог (5 кг): оптовая цена 320 ₴/кг, в заказе пометка «(опт)»', last()[12]);
+  ok(/ОПТ/.test(g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '900' && /Замовлення P-/.test(m.payload.text)).pop().payload.text), 'в сообщении админу отметка «ОПТ»');
+  ok(o(50, [{ id: 'DRY-039', g: 1000, q: 5 }], 380 * 5).error === 'changed', 'выше порога розничная сумма тоже отклоняется: сумму считает сервер');
+  ok(o(50, [{ id: 'DRY-039', g: 500, q: 2 }, { id: 'DRY-039', g: 1000, q: 4 }, { id: 'NUT-002', g: 250, q: 1 }], 160 * 2 + 320 * 4 + 160).ok && /500 г \(опт\) × 2 = 320 ₴; .*1 кг \(опт\) × 4 = 1280 ₴; Кеш’ю смажений 250 г × 1 = 160 ₴/.test(last()[12]),
+    'несколько фасовок одного товара складываются (2 × 500 г + 4 × 1 кг = 5 кг); товар без оптовой цены — по розничной', last()[12]);
+  ok(o(50, [{ id: 'NUT-007', g: 0, q: 9 }], 85 * 9).ok && o(50, [{ id: 'NUT-007', g: 0, q: 10 }], 70 * 10).ok && /\(опт\) × 10 = 700 ₴/.test(last()[12]), 'упаковки: 9 шт — розница, 10 шт — оптовая цена за упаковку', last()[12]);
+  ok(adm(g, 900, 'admin.orders').orders[0].wh === 1 && adm(g, 900, 'admin.orders').orders.find(x => x.num === 'P-0001').wh === 0, 'в панели у оптового заказа отметка');
+  // обычный клиент оптовую сумму подделать не может
+  ok(o(52, [{ id: 'DRY-039', g: 1000, q: 5 }], 320 * 5).error === 'changed' && o(52, [{ id: 'DRY-039', g: 1000, q: 5 }], 380 * 5).ok && !/опт/.test(last()[12]), 'обычный клиент с оптовой суммой: заказ не принят; с розничной — принят без пометки');
+  // min_order действует и для оптовика
+  settings(g, { min_order: '800' });
+  ok(o(50, [{ id: 'NUT-007', g: 0, q: 10 }], 700).error === 'min_order', 'минимальная сумма заказа действует и для оптовика');
+  settings(g, { min_order: '0' });
+
+  // прайс для бизнеса
+  const before = g.sent.length;
+  const pl = g.post({ action: 'wh.pricelist', initData: g.initData(U(50)), lang: 'ua' });
+  const plText = g.sent.slice(before).map(m => m.payload.text).join('\n');
+  ok(pl.ok && pl.n === 1 && /Прайс для бізнесу · PAMIR/.test(plText) && /Курага.* — 320 ₴\/кг, від 5 кг/.test(plText) && /Мигдаль смажений — 500 ₴\/кг, від 2 кг/.test(plText) && /Арахіс.* — 70 ₴\/уп\., від 10 уп\./.test(plText), 'прайс сообщением: по категориям, с ценой и порогом', plText);
+  ok(!/Пекан|Фісташки/.test(plText) && !secret.test(plText) && !/380|560/.test(plText), 'в прайсе нет товаров «немає», товаров без понятного объёма, розничных цен и служебных колонок');
+  tgPress(g, 50, 'm:biz');
+  ok(/Прайс для бізнесу/.test(lastTo(g, 50).payload.text), 'кнопка бота «Для бізнесу» оптовику присылает прайс');
+  g.post({ action: 'wh.pricelist', initData: g.initData(U(50)) }); g.post({ action: 'wh.pricelist', initData: g.initData(U(50)) });
+  ok(g.post({ action: 'wh.pricelist', initData: g.initData(U(50)) }).error === 'rate_limit', 'прайс — не чаще 3 раз в час');
+  for (let i = 0; i < 120; i++) { const r = P.find(x => x[0] === 'NUT-001').slice(); r[0] = 'NUT-' + (300 + i); r[3] = 'Довга назва товару для перевірки довгого прайсу номер ' + i; P.push(r); }
+  g.clearCache();
+  const long = g.call('whPricelistTexts_', false);
+  ok(long.length >= 2 && long.every(x => x.length <= 4000) && long.join('\n').split('номер').length - 1 === 120, 'длинный прайс делится на несколько сообщений, ни одна строка не теряется', long.map(x => x.length));
+
+  // отзыв статуса
+  ok(adm(g, 791, 'admin.whRevoke', { uid: '50' }).error === 'no_perm', 'отозвать статус без права «Опт» нельзя');
+  const list = adm(g, 790, 'admin.wh');
+  ok(list.ok && list.clients.length === 1 && list.clients[0].on === 1 && list.apps.length === 4 && !secret.test(JSON.stringify(list)), 'панель: список заявок и оптовых клиентов', [list.clients, list.apps.length]);
+  const rv = adm(g, 790, 'admin.whRevoke', { uid: '50' });
+  ok(rv.ok && rv.clients[0].on === 0 && C[1][5] === 'відкликано' && logRows(g, 'Опт: статус відкликано').length === 1, 'отзыв статуса записан в таблицу и «Журнал»', rv.clients);
+  ok(wp(50).wh === false && wp(50).prices === undefined && g.post({ action: 'wh.pricelist', initData: g.initData(U(50)) }).error === 'no_perm', 'после отзыва оптовых цен и прайса нет');
+  g.clearCache(); // сброс счётчика «не больше 5 заказов в час»
+  ok(o(50, [{ id: 'DRY-039', g: 1000, q: 5 }], 320 * 5).error === 'changed' && o(50, [{ id: 'DRY-039', g: 1000, q: 5 }], 380 * 5).ok && !/опт/.test(last()[12]), 'после отзыва цены сразу розничные: оптовая сумма отклонена');
+  ok(adm(g, 790, 'admin.whRevoke', { uid: '777777' }).error === 'not_found', 'неизвестный клиент: not_found');
+  const made = fresh().call('setupWave2b');
+  ok(made.length >= 5 && /Опт-заявки/.test(made.join()) && /Оптові клієнти/.test(made.join()) && /Опт: мін, кг/.test(made.join()), 'меню «Етап 8.3» создаёт листы и колонки', made);
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 

@@ -147,7 +147,7 @@ function createGas(codePath, seed) {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(codePath, 'utf8'), sandbox, { filename: 'Code.gs' });
 
-  function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; } if (typeof propsMemo_ !== "undefined") { propsMemo_ = null; logBuffer_ = null; perf_ = null; pointsMemo_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
+  function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; } if (typeof propsMemo_ !== "undefined") { propsMemo_ = null; logBuffer_ = null; perf_ = null; pointsMemo_ = null; } if (typeof whMapMemo_ !== "undefined") { whMapMemo_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
 
   return {
     sandbox, sheets, props, cache, sent, triggers, ops,
