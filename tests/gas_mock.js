@@ -12,6 +12,7 @@ function normCell(v) {
 class Range {
   constructor(sheet, r, c, nr, nc) { this.s = sheet; this.r = r; this.c = c; this.nr = nr; this.nc = nc; }
   getValues() {
+    this.s._op('read');
     const out = [];
     for (let i = 0; i < this.nr; i++) {
       const row = [];
@@ -25,17 +26,19 @@ class Range {
     return out;
   }
   setValues(values) {
+    this.s._op('write');
     values.forEach((row, i) => row.forEach((v, j) => this.s._set(this.r + i, this.c + j, v)));
     return this;
   }
-  setValue(v) { this.s._set(this.r, this.c, v); return this; }
+  setValue(v) { this.s._op('write'); this.s._set(this.r, this.c, v); return this; }
   getFormula() { return ''; }
   setFontWeight() { return this; }
   setNumberFormat() { return this; }
 }
 
 class Sheet {
-  constructor(name, rows) { this.name = name; this.rows = rows || []; }
+  constructor(name, rows, ops) { this.name = name; this.rows = rows || []; this.ops = ops || null; }
+  _op(kind) { if (this.ops) this.ops[kind] = (this.ops[kind] || 0) + 1; }
   _set(r, c, v) {
     while (this.rows.length < r) this.rows.push([]);
     const row = this.rows[r - 1];
@@ -55,6 +58,7 @@ class Sheet {
     return new Range(this, r, c, nr === undefined ? 1 : nr, nc === undefined ? 1 : nc);
   }
   appendRow(row) {
+    this._op('append');
     const at = this.getLastRow() + 1;
     row.forEach((v, j) => this._set(at, j + 1, v));
     return this;
@@ -62,8 +66,8 @@ class Sheet {
   setFrozenRows() {}
   hideColumns() {}
   clearContents() { this.rows = []; }
-  deleteRows(start, n) { this.rows.splice(start - 1, n); }
-  deleteRow(at) { this.rows.splice(at - 1, 1); }
+  deleteRows(start, n) { this._op('write'); this.rows.splice(start - 1, n); }
+  deleteRow(at) { this._op('write'); this.rows.splice(at - 1, 1); }
 }
 
 function formatDate(date, tz, fmt) {
@@ -75,8 +79,12 @@ function formatDate(date, tz, fmt) {
 }
 
 function createGas(codePath, seed) {
+  // ops — счётчик «медленных» операций Apps Script (обращения к таблице, свойствам, кэшу, Telegram): по нему tests/perf_admin.js
+  // показывает, сколько таких обращений делает один запрос. Времени стенд не имитирует.
+  const ops = {};
+  const op = (kind, n) => { ops[kind] = (ops[kind] || 0) + (n || 1); };
   const sheets = {};
-  Object.keys(seed.sheets).forEach(name => { sheets[name] = new Sheet(name, seed.sheets[name].map(r => r.slice())); });
+  Object.keys(seed.sheets).forEach(name => { sheets[name] = new Sheet(name, seed.sheets[name].map(r => r.slice()), ops); });
   const props = Object.assign({}, seed.props);
   const cache = {};
   const sent = []; // всё, что бэкенд отправил в Telegram
@@ -86,25 +94,27 @@ function createGas(codePath, seed) {
 
   const ss = {
     getSheetByName: n => sheets[n] || null,
-    insertSheet: n => { sheets[n] = new Sheet(n, []); return sheets[n]; },
+    insertSheet: n => { sheets[n] = new Sheet(n, [], ops); return sheets[n]; },
     getSpreadsheetTimeZone: () => 'Europe/Kiev'
   };
   const sandbox = {
     console: { log() {}, warn() {}, error(...a) { sandbox.__errors.push(a.join(' ')); } },
     __errors: [],
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() {}, getUi: () => ({ alert() {}, createMenu: () => { const m = { addItem: () => m, addSeparator: () => m, addToUi() {} }; return m; } }) },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ({ alert() {}, createMenu: () => { const m = { addItem: () => m, addSeparator: () => m, addToUi() {} }; return m; } }) },
     CacheService: { getScriptCache: () => ({
-      get: k => (k in cache ? cache[k] : null),
-      put: (k, v) => { cache[k] = String(v); },
-      putAll: o => { Object.keys(o).forEach(k => { cache[k] = String(o[k]); }); },
-      getAll: keys => { const o = {}; keys.forEach(k => { if (k in cache) o[k] = cache[k]; }); return o; },
-      remove: k => { delete cache[k]; }
+      get: k => { op('cache'); return k in cache ? cache[k] : null; },
+      put: (k, v) => { op('cache'); cache[k] = String(v); },
+      putAll: o => { op('cache'); Object.keys(o).forEach(k => { cache[k] = String(o[k]); }); },
+      getAll: keys => { op('cache'); const o = {}; keys.forEach(k => { if (k in cache) o[k] = cache[k]; }); return o; },
+      remove: k => { op('cache'); delete cache[k]; },
+      removeAll: keys => { op('cache'); keys.forEach(k => { delete cache[k]; }); }
     }) },
     PropertiesService: { getScriptProperties: () => ({
-      getProperty: k => (k in props ? props[k] : null),
-      setProperty: (k, v) => { props[k] = String(v); }
+      getProperty: k => { op('prop'); return k in props ? props[k] : null; },
+      getProperties: () => { op('prop'); return Object.assign({}, props); },
+      setProperty: (k, v) => { op('prop'); props[k] = String(v); }
     }) },
-    LockService: { getScriptLock: () => ({ waitLock() {}, tryLock() { return true; }, releaseLock() {} }) },
+    LockService: { getScriptLock: () => ({ waitLock() { op('lock'); }, tryLock() { op('lock'); return true; }, releaseLock() {} }) },
     Utilities: {
       newBlob: (data) => ({ getBytes: () => (typeof data === 'string' ? Array.from(Buffer.from(data, 'utf8')) : data) }),
       computeHmacSha256Signature: (value, key) => {
@@ -116,7 +126,8 @@ function createGas(codePath, seed) {
       base64Decode: s => Array.from(Buffer.from(s, 'base64')),
       getUuid: () => crypto.randomUUID()
     },
-    UrlFetchApp: { fetch: (url, opts) => {
+    UrlFetchApp: { fetchAll: reqs => { op('tgBatch'); return reqs.map(r => sandbox.UrlFetchApp.fetch(r.url, r, true)); }, fetch: (url, opts, batched) => {
+      if (!batched) op('tg'); // отдельный вызов Telegram; вызовы из fetchAll идут параллельно и считаются одной пачкой
       const method = url.split('/').pop().split('?')[0];
       const payload = opts && opts.payload ? JSON.parse(opts.payload) : {};
       sent.push({ method, payload });
@@ -136,10 +147,11 @@ function createGas(codePath, seed) {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(codePath, 'utf8'), sandbox, { filename: 'Code.gs' });
 
-  function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
+  function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; } if (typeof propsMemo_ !== "undefined") { propsMemo_ = null; logBuffer_ = null; perf_ = null; pointsMemo_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
 
   return {
-    sandbox, sheets, props, cache, sent, triggers,
+    sandbox, sheets, props, cache, sent, triggers, ops,
+    resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); },
     setTelegramFail(v) { failTelegram = v; },
     clearCache() { Object.keys(cache).forEach(k => { delete cache[k]; }); },
     get(query) { resetMemo(); return JSON.parse(sandbox.doGet({ parameter: query }).text); },

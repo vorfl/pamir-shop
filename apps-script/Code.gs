@@ -668,29 +668,36 @@ function doPost(e) {
   // Вебхук Telegram (через Cloudflare Worker): ?src=tg&key=<WEBHOOK_SECRET>
   if (e && e.parameter && e.parameter.src === 'tg') return handleTelegramWebhook_(e);
   var out;
+  var isAdmin = false;
+  logBuffer_ = []; // записи «Журнала» копятся и пишутся одним разом в конце запроса
   try {
     var text = (e && e.postData && e.postData.contents) || '';
     if (text.length > 1500000) throw new Error('body too large');
     var body = JSON.parse(text || '{}');
+    isAdmin = String(body.action).indexOf('admin.') === 0;
+    if (isAdmin) perfStart_(String(body.action));
     if (body.action !== 'admin.photo' && text.length > 20000) throw new Error('body too large');
     if (body.action === 'order') out = handleOrder_(body);
     else if (body.action === 'orders.my') out = handleMyOrders_(body);
     else if (body.action === 'ev') out = handleEvents_(body);
     else if (body.action === 'notify') out = handleNotify_(body);
     else if (body.action === 'cart') out = handleCart_(body);
-    else if (String(body.action).indexOf('admin.') === 0) out = handleAdmin_(body);
+    else if (isAdmin) out = handleAdmin_(body);
     else out = { ok: false, error: 'unknown_action' };
   } catch (err) {
     console.error('doPost: ' + (err && err.stack || err));
     out = { ok: false, error: 'server_error' };
   }
+  if (isAdmin) perfMark_('дія');
+  flushLog_();
+  if (isAdmin) { perfMark_('журнал'); perfEnd_(out); }
   return jsonText_(JSON.stringify(out));
 }
 
 /* ------------------------------ Приём заказа ------------------------------ */
 
 function handleOrder_(body) {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   if (!token) return { ok: false, error: 'not_configured' };
 
@@ -895,7 +902,7 @@ function takeFromStock_(compact) {
 
 /** «Мої замовлення»: последние заказы этого клиента. Кто спрашивает — определяется только по подписи Telegram. */
 function handleMyOrders_(body) {
-  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  var token = scriptProps_().getProperty('BOT_TOKEN');
   if (!token) return { ok: false, error: 'not_configured' };
   var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
   if (!user) return { ok: false, error: 'bad_auth' };
@@ -982,8 +989,9 @@ function ensureOrdersSheet_() {
   return sheet;
 }
 
-function orderCols_(sheet) {
-  var headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
+/** headers — первая строка листа, если лист уже прочитан целиком: тогда второго обращения к таблице нет. */
+function orderCols_(sheet, headers) {
+  if (!headers) headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
   var col = mapHeaders_(headers, ORDER_COLS);
   if (col.num < 0 || col.status < 0) throw new Error('В листе «Замовлення» нет колонок «№» и «Статус»');
   return col;
@@ -1006,9 +1014,11 @@ function nextOrderNumber_(sheet, col) {
 /** Находит заказ по номеру. Возвращает { sheet, col, rowIndex, o } или null. */
 function findOrder_(num) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
-  if (!sheet || sheet.getLastRow() < 2) return null;
-  var col = orderCols_(sheet);
-  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  if (!sheet) return null;
+  var all = sheet.getDataRange().getValues(); // одно чтение: заголовки и заказы вместе
+  if (all.length < 2) return null;
+  var col = orderCols_(sheet, all[0]);
+  var values = all.slice(1);
   for (var r = values.length - 1; r >= 0; r--) {
     if (String(values[r][col.num]).trim() !== num) continue;
     var row = values[r];
@@ -1073,7 +1083,6 @@ function adminKeyboard_(num) {
 /** Сообщение клиенту на его языке. kind: new | c | n | s | d */
 function clientText_(kind, o) {
   var ru = o.lang === 'ru';
-  var shop = readShop_();
   var n = o.num;
   if (kind === 'new') {
     var st = readSettings_();
@@ -1088,7 +1097,7 @@ function clientText_(kind, o) {
     var t = ru ? '✅ Заказ ' + n + ' подтверждён.' : '✅ Замовлення ' + n + ' підтверджено.';
     if (o.pay === 'card') t += ru ? '\nРеквизиты для оплаты пришлём отдельным сообщением.' : '\nРеквізити для оплати надішлемо окремим повідомленням.';
     if (o.delivery === 'np') t += ru ? '\nСообщим, когда отправим Новой почтой.' : '\nПовідомимо, коли відправимо Новою поштою.';
-    else t += pickupText_(o, ru, shop);
+    else t += pickupText_(o, ru, readShop_()); // адрес и часы нужны только здесь — в остальных сообщениях настройки не читаются
     return t;
   }
   if (kind === 'n') {
@@ -1107,7 +1116,7 @@ function clientText_(kind, o) {
  * Если включён вебхук (Script Property USE_WEBHOOK = 'true'), функция сразу выходит: update приходят в doPost (?src=tg).
  */
 function pollUpdates() {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   if (props.getProperty('USE_WEBHOOK') === 'true') return; // обновления приходят через вебхук (doPost), опрос не нужен
   var token = props.getProperty('BOT_TOKEN');
   if (!token) return;
@@ -1166,10 +1175,11 @@ function isDuplicateUpdate_(updateId) {
 
 /** Приём update от Telegram через Cloudflare Worker. Всегда отвечает быстро и без исключений. */
 function handleTelegramWebhook_(e) {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var secret = props.getProperty('WEBHOOK_SECRET');
   var given = (e.parameter && e.parameter.key) || '';
   if (!secret || given !== secret) return ContentService.createTextOutput('forbidden');
+  logBuffer_ = [];
   try {
     var update = JSON.parse((e.postData && e.postData.contents) || '{}');
     var token = props.getProperty('BOT_TOKEN');
@@ -1181,6 +1191,7 @@ function handleTelegramWebhook_(e) {
   } catch (err) {
     console.error('webhook: ' + (err && err.stack || err));
   }
+  flushLog_();
   return ContentService.createTextOutput('ok');
 }
 
@@ -1251,7 +1262,7 @@ function handleCallback_(cq, token, admins) {
     if (cq.message) tg_(token, 'editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
     return;
   }
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   if (handleCallback8_(cq, token, props, answer)) return; // отзывы, брошенная корзина, ТТН
   var menu = String(cq.data || '').match(/^m:(pts|apr|biz)$/);
   if (menu) { // кнопки под приветствием — для всех
@@ -1303,6 +1314,7 @@ function setOrderStatus_(num, code, actor, token, extraTarget) {
   } finally {
     lock.releaseLock();
   }
+  perfMark_('таблиця');
 
   var o = found.o;
   o.status = status;
@@ -1312,22 +1324,22 @@ function setOrderStatus_(num, code, actor, token, extraTarget) {
   if (extraTarget && !targets.some(function (t) { return String(t[0]) === String(extraTarget[0]) && t[1] === extraTarget[1]; })) {
     targets.push(extraTarget);
   }
-  targets.forEach(function (t) {
-    tg_(token, 'editMessageText', {
-      chat_id: t[0], message_id: t[1], text: adminText_(o, note), parse_mode: 'HTML',
-      disable_web_page_preview: true, reply_markup: adminKeyboard_(o.num)
-    });
-  });
+  // Сообщения о заказе у всех админов обновляются одной пачкой (параллельно), а не по очереди.
+  var adminNote = adminText_(o, note), adminKb = adminKeyboard_(o.num);
+  tgAll_(token, targets.map(function (t) {
+    return ['editMessageText', { chat_id: t[0], message_id: t[1], text: adminNote, parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: adminKb }];
+  }));
   var told = null;
   if (o.uid && String(o.source).indexOf('test') < 0) {
     var msg = { chat_id: o.uid, text: clientText_(code, o) };
-    var webapp = PropertiesService.getScriptProperties().getProperty('WEBAPP_URL');
+    var webapp = scriptProps_().getProperty('WEBAPP_URL');
     if (code === 'd' && /^https:\/\//.test(webapp || '')) {
       msg.reply_markup = { inline_keyboard: [[{ text: o.lang === 'ru' ? '🔁 Повторить заказ' : '🔁 Повторити замовлення',
         web_app: { url: webapp + (webapp.indexOf('?') < 0 ? '?' : '&') + 'view=orders' } }]] };
     }
-    told = !!tg_(token, 'sendMessage', msg).ok;
+    told = !!tg_(token, 'sendMessage', msg).ok; // клиенту — отдельным вызовом: результат нужен точно
   }
+  perfMark_('Telegram');
   return { ok: true, status: status, told: told, np: o.delivery === 'np', ttn: svcTtn_(o.svc) };
 }
 
@@ -1338,12 +1350,37 @@ function tg_(token, method, payload) {
     var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
       method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true
     });
-    var out = JSON.parse(res.getContentText());
-    // 403 на отправку сообщения — клиент заблокировал бота: помечаем в листе «Клієнти».
-    if (out && out.ok === false && out.error_code === 403 && payload && payload.chat_id && /^send/.test(method)) markClientBlocked_(payload.chat_id, true);
-    return out;
+    return tgResult_(res, method, payload);
   } catch (err) {
     return { ok: false, description: String(err) };
+  }
+}
+
+function tgResult_(res, method, payload) {
+  var out = JSON.parse(res.getContentText());
+  // 403 на отправку сообщения — клиент заблокировал бота: помечаем в листе «Клієнти».
+  if (out && out.ok === false && out.error_code === 403 && payload && payload.chat_id && /^send/.test(method)) markClientBlocked_(payload.chat_id, true);
+  return out;
+}
+
+/**
+ * Несколько вызовов Telegram одной пачкой: идут параллельно, время — как у одного.
+ * calls: [[method, payload], …]. Используется там, где повтор безвреден (правка уже отправленного сообщения).
+ */
+function tgAll_(token, calls) {
+  if (!calls.length) return [];
+  if (calls.length === 1) return [tg_(token, calls[0][0], calls[0][1])];
+  try {
+    var responses = UrlFetchApp.fetchAll(calls.map(function (c) {
+      return { url: 'https://api.telegram.org/bot' + token + '/' + c[0], method: 'post', contentType: 'application/json',
+        payload: JSON.stringify(c[1] || {}), muteHttpExceptions: true };
+    }));
+    return responses.map(function (res, i) {
+      try { return tgResult_(res, calls[i][0], calls[i][1]); } catch (err) { return { ok: false, description: String(err) }; }
+    });
+  } catch (err) {
+    console.warn('tgAll: ' + err);
+    return calls.map(function (c) { return tg_(token, c[0], c[1]); }); // пачка не ушла целиком — по одному, как раньше
   }
 }
 
@@ -1373,9 +1410,9 @@ function weightLabel_(g) {
 
 /** Запустить один раз: включает опрос Telegram раз в минуту и создаёт лист «Замовлення». */
 function startPolling() {
-  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  var token = scriptProps_().getProperty('BOT_TOKEN');
   if (!token) throw new Error('Сначала добавьте BOT_TOKEN в Свойства скрипта (Настройки проекта).');
-  if (PropertiesService.getScriptProperties().getProperty('USE_WEBHOOK') === 'true') {
+  if (scriptProps_().getProperty('USE_WEBHOOK') === 'true') {
     throw new Error('Включён webhook (USE_WEBHOOK = true). startPolling удалил бы его, и бот замолчал бы. Если опрос действительно нужен, сначала удалите свойство USE_WEBHOOK.');
   }
   var me = tg_(token, 'getMe', {});
@@ -1396,7 +1433,7 @@ function stopPolling() {
 
 /** Проверка настроек: токен, список админов, пробное сообщение каждому админу. */
 function testBot() {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   if (!token) throw new Error('Нет BOT_TOKEN в Свойствах скрипта.');
   var me = tg_(token, 'getMe', {});
@@ -1423,7 +1460,7 @@ function testBot() {
  * удаляет webhook и включает опрос. Повторный запуск безопасен: всё просто выставится заново.
  */
 function setup() {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   var webapp = props.getProperty('WEBAPP_URL');
   if (!token) throw new Error('Нет BOT_TOKEN в Свойствах скрипта.');
@@ -1480,11 +1517,12 @@ function setup() {
  */
 
 function handleAdmin_(body) {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   if (!token) return { ok: false, error: 'not_configured' };
   var user = verifyInitData_(String(body.initData || ''), token);
   var me = user ? adminAccess_(user.id, props) : null;
+  perfMark_('підпис і права');
   if (!me) return { ok: false, error: 'forbidden' };
   actor_ = { id: String(user.id), name: clean_((user.first_name || '') + (user.username ? ' @' + user.username : ''), 60) || me.name || ROLE_UA[me.role] };
   var mine = { role: me.role, perms: Object.keys(me.perms) };
@@ -1540,9 +1578,11 @@ function handleAdmin_(body) {
 function listOrders_() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
   var stats = { today: { n: 0, sum: 0 }, week: { n: 0, sum: 0 } };
-  if (!sheet || sheet.getLastRow() < 2) return { ok: true, orders: [], stats: stats };
-  var col = orderCols_(sheet);
-  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  if (!sheet) return { ok: true, orders: [], stats: stats };
+  var all = sheet.getDataRange().getValues(); // одно чтение: заголовки и заказы вместе
+  if (all.length < 2) return { ok: true, orders: [], stats: stats };
+  var col = orderCols_(sheet, all[0]);
+  var values = all.slice(1);
   var now = new Date();
   var todayKey = Utilities.formatDate(now, 'Europe/Kiev', 'yyyy-MM-dd');
   var weekAgo = now.getTime() - 7 * 24 * 3600 * 1000;
@@ -1574,8 +1614,9 @@ function listOrders_() {
   return { ok: true, orders: orders, stats: stats };
 }
 
-function productCols_(sheet) {
-  var col = mapHeaders_(sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0], PRODUCT_COLS);
+/** headers — первая строка листа, если лист уже прочитан целиком: тогда второго обращения к таблице нет. */
+function productCols_(sheet, headers) {
+  var col = mapHeaders_(headers || sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0], PRODUCT_COLS);
   ['id', 'nameUa', 'type', 'stock'].forEach(function (k) {
     if (col[k] < 0) throw new Error('В листе «Товари» не найдена колонка: ' + PRODUCT_COLS[k][0]);
   });
@@ -1599,8 +1640,8 @@ function adminProduct_(row, col) {
 /** Товары для админ-панели: только те же клиентские колонки, служебные (закупка, маржа) не читаются. */
 function listProductsAdmin_() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
-  var col = productCols_(sheet);
   var values = sheet.getDataRange().getValues();
+  var col = productCols_(sheet, values[0]);
   var list = [];
   var gone = deletedIdSet_();
   for (var r = 1; r < values.length; r++) {
@@ -1630,12 +1671,11 @@ function updateProduct_(id, patch, create) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName(SHEET_PRODUCTS);
-    var col = productCols_(sheet);
     var values = sheet.getDataRange().getValues();
-    var cats = listCategoriesAdmin_();
+    var col = productCols_(sheet, values[0]);
     var cat = null;
-    if (patch.cat !== undefined) {
-      cats.forEach(function (c) { if (c.ua === patch.cat || c.code === patch.cat) cat = c; });
+    if (patch.cat !== undefined) { // лист «Категорії» читается, только когда категория действительно меняется
+      listCategoriesAdmin_().forEach(function (c) { if (c.ua === patch.cat || c.code === patch.cat) cat = c; });
       if (!cat) return { ok: false, error: 'bad_form' };
     }
     if (patch.t !== undefined && !TYPE_UA[patch.t]) return { ok: false, error: 'bad_form' };
@@ -1674,7 +1714,15 @@ function updateProduct_(id, patch, create) {
       beforeLog = adminProduct_(values[r], col);
     }
 
-    function set(c, value) { if (c >= 0) sheet.getRange(r + 1, c + 1).setValue(value); }
+    // shadow — строка товара в памяти: в неё попадает всё, что пишется в таблицу. По ней собирается ответ,
+    // и перечитывать строку из таблицы после записи не нужно.
+    var shadow = (create ? blank : values[r]).slice();
+    function set(c, value) {
+      if (c < 0) return;
+      sheet.getRange(r + 1, c + 1).setValue(value);
+      while (shadow.length <= c) shadow.push('');
+      shadow[c] = typeof value === 'string' && value.charAt(0) === '\'' ? value.slice(1) : value; // апостроф в начале — «это текст», в ячейке его нет
+    }
     function text(key, c, max) { if (typeof patch[key] === 'string') set(c, safeCell_(clean_(patch[key], max))); }
     if (cat) { set(col.catUa, cat.ua); set(col.catRu, cat.ru); }
     if (patch.t !== undefined) set(col.type, TYPE_UA[patch.t]);
@@ -1724,12 +1772,12 @@ function updateProduct_(id, patch, create) {
     }
     SpreadsheetApp.flush();
     clearCatalogCache_();
-    var fresh = sheet.getRange(r + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    var result = { ok: true, product: adminProduct_(fresh, col) };
+    var result = { ok: true, product: adminProduct_(shadow, col) };
     if (actor_) logProductDiff_(beforeLog, result.product);
   } finally {
     lock.releaseLock();
   }
+  perfMark_('таблиця');
   // Товар снова в наличии — пишем тем, кто просил сообщить. Сбой рассылки правку не отменяет.
   if (patch.stock === true || patch.stock === 1) {
     try { notifyBackInStock_(); } catch (err) { console.error('back in stock: ' + (err && err.stack || err)); }
@@ -1742,7 +1790,7 @@ function updateProduct_(id, patch, create) {
 var PHOTO_FOLDER_NAME = 'PAMIR — фото товарів';
 
 function photoFolder_() {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var id = props.getProperty('PHOTO_FOLDER_ID');
   if (id) {
     try { return DriveApp.getFolderById(id); } catch (err) { /* папку удалили — создадим новую */ }
@@ -1917,7 +1965,7 @@ function isYes_(v) {
 function readSettings_() {
   if (settingsMemo_) return settingsMemo_;
   var out = {};
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   SETTINGS_DEF.forEach(function (d) { out[d[0]] = d[2]; });
   [['address_ua', 'PICKUP_ADDRESS_UA'], ['address_ru', 'PICKUP_ADDRESS_RU'], ['hours_ua', 'PICKUP_HOURS_UA'], ['hours_ru', 'PICKUP_HOURS_RU']]
     .forEach(function (m) { var v = props.getProperty(m[1]); if (v) out[m[0]] = v; });
@@ -2124,7 +2172,7 @@ var MAX_EVENTS_PER_HOUR = 400;
 var EVENTS_KEEP_ROWS = 20000;
 
 function handleEvents_(body) {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   if (!token) return { ok: false, error: 'not_configured' };
   var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
@@ -2238,7 +2286,7 @@ function ensureSubsSheet_() {
 
 /** Клиент нажал «Повідомити, коли з'явиться» у товара, которого нет. */
 function handleNotify_(body) {
-  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  var token = scriptProps_().getProperty('BOT_TOKEN');
   if (!token) return { ok: false, error: 'not_configured' };
   var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
   if (!user) return { ok: false, error: 'bad_auth' };
@@ -2272,7 +2320,7 @@ function handleNotify_(body) {
 
 /** Пишет всем, кто ждал товар, который снова в наличии. Возвращает число отправленных сообщений. */
 function notifyBackInStock_() {
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   var webapp = props.getProperty('WEBAPP_URL');
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SUBS);
@@ -2339,7 +2387,7 @@ function remindRepeat_() {
   var st = readSettings_();
   var days = Math.round(toNum_(st.remind_days));
   if (!(days >= 7)) return 0;
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   var webapp = props.getProperty('WEBAPP_URL');
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
@@ -2476,7 +2524,7 @@ function roleCode_(v) {
 /** Все админы: владелец, строки листа «Адміни» и запасные id из ADMIN_CHAT_IDS. */
 function adminList_(props) {
   if (adminsMemo_) return adminsMemo_;
-  props = props || PropertiesService.getScriptProperties();
+  props = props || scriptProps_();
   var owner = ownerId_(props);
   var list = [];
   var seen = {};
@@ -2575,7 +2623,24 @@ function writeAdminRow_(e) {
 
 /* ------------------------------ Журнал действий ------------------------------ */
 
+/**
+ * Запись в «Журнал». Внутри запроса панели или бота (doPost) записи копятся в logBuffer_ и пишутся одним разом
+ * в самом конце — flushLog_(). Вне запроса (меню, триггеры) строка пишется сразу, как раньше.
+ */
+var logBuffer_ = null;
 function logAction_(action, object, was, now) {
+  function txt(v) { return safeCell_(clean_(v === null || v === undefined ? '' : v, 300)); }
+  var row = [new Date(), txt(actor_ ? actor_.name : 'система'), actor_ ? '\'' + actor_.id : '', txt(action), txt(object), txt(was), txt(now)];
+  if (logBuffer_) logBuffer_.push(row); else writeLogRows_([row]);
+}
+
+function flushLog_() {
+  var rows = logBuffer_;
+  logBuffer_ = null;
+  if (rows && rows.length) writeLogRows_(rows);
+}
+
+function writeLogRows_(rows) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName(SHEET_LOG);
@@ -2585,10 +2650,23 @@ function logAction_(action, object, was, now) {
       sheet.setFrozenRows(1);
       sheet.getRange('A:A').setNumberFormat('dd.MM.yyyy HH:mm');
     }
-    function txt(v) { return safeCell_(clean_(v === null || v === undefined ? '' : v, 300)); }
-    sheet.appendRow([new Date(), txt(actor_ ? actor_.name : 'система'), actor_ ? '\'' + actor_.id : '', txt(action), txt(object), txt(was), txt(now)]);
-    var extra = sheet.getLastRow() - 1 - LOG_KEEP_ROWS;
-    if (extra > 500) sheet.deleteRows(2, extra);
+    var batched = false;
+    if (rows.length > 1) { // несколько строк — одной записью; под блокировкой, чтобы два запроса не заняли одни и те же строки
+      var lock = LockService.getScriptLock();
+      if (lock.tryLock(10000)) {
+        try {
+          sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, LOG_HEAD.length).setValues(rows);
+          batched = true;
+        } finally {
+          lock.releaseLock();
+        }
+      }
+    }
+    if (!batched) rows.forEach(function (row) { sheet.appendRow(row); });
+    if (Math.random() < 0.05) { // журнал не растёт бесконечно; проверять длину при каждой записи незачем
+      var extra = sheet.getLastRow() - 1 - LOG_KEEP_ROWS;
+      if (extra > 500) sheet.deleteRows(2, extra);
+    }
   } catch (err) {
     console.error('log: ' + (err && err.stack || err));
   }
@@ -2651,7 +2729,8 @@ function listAdmins_(props) {
 
 function readInvites_(props) {
   var all = {};
-  try { all = JSON.parse(props.getProperty('ADMIN_INVITES') || '{}') || {}; } catch (err) { all = {}; }
+  // приглашения меняются по схеме «прочитал → изменил → записал», поэтому читаются свежими, мимо памяти запроса
+  try { all = JSON.parse(propRead_(props, 'ADMIN_INVITES', true) || '{}') || {}; } catch (err) { all = {}; }
   var now = Date.now();
   Object.keys(all).forEach(function (code) { if (!(all[code].exp > now)) delete all[code]; });
   return all;
@@ -2980,7 +3059,14 @@ function httpsUrl_(v) {
 }
 
 /** Точки из листа «Точки» (только активные). Листа нет — пустой список, витрина покажет старый адрес из настроек. */
+var pointsMemo_ = null; // лист «Точки» читается один раз за запрос
 function readPoints_() {
+  if (pointsMemo_) return pointsMemo_;
+  pointsMemo_ = readPointsSheet_();
+  return pointsMemo_;
+}
+
+function readPointsSheet_() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_POINTS);
   if (!sheet || sheet.getLastRow() < 2) return [];
   var values = sheet.getDataRange().getValues();
@@ -3271,7 +3357,7 @@ function askReviews_() {
   var st = readSettings_();
   var days = Math.round(toNum_(st.review_days));
   if (!(days >= 1)) return 0;
-  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  var token = scriptProps_().getProperty('BOT_TOKEN');
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
   if (!token || !sheet || sheet.getLastRow() < 2) return 0;
   var col = orderCols_(sheet);
@@ -3508,7 +3594,7 @@ function cartRow_(sheet, uid) {
 
 /** Витрина присылает состав корзины (без цен): [[id, граммы, количество], …]. Пустой список — корзину очистили. */
 function handleCart_(body) {
-  var token = PropertiesService.getScriptProperties().getProperty('BOT_TOKEN');
+  var token = scriptProps_().getProperty('BOT_TOKEN');
   if (!token) return { ok: false, error: 'not_configured' };
   var user = body.initData ? verifyInitData_(String(body.initData), token) : null;
   if (!user) return { ok: false, error: 'bad_auth' };
@@ -3567,7 +3653,7 @@ function remindCarts_() {
   var st = readSettings_();
   var hours = Math.round(toNum_(st.cart_remind_hours));
   if (!(hours >= 1)) return 0;
-  var props = PropertiesService.getScriptProperties();
+  var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   var webapp = props.getProperty('WEBAPP_URL');
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_CARTS);
@@ -3793,7 +3879,7 @@ var NP_API_URL = 'https://api.novaposhta.ua/v2.0/json/';
 var NP_MAX_CALLS_PER_HOUR = 1500;
 
 function npKey_() {
-  return String(PropertiesService.getScriptProperties().getProperty('NP_API_KEY') || '').trim();
+  return String(scriptProps_().getProperty('NP_API_KEY') || '').trim();
 }
 
 /** Запрос к API Новой почты с кэшем. null — модуль выключен или запрос не удался. */
@@ -3958,9 +4044,14 @@ function ensureArchiveSheet_() {
   return sheet;
 }
 
-function deletedIds_(props) {
-  props = props || PropertiesService.getScriptProperties();
-  return String(props.getProperty(PROP_DELETED_IDS) || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+/** fresh = true — мимо памяти запроса: когда значение читают, чтобы тут же изменить и записать. */
+function propRead_(props, key, fresh) {
+  return fresh && typeof props.fresh === 'function' ? props.fresh(key) : props.getProperty(key);
+}
+
+function deletedIds_(props, fresh) {
+  props = props || scriptProps_();
+  return String(propRead_(props, PROP_DELETED_IDS, fresh) || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 }
 
 function deletedIdSet_() {
@@ -3969,23 +4060,23 @@ function deletedIdSet_() {
   return set;
 }
 
-function idMax_(props) {
+function idMax_(props, fresh) {
   var o = {};
-  try { o = JSON.parse(props.getProperty(PROP_ID_MAX) || '{}') || {}; } catch (err) { o = {}; }
+  try { o = JSON.parse(propRead_(props, PROP_ID_MAX, fresh) || '{}') || {}; } catch (err) { o = {}; }
   return o;
 }
 
 /** Запоминает ID удалённого навсегда товара: новый товар такой ID уже не получит. */
 function rememberDeletedId_(id) {
-  var props = PropertiesService.getScriptProperties();
-  var list = deletedIds_(props);
+  var props = scriptProps_();
+  var list = deletedIds_(props, true);
   if (list.indexOf(id) < 0) list.push(id);
   var text = list.join(',');
   while (text.length > 8500 && list.length > 1) { list.shift(); text = list.join(','); } // лимит свойства — 9 КБ; номера всё равно хранит PRODUCT_ID_MAX
   props.setProperty(PROP_DELETED_IDS, text);
   var m = id.match(/^([A-Z0-9]+)-(\d+)$/);
   if (m) {
-    var max = idMax_(props), n = parseInt(m[2], 10);
+    var max = idMax_(props, true), n = parseInt(m[2], 10);
     if (!(max[m[1]] >= n)) { max[m[1]] = n; props.setProperty(PROP_ID_MAX, JSON.stringify(max)); }
   }
 }
@@ -3994,9 +4085,9 @@ function rememberDeletedId_(id) {
 function reservedIdMax_(prefix) {
   var max = 0;
   try {
-    var saved = Number(idMax_(PropertiesService.getScriptProperties())[prefix]) || 0;
+    var saved = Number(idMax_(scriptProps_(), true)[prefix]) || 0;
     max = Math.max(max, saved);
-    deletedIds_().forEach(function (id) {
+    deletedIds_(null, true).forEach(function (id) {
       var d = id.match(/^([A-Z0-9]+)-(\d+)$/);
       if (d && d[1] === prefix) max = Math.max(max, parseInt(d[2], 10));
     });
@@ -4044,8 +4135,8 @@ function archiveProduct_(id) {
   lock.waitLock(20000);
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
-    var col = productCols_(sheet);
     var values = sheet.getDataRange().getValues();
+    var col = productCols_(sheet, values[0]);
     var r = -1;
     for (var i = 1; i < values.length; i++) if (cell_(values[i], col.id) === id) { r = i; break; }
     if (r < 0) return { ok: false, error: 'not_found' };
@@ -4108,8 +4199,8 @@ function restoreProduct_(id) {
     if (r < 0) return { ok: false, error: 'not_found' };
 
     var sheet = ss.getSheetByName(SHEET_PRODUCTS);
-    var col = productCols_(sheet);
     var pValues = sheet.getDataRange().getValues();
+    var col = productCols_(sheet, pValues[0]);
     for (var k = 1; k < pValues.length; k++) if (cell_(pValues[k], col.id) === id) return { ok: false, error: 'exists' }; // товар с таким ID уже есть в «Товари»
     var at = {};
     headerKeys_(pValues[0]).forEach(function (key, j) { at[key] = j; });
@@ -4384,4 +4475,68 @@ function handleChatMember_(m) {
   var status = String(m.new_chat_member.status);
   if (status === 'kicked') markClientBlocked_(m.chat.id, true);
   else if (status === 'member') markClientBlocked_(m.chat.id, false);
+}
+
+/* ======================================================================== */
+/* Скорость админ-панели: свойства скрипта одним обращением, замер времени    */
+/* ======================================================================== */
+
+/**
+ * Свойства скрипта. Все свойства читаются одним обращением (getProperties) и держатся в памяти до конца запроса:
+ * раньше каждое getProperty было отдельным обращением к Google, а за один запрос их набиралось до десятка.
+ * Запись идёт сразу в настоящие свойства. Секреты по-прежнему живут только в Script Properties.
+ */
+var propsMemo_ = null;
+function scriptProps_() {
+  if (propsMemo_) return propsMemo_;
+  var real = PropertiesService.getScriptProperties();
+  var all = null;
+  propsMemo_ = {
+    getProperty: function (key) {
+      if (!all) all = real.getProperties() || {};
+      return Object.prototype.hasOwnProperty.call(all, key) ? all[key] : null;
+    },
+    /** Свежее значение мимо памяти: для «прочитал → изменил → записал» под блокировкой (приглашения, ID удалённых товаров). */
+    fresh: function (key) {
+      var v = real.getProperty(key);
+      if (all) { if (v === null || v === undefined) delete all[key]; else all[key] = v; }
+      return v;
+    },
+    setProperty: function (key, value) {
+      real.setProperty(key, value);
+      if (all) all[key] = String(value);
+      return this;
+    }
+  };
+  return propsMemo_;
+}
+
+/**
+ * Замер времени запроса админ-панели по этапам. Включается свойством скрипта PERF_LOG = 1 (по умолчанию выключен).
+ * Когда включён: строка «PERF …» пишется в журнал выполнений (Apps Script → Executions), а панель получает те же числа
+ * в поле _t и показывает их внизу экрана. В ответе только длительности в миллисекундах, никаких данных.
+ */
+var perf_ = null;
+function perfStart_(label) {
+  var now = Date.now();
+  perf_ = { label: label, t0: now, last: now, marks: [] };
+}
+function perfMark_(name) {
+  if (!perf_) return;
+  var now = Date.now();
+  perf_.marks.push([name, now - perf_.last]);
+  perf_.last = now;
+}
+function perfEnd_(out) {
+  var p = perf_;
+  perf_ = null;
+  if (!p) return;
+  try {
+    if (scriptProps_().getProperty('PERF_LOG') !== '1') return;
+    var total = Date.now() - p.t0;
+    console.log('PERF ' + p.label + ' ' + total + ' ms | ' + p.marks.map(function (m) { return m[0] + ' ' + m[1]; }).join(' | '));
+    if (out && typeof out === 'object') out._t = { total: total, marks: p.marks };
+  } catch (err) {
+    console.warn('perf: ' + err);
+  }
 }

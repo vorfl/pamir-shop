@@ -944,3 +944,10 @@ button.prod__main:active, .ord__head:active { background: var(--surface-sunken);
 .arch__acts--one { grid-template-columns: 1fr; }
 .arch__acts .btn { padding: 0 var(--space-2); font-size: 14px; line-height: 18px; }
 .prod__sub--mark { color: var(--lapis); font-weight: 600; }
+
+/* ---------- Замер времени админ-панели (виден только при PERF_LOG = 1 на сервере) ---------- */
+.perfline {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 70; pointer-events: none;
+  padding: var(--space-1) var(--space-2); background: var(--surface-sunken); color: var(--ink-muted);
+  font-size: 11px; line-height: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-variant-numeric: tabular-nums;
+}
