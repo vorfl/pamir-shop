@@ -1069,5 +1069,201 @@ console.log('Волна 2б · Б2: опт — цены, заявки, зака�
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
 
+console.log('Волна 2б · Б1: рассылка — время по Киеву');
+{
+  const g = fresh();
+  const iso = s => new Date(g.call('kyivToMs_', s)).toISOString().slice(0, 16);
+  ok(iso('2026-11-12T10:30') === '2026-11-12T08:30' && iso('2026-07-01T10:30') === '2026-07-01T07:30', 'зимой Киев = UTC+2, летом UTC+3', [iso('2026-11-12T10:30'), iso('2026-07-01T10:30')]);
+  ok(iso('2027-03-28T02:30') === '2027-03-28T00:30' && iso('2027-03-28T04:30') === '2027-03-28T01:30', 'последнее воскресенье марта: до перевода часов +2, после +3', [iso('2027-03-28T02:30'), iso('2027-03-28T04:30')]);
+  ok(iso('2026-10-25T02:30') === '2026-10-24T23:30' && iso('2026-10-25T04:30') === '2026-10-25T02:30', 'последнее воскресенье октября: до перевода +3, после +2', [iso('2026-10-25T02:30'), iso('2026-10-25T04:30')]);
+  ok(g.call('kyivText_', g.call('kyivToMs_', '2027-03-28T09:15')) === '28.03.2027 09:15' && g.call('kyivText_', g.call('kyivToMs_', '2026-10-25T09:15')) === '25.10.2026 09:15', 'время показывается обратно тем же киевским');
+  ok(g.call('kyivToMs_', 'завтра') === 0 && g.call('kyivToMs_', '') === 0, 'непонятное время не принимается');
+}
+
+console.log('Волна 2б · Б1: рассылка');
+{
+  const g = fresh();
+  const secret = /СЕКРЕТ|do-smaku|33%/;
+  const M = () => g.sheets['Розсилки'].rows, C = () => g.sheets['Клієнти'].rows;
+  const mrow = id => M().find(r => r[0] === id);
+  const crow = uid => C().find(r => String(r[0]) === String(uid));
+  const ccol = name => C()[0].indexOf(name);
+  const mailTo = (uid, from) => g.sent.slice(from || 0).filter(m => (m.method === 'sendMessage' || m.method === 'sendPhoto') && String(m.payload.chat_id) === String(uid) &&
+    m.payload.reply_markup && JSON.stringify(m.payload.reply_markup).indexOf('"mu"') >= 0);
+  const kyivIn = min => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv', dateStyle: 'short', timeStyle: 'short' }).format(new Date(Date.now() + min * 60000)).replace(' ', 'T');
+  addAdmin(g, 820, 'manager', ['mail']);
+  addAdmin(g, 821, 'manager', ['st']);
+  g.sheets['Клієнти'].rows.splice(1); // админы нажимали /start и тоже записаны как клиенты; для проверки начинаем с пустого листа
+  const draft = { ua: 'Свіжа поставка 🌿\nКурага вже на прилавку й у магазині.', ru: 'Свежая поставка 🌿\nКурага уже на прилавке и в магазине.', photo: '', btn: { k: 'prod', v: 'dry-039' }, seg: { k: 'all', v: '' } };
+
+  // права
+  ok(adm(g, 821, 'admin.mail').error === 'no_perm' && adm(g, 821, 'admin.mailSave', draft).error === 'no_perm' && adm(g, 821, 'admin.mailSend', { id: 'M-0001' }).error === 'no_perm' &&
+    adm(g, 821, 'admin.mailTest', { id: 'M-0001' }).error === 'no_perm' && adm(g, 5555, 'admin.mailSave', draft).error === 'forbidden' && !g.sheets['Розсилки'], 'без права «Розсилка» рассылку не создать и не отправить даже прямым запросом');
+  ok(adm(g, 820, 'admin.mailSave', { ua: '', ru: '' }).error === 'bad_form' && adm(g, 820, 'admin.mailSave', Object.assign({}, draft, { btn: { k: 'prod', v: '' } })).error === 'bad_form' &&
+    adm(g, 820, 'admin.mailSave', Object.assign({}, draft, { photo: 'ftp://x' })).error === 'bad_photo' && adm(g, 820, 'admin.mailSave', Object.assign({}, draft, { photo: 'https://img.test/a.jpg', ua: 'я'.repeat(1001) })).error === 'too_long',
+    'пустой текст, кнопка без товара, неверное фото и слишком длинная подпись к фото отклоняются');
+
+  // черновик при пустом листе «Клієнти»: 0 получателей — не ошибка
+  const s1 = adm(g, 820, 'admin.mailSave', draft);
+  ok(s1.ok && s1.mail.id === 'M-0001' && s1.mail.status === 'створена' && s1.n === 0 && s1.mail.tested === 0 && s1.mail.btn.v === 'DRY-039', 'черновик создан; получателей 0 — это не ошибка', s1);
+  ok(mrow('M-0001')[2].indexOf('Тест820') >= 0 && mrow('M-0001')[4] === 'усі клієнти' && mrow('M-0001')[8] === 'Відкрити товар: DRY-039', 'в листе «Розсилки»: кто создал, сегмент, кнопка', mrow('M-0001').slice(0, 9));
+  ok(adm(g, 820, 'admin.mailSend', { id: 'M-0001' }).error === 'need_test', 'без шага «Надіслати тільки мені» отправить нельзя (проверка на сервере)');
+  const before = g.sent.length;
+  const t1 = adm(g, 820, 'admin.mailTest', { id: 'M-0001' });
+  const mine = mailTo(820, before);
+  ok(t1.ok && t1.sent === 2 && mine.length === 2 && /Свіжа поставка/.test(mine[0].payload.text) && /Свежая поставка/.test(mine[1].payload.text), '«тільки мені»: автор получил оба языка', mine.map(m => m.payload.text));
+  const kb = mine[0].payload.reply_markup.inline_keyboard;
+  ok(kb.length === 2 && /Відкрити товар/.test(kb[0][0].text) && /[?&]m=M-0001/.test(kb[0][0].web_app.url) && /[?&]p=DRY-039/.test(kb[0][0].web_app.url) && kb[1][0].callback_data === 'mu' && kb[1][0].text === 'Не надсилати мені розсилки',
+    'в сообщении кнопка «Відкрити товар» и «Не надсилати мені розсилки»', kb);
+  ok(adm(g, 820, 'admin.mail').mails[0].tested === 1 && !crow(820), 'проверка на себе отмечена; сам автор в получатели из-за неё не попал');
+  const none = adm(g, 820, 'admin.mailSend', { id: 'M-0001' });
+  ok(none.error === 'no_recipients' && mrow('M-0001')[3] === 'створена', 'получателей нет — «Немає отримувачів», рассылка не запускается', none);
+
+  // клиенты: 811 и 813 — UA, 812 — RU (язык из заказа), 814 отписался, 815 заблокировал бота
+  [811, 813, 814, 815].forEach(u => tgMsg(g, u, '/start'));
+  order(g, U(812), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { lang: 'ru' });
+  tgPress(g, 814, 'mu');
+  ok(crow(814)[ccol('Відписка')] === 'так' && /Більше не надсилаємо розсилки/.test(lastTo(g, 814).payload.text), '«Не надсилати мені розсилки» действует сразу: отметка в «Клієнти» и ответ клиенту');
+  crow(815)[ccol('Заблокував бота')] = 'так';
+  ok(adm(g, 820, 'admin.mailCount', { seg: { k: 'all' } }).n === 3, 'получателей 3: отписавшийся и заблокировавший не считаются', adm(g, 820, 'admin.mailCount', { seg: { k: 'all' } }));
+
+  // изменили текст после проверки — проверять заново
+  const s2 = adm(g, 820, 'admin.mailSave', Object.assign({}, draft, { id: 'M-0001', ru: '' }));
+  ok(s2.ok && s2.mail.tested === 0 && s2.n === 3 && adm(g, 820, 'admin.mailSend', { id: 'M-0001' }).error === 'need_test', 'изменили текст после «тільки мені» — нужно проверить снова');
+  adm(g, 820, 'admin.mailTest', { id: 'M-0001' });
+  const at0 = g.sent.length;
+  const go = adm(g, 820, 'admin.mailSend', { id: 'M-0001' });
+  ok(go.ok && go.n === 3 && go.mail.status === 'завершена' && go.mail.sent === 3 && go.mail.total === 3 && go.trigger === 1 && g.triggers.indexOf('mailJob') >= 0, 'рассылка ушла: 3 из 3, статус «завершена», триггер mailJob включён', go);
+  ok([811, 812, 813].every(u => mailTo(u, at0).length === 1) && mailTo(814, at0).length === 0 && mailTo(815, at0).length === 0, 'каждый получил одно сообщение; отписавшийся и заблокировавший — ничего');
+  ok(/Свіжа поставка/.test(mailTo(812, at0)[0].payload.text) && /Не присылать мне рассылки/.test(JSON.stringify(mailTo(812, at0)[0].payload.reply_markup)), 'у русскоязычного клиента пустой текст RU заменён вторым языком, кнопка отписки — на его языке');
+  ok(crow(811)[ccol('Остання розсилка')] === 'M-0001' && isDate(crow(811)[ccol('Дата останньої розсилки')]) && mrow('M-0001')[10].indexOf('Тест820') >= 0, 'у получателя отметка рассылки; в листе — кто отправил');
+  ok(logRows(g, 'Розсилка: створено').length === 1 && logRows(g, 'Розсилка: надіслано').some(r => /отримувачів: 3/.test(r[6])) && logRows(g, 'Розсилка: завершено').some(r => /надіслано: 3/.test(r[6])), 'в «Журнале»: кто создал, кто отправил, сколько получателей');
+  ok(adm(g, 820, 'admin.mailSave', Object.assign({}, draft, { id: 'M-0001' })).error === 'locked' && adm(g, 820, 'admin.mailSend', { id: 'M-0001' }).error === 'locked', 'отправленную рассылку нельзя изменить или отправить второй раз');
+  ok(!secret.test(JSON.stringify(g.sent)), 'служебные колонки в рассылку не попадают');
+  // отписка не трогает сообщения о заказах
+  const o814 = g.sent.length;
+  order(g, U(814), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+  ok(g.sent.slice(o814).some(m => String(m.payload.chat_id) === '814' && /Замовлення P-/.test(m.payload.text)), 'отписавшийся по-прежнему получает сообщения о своих заказах');
+
+  // лимит частоты: 1 рассылка в 7 дней на человека
+  const next = (extra) => { const s = adm(g, 820, 'admin.mailSave', Object.assign({}, draft, extra || {})); adm(g, 820, 'admin.mailTest', { id: s.mail.id }); return s.mail.id; };
+  const m2 = next();
+  const lim = adm(g, 820, 'admin.mailSend', { id: m2 });
+  ok(lim.error === 'no_recipients' && lim.skip === 3, 'через минуту вторая рассылка тем же людям не уходит: лимит частоты, пропущено 3', lim);
+  crow(811)[ccol('Дата останньої розсилки')] = new Date(Date.now() - 8 * 24 * 3600e3);
+  const at2 = g.sent.length;
+  const lim2 = adm(g, 820, 'admin.mailSend', { id: m2 });
+  ok(lim2.ok && lim2.n === 1 && lim2.skip === 2 && mailTo(811, at2).length === 1 && mailTo(812, at2).length === 0 && mrow(m2)[15] === 2, 'прошло 8 дней у одного — получил только он; пропущенные видны в статистике', [lim2.n, lim2.skip, mrow(m2)[15]]);
+  settings(g, { mail_every_days: '0' });
+  ok(adm(g, 820, 'admin.mailCount', { seg: { k: 'all' } }).n === 3, 'лимит частоты настраивается (0 — без ограничения)');
+
+  // отложенная отправка и отмена до старта
+  const m3 = next();
+  ok(adm(g, 820, 'admin.mailSend', { id: m3, at: kyivIn(-30) }).error === 'bad_time' && adm(g, 820, 'admin.mailSend', { id: m3, at: 'завтра' }).error === 'bad_time', 'время в прошлом и непонятное время не принимаются');
+  const when = kyivIn(90), at3 = g.sent.length;
+  const plan = adm(g, 820, 'admin.mailSend', { id: m3, at: when });
+  ok(plan.ok && plan.mail.status === 'запланована' && plan.at === when.slice(8, 10) + '.' + when.slice(5, 7) + '.' + when.slice(0, 4) + ' ' + when.slice(11) && mrow(m3)[9] === plan.at, 'рассылка запланирована, время показано по Киеву', plan);
+  g.call('mailJob');
+  ok(mailTo(811, at3).length === 0 && mrow(m3)[3] === 'запланована', 'до назначенного времени триггер ничего не отправляет');
+  const cancel = adm(g, 820, 'admin.mailCancel', { id: m3 });
+  const svc3 = JSON.parse(mrow(m3)[18]); svc3.at = Date.now() - 1000; mrow(m3)[18] = JSON.stringify(svc3);
+  g.call('mailJob');
+  ok(cancel.ok && cancel.mail.status === 'скасована' && mailTo(811, at3).length === 0 && logRows(g, 'Розсилка: скасовано').length === 1, 'отмена до старта: рассылка не уходит даже после назначенного времени');
+  const m4 = next();
+  adm(g, 820, 'admin.mailSend', { id: m4, at: kyivIn(90) });
+  const svc4 = JSON.parse(mrow(m4)[18]); svc4.at = Date.now() - 1000; mrow(m4)[18] = JSON.stringify(svc4);
+  const at4 = g.sent.length;
+  g.call('mailJob');
+  ok(mrow(m4)[3] === 'завершена' && [811, 812, 813].every(u => mailTo(u, at4).length === 1), 'назначенное время пришло — триггер отправил рассылку');
+
+  // порции и обрыв: без дублей
+  for (let u = 831; u <= 836; u++) tgMsg(g, u, '/start');
+  const m5 = next({ seg: { k: 'all', v: '' } });
+  adm(g, 820, 'admin.mailSend', { id: m5, at: kyivIn(90) });
+  const svc5 = JSON.parse(mrow(m5)[18]); svc5.at = Date.now() - 1000; mrow(m5)[18] = JSON.stringify(svc5);
+  const at5 = g.sent.length, token = g.props.BOT_TOKEN;
+  const all9 = [811, 812, 813, 831, 832, 833, 834, 835, 836];
+  ok(g.call('mailRun_', token, 4, 60000) === 4 && mrow(m5)[3] === 'йде' && mrow(m5)[12] === 4, 'первая порция: 4 сообщения, статус «йде»', mrow(m5).slice(3, 13));
+  g.cache['mail_run'] = '1'; // другая порция ещё работает
+  ok(g.call('mailRun_', token, 4, 60000) === 0, 'две порции одновременно не идут');
+  delete g.cache['mail_run'];
+  // обрыв: отметка получателю уже стоит, а запуск упал до отправки — после продолжения дубля нет
+  const realFlush = g.sandbox.SpreadsheetApp.flush;
+  let flushes = 0, crashed = false;
+  g.sandbox.SpreadsheetApp.flush = () => { if (++flushes === 2) throw new Error('обрив запуску'); };
+  try { g.call('mailRun_', token, 4, 60000); } catch (e) { crashed = true; }
+  g.sandbox.SpreadsheetApp.flush = realFlush;
+  ok(crashed && !g.cache['mail_run'], 'запуск оборвался посреди порции; флажок «порция идёт» снят');
+  g.call('mailRun_', token, 4, 60000);
+  g.call('mailRun_', token, 4, 60000);
+  const got = all9.map(u => mailTo(u, at5).length);
+  ok(mrow(m5)[3] === 'завершена' && got.every(n => n <= 1) && got.filter(n => n === 1).length === 8, 'после обрыва рассылка продолжилась с того же места: никто не получил два сообщения (тот, на ком оборвалось, не получил ни одного)', got);
+  ok(all9.every(u => crow(u)[ccol('Остання розсилка')] === m5), 'у каждого получателя отметка этой рассылки');
+
+  // 403 и 429
+  const m6 = next();
+  adm(g, 820, 'admin.mailSend', { id: m6, at: kyivIn(90) });
+  const svc6 = JSON.parse(mrow(m6)[18]); svc6.at = Date.now() - 1000; mrow(m6)[18] = JSON.stringify(svc6);
+  let hits = 0;
+  g.setTelegramFail((method, p) => {
+    if (String(p.chat_id) === '831') return { ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' };
+    if (String(p.chat_id) === '832' && hits++ === 0) return { ok: false, error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 1 } };
+    if (String(p.chat_id) === '834') return { ok: false, error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 120 } };
+    if (String(p.chat_id) === '835') return { ok: false, error_code: 400, description: 'Bad Request' };
+    return null;
+  });
+  const at6 = g.sent.length;
+  g.call('mailRun_', token, 50, 60000);
+  ok(crow(831)[ccol('Заблокував бота')] === 'так' && mrow(m6)[14] === 1, '403 — клиент отмечен «Заблокував бота» и посчитан в блокировках', mrow(m6).slice(11, 16));
+  ok(hits === 2 && mailTo(832, at6).length === 2, '429 с коротким ожиданием: подождали retry_after и отправили');
+  ok(mrow(m6)[3] === 'йде' && crow(834)[ccol('Остання розсилка')] !== m6 && JSON.parse(mrow(m6)[18]).wait > Date.now(), '429 с долгим ожиданием: порция остановлена, отметка снята, продолжим позже', mrow(m6).slice(3, 4));
+  g.call('mailRun_', token, 50, 60000);
+  ok(mrow(m6)[3] === 'йде', 'пока Telegram просит ждать, следующая порция не начинается');
+  g.setTelegramFail((method, p) => String(p.chat_id) === '835' ? { ok: false, error_code: 400, description: 'Bad Request' } : null);
+  const w6 = JSON.parse(mrow(m6)[18]); w6.wait = Date.now() - 1; mrow(m6)[18] = JSON.stringify(w6);
+  g.call('mailRun_', token, 50, 60000);
+  g.setTelegramFail(false);
+  ok(mrow(m6)[3] === 'завершена' && mrow(m6)[13] === 1 && mrow(m6)[14] === 1 && mrow(m6)[12] === 7 && mailTo(834, at6).length === 2, 'после ожидания рассылка завершена: отправлено 7, ошибок 1, блокировок 1', mrow(m6).slice(11, 16));
+  const m7 = next();
+  ok(adm(g, 820, 'admin.mailCount', { seg: { k: 'all' } }).n === 8, 'заблокировавшему бота следующая рассылка не уйдёт', adm(g, 820, 'admin.mailCount', { seg: { k: 'all' } }));
+
+  // сегменты
+  [501, 502, 503, 777].forEach(u => tgMsg(g, u, '/start'));
+  const cnt = seg => adm(g, 820, 'admin.mailCount', { seg }).n;
+  ok(cnt({ k: 'prod', v: 'dry-039' }) === 3 && cnt({ k: 'cat', v: 'NUT' }) >= 4 && cnt({ k: 'cat', v: 'SPC' }) === 0, 'сегменты «купували товар» и «купували категорію» — по настоящим заказам', [cnt({ k: 'prod', v: 'DRY-039' }), cnt({ k: 'cat', v: 'NUT' })]);
+  const O = g.sheets['Замовлення'].rows; O.filter(r => String(r[3]) === '777').forEach(r => { r[1] = new Date(Date.now() - 40 * 24 * 3600e3); });
+  ok(cnt({ k: 'idle' }) === 1, '«не замовляли 30+ днів»: только тот, кто заказывал раньше и не заказывал последние 30 дней', cnt({ k: 'idle' }));
+  g.post({ action: 'wh.apply', initData: g.initData(U(501)), type: 'cafe', name: 'Кафе', city: 'Харків', contact: 'Ірина', phone: '+380501112233', lang: 'ua' });
+  adm(g, 900, 'admin.whDecide', { id: 'W-0001', d: 'a' });
+  g.post({ action: 'notify', initData: g.initData(U(502)), id: 'NUT-008', lang: 'ua' });
+  ok(cnt({ k: 'wh' }) === 1 && cnt({ k: 'sub', v: 'NUT-008' }) === 1 && cnt({ k: 'sub', v: 'NUT-001' }) === 0, 'сегменты «оптовики» и «чекають на товар»');
+  const cat = adm(g, 820, 'admin.mailSave', { ua: 'Спеції', ru: '', btn: { k: 'cat', v: 'spc' }, seg: { k: 'cat', v: 'spc' }, photo: 'https://img.test/spc.jpg' });
+  const bc = g.sent.length;
+  adm(g, 820, 'admin.mailTest', { id: cat.mail.id });
+  const ph = g.sent.slice(bc).filter(m => m.method === 'sendPhoto')[0];
+  ok(cat.ok && cat.n === 0 && ph && ph.payload.caption === 'Спеції' && /[?&]cat=SPC/.test(ph.payload.reply_markup.inline_keyboard[0][0].web_app.url) && /Відкрити категорію/.test(ph.payload.reply_markup.inline_keyboard[0][0].text),
+    'сегмент «купували категорію Спеції», фото и кнопка «Відкрити категорію»', ph && ph.payload);
+  g.setTelegramFail((method) => method === 'sendPhoto' ? { ok: false, error_code: 400, description: 'Bad Request: wrong file identifier' } : null);
+  const badPhoto = adm(g, 820, 'admin.mailTest', { id: cat.mail.id });
+  g.setTelegramFail(false);
+  ok(badPhoto.error === 'send_failed' && /wrong file identifier/.test(badPhoto.why), 'неверный код фото виден уже на шаге «тільки мені»', badPhoto);
+
+  // статистика: нажали кнопку, заказали за 3 дня
+  g.post({ action: 'ev', initData: g.initData(U(811)), sid: 's', events: [{ e: 'mail', id: m6, t: Date.now() }, { e: 'open', t: Date.now() }] });
+  g.post({ action: 'ev', initData: g.initData(U(811)), sid: 's2', events: [{ e: 'mail', id: m6, t: Date.now() }] });
+  g.clearCache();
+  order(g, U(812), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+  g.call('mailFreezeStats_');
+  ok(mrow(m6)[16] === 1 && mrow(m6)[17] === 1, 'статистика: нажали кнопку — 1 человек, заказали за 3 дня — 1', mrow(m6).slice(11, 18));
+  const list = adm(g, 820, 'admin.mail');
+  ok(list.ok && list.mails.length === M().length - 1 && list.mails.find(x => x.id === m6).clicks === 1 && list.every === 0 && list.trigger === 1 && !secret.test(JSON.stringify(list)), 'панель: список рассылок со статусами и числами');
+  g.call('menuDailyOn');
+  ok(g.triggers.filter(t => t === 'mailJob').length === 1, 'меню «Увімкнути щоденні повідомлення» ставит триггер рассылки один раз', g.triggers);
+  g.call('menuDailyOff');
+  ok(g.triggers.indexOf('mailJob') < 0, 'меню «Вимкнути…» снимает и триггер рассылки');
+  ok(/Розсилки/.test(fresh().call('setupWave2b').join()), 'меню «Етап 8.3» создаёт лист «Розсилки»');
+  ok(g.sandbox.__errors.filter(e => !/обрив запуску/.test(e)).length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

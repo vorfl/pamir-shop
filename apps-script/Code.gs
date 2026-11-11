@@ -2534,7 +2534,7 @@ function hourlyJob() {
 
 function menuDailyOff() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob') ScriptApp.deleteTrigger(t);
+    if (t.getHandlerFunction() === 'dailyJob' || t.getHandlerFunction() === 'hourlyJob' || t.getHandlerFunction() === 'mailJob') ScriptApp.deleteTrigger(t);
   });
   try { SpreadsheetApp.getUi().alert('Щоденні повідомлення вимкнено.'); } catch (err) { /* запуск из редактора */ }
 }
