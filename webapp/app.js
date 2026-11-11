@@ -1148,6 +1148,10 @@
   function renderSheet() {
     var s = state.sheet;
     if (s.kind === 'filter') { el.sheet.innerHTML = filterSheetHtml(); return; }
+    if (s.kind === 'confirm') { // подтверждение рисуется один раз: фоновое обновление каталога не должно сбрасывать его кнопки
+      if (!s.drawn) { el.sheet.innerHTML = confirmSheetHtml(s.o); s.drawn = true; }
+      return;
+    }
     var p = state.catalog && state.catalog.byId[s.id];
     if (!p) { closeSheet(); return; }
     if (p.t === 'w' && s.vi >= p.v.length) s.vi = 0;
@@ -1543,9 +1547,9 @@
   function goBack() {
     if (state.sheet) { closeSheet(); return; }
     if (state.view === 'checkout') { readForm(); go('cart'); return; }
-    if (state.view === 'admin' && (adm.edit || adm.catEdit || adm.salesOpen || adm.admEdit || adm.logOpen)) {
+    if (state.view === 'admin' && (adm.edit || adm.catEdit || adm.salesOpen || adm.admEdit || adm.logOpen || adm.archOpen)) {
       var reload = !!adm.invite;
-      adm.edit = ''; adm.catEdit = ''; adm.salesOpen = false; adm.admEdit = ''; adm.invite = null; adm.logOpen = false;
+      adm.edit = ''; adm.catEdit = ''; adm.salesOpen = false; adm.admEdit = ''; adm.invite = null; adm.logOpen = false; adm.archOpen = false;
       renderPage();
       if (reload) loadAdmin(false);
       return;
@@ -2136,10 +2140,11 @@
     var order = null;
     (my.list || []).forEach(function (o) { if (o.num === num) order = o; });
     if (!order || !order.i) return;
-    var added = 0;
+    var added = 0, gone = 0; // gone — товаров больше нет в магазине (в архиве или удалены): их пропускаем
     order.i.forEach(function (it) {
       var id = String(it[0]), g = Number(it[1]) || 0, q = Math.max(1, Math.min(MAX_QTY, Math.floor(Number(it[2])) || 1));
       var p = product(id);
+      if (!p) gone++;
       var price = unitPrice(p, g);
       if (!(price > 0)) return;
       var line = null;
@@ -2148,11 +2153,12 @@
       else state.cart.i.push({ id: id, g: g, q: q, pr: price });
       added++;
     });
-    if (!added) { toast(t('repeatNone')); haptic('error'); return; }
+    if (!added) { toast(t(gone === order.i.length ? 'repeatGoneAll' : 'repeatNone')); haptic('error'); return; }
     track('repeat', num, added);
     saveCart();
     haptic('success');
-    state.cartNotice = added < order.i.length ? t('repeatPart').replace('{a}', added).replace('{b}', order.i.length) : t('repeatOk');
+    state.cartNotice = added === order.i.length ? t('repeatOk')
+      : (gone ? t('repeatGone') + ' ' : '') + t(gone === order.i.length - added ? 'repeatAdded' : 'repeatPart').replace('{a}', added).replace('{b}', order.i.length);
     renderMain();
     go('cart');
     state.cartNoticeInfo = true; // это подсказка, а не ошибка
@@ -2174,7 +2180,8 @@
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
     edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false, sales: null, salesOpen: false,
     me: null, admins: null, invites: null, permList: null, admEdit: '', invite: null, logOpen: false, log: null, reviews: null, pending: {},
-    pp: 1, pcat: '', pf: { out: false, hidden: false, nophoto: false } }; // товары в панели: страница, категория, фильтры
+    pp: 1, pcat: '', pf: { out: false, hidden: false, nophoto: false },
+    archOpen: false, arch: null, archErr: false, aq: '', ap: 1 }; // экран «Архів» // товары в панели: страница, категория, фильтры
 
   /** Есть ли у меня право. Пока сервер не прислал роль (или бэкенд ещё старый) — показываем всё: решает всё равно сервер. */
   function can(perm) { return !adm.me || adm.me.perms.indexOf(perm) >= 0; }
@@ -2229,6 +2236,7 @@
     if (adm.catEdit) return html + categoryFormHtml();
     if (adm.salesOpen) return html + salesHtml();
     if (adm.logOpen) return html + logHtml();
+    if (adm.archOpen) return html + archiveHtml();
     if (adm.admEdit) return html + adminFormHtml();
     if (!adminTabs().some(function (tab) { return tab[0] === adm.tab; })) adm.tab = 'orders';
     html += '<div class="tabs" role="group">' + adminTabs().map(function (tab) {
@@ -2247,7 +2255,8 @@
     } else if (adm.tab === 'products') {
       html += (can('text') && can('price') && can('stock') ? '<button type="button" class="btn btn--primary btn--block" data-edit="+">' + icon('plus') + esc(t('admAdd')) + '</button>' : '') +
         '<input class="input" id="admPQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchP')) + '" value="' + esc(adm.pq) + '">' +
-        '<div id="admPChips">' + productChipsHtml() + '</div>';
+        '<div id="admPChips">' + productChipsHtml() + '</div>' +
+        (can('text') ? '<button type="button" class="btn btn--block" data-action="adm-arch">' + esc(t('archTitle')) + '</button>' : '');
     } else if (adm.tab === 'cats') {
       html += '<button type="button" class="btn btn--primary btn--block" data-cat="+">' + icon('plus') + esc(t('admAddCat')) + '</button>';
     } else if (adm.tab === 'admins') {
@@ -2478,7 +2487,8 @@
         (p.img ? '<button type="button" class="btn btn--block" data-action="adm-photo-del">' + esc(t('admPhotoDel')) + '</button>' : '') : '') +
         '<p class="field__hint" id="photoMsg"></p></div></div>';
     var lockedNote = Object.keys(PATCH_PERM).some(function (k) { return !can(PATCH_PERM[k]); }) ? '<p class="info info__muted">' + esc(t('admLocked')) + '</p>' : '';
-    return '<form class="form" id="admForm" novalidate><p class="label">' + esc(isNew ? t('admNew') : p.id) + '</p>' + FORM_ERR + lockedNote + photo +
+    return '<form class="form" id="admForm" novalidate><p class="label">' + esc(isNew ? t('admNew') : p.id) + '</p>' + FORM_ERR + lockedNote +
+      (p.reused ? '<p class="note note--out">' + esc(tf('archReused', { id: p.id })) + '</p>' : '') + photo +
       fSelect('cat', t('admCat'), p.cat, cats) +
       fSelect('t', t('admType'), p.t, [['w', t('admTypeW')], ['p', t('admTypeP')], ['u', t('admTypeU')]]) +
       fRow('ua', t('admNameUa'), p.ua, 'type="text" maxlength="120"') +
@@ -2495,7 +2505,9 @@
       fCheck('stock', t('admStock'), p.stock) + fCheck('hidden', t('admHidden'), p.hidden) + saveBtn() +
       (isNew ? '' : '<div class="field"><label class="label" for="a-link">' + esc(t('admLink')) + '</label>' +
         '<input class="input" id="a-link" type="text" readonly value="' + esc(productLink(p.id)) + '">' +
-        '<button type="button" class="btn btn--block" data-action="adm-link">' + esc(t('admLinkCopy')) + '</button></div>') + '</form>';
+        '<button type="button" class="btn btn--block" data-action="adm-link">' + esc(t('admLinkCopy')) + '</button></div>') +
+      (!isNew && can('text') ? '<div class="danger"><button type="button" class="btn btn--ghost-danger btn--block" data-action="adm-archive">' + icon('trash-2') + esc(t('archBtn')) + '</button>' +
+        '<p class="field__hint">' + esc(t('archHint')) + '</p></div>' : '') + '</form>';
   }
 
   /** Ссылка для постов. С привязанным Mini App (cfg.APP) открывает товар сразу, без него — через кнопку в чате бота. */
@@ -2640,7 +2652,8 @@
       fRow('cua', t('admCatUa'), c.ua, 'type="text" maxlength="40"') +
       fRow('cru', t('admCatRu'), c.ru, 'type="text" maxlength="40"') +
       fSelect('icon', t('admCatIcon'), c.icon, [['', '—']].concat(CAT_ICONS.map(function (i) { return [i, t('ico_' + i)]; }))) +
-      fRow('order', t('admCatOrder'), c.order === 999 ? '' : c.order, 'type="text" inputmode="numeric" maxlength="3"') + saveBtn() + '</form>';
+      fRow('order', t('admCatOrder'), c.order === 999 ? '' : c.order, 'type="text" inputmode="numeric" maxlength="3"') + saveBtn() +
+      (!isNew && can('cats') ? '<div class="danger"><button type="button" class="btn btn--ghost-danger btn--block" data-action="adm-cat-del">' + icon('trash-2') + esc(t('catDelBtn')) + '</button></div>' : '') + '</form>';
   }
 
   function saveCategoryForm() {
@@ -2681,6 +2694,7 @@
       var mine = a.id === myId();
       var inner = '<span class="prod__name">' + esc(adminTitle(a)) + '</span><span class="prod__sub">' + esc(roleLabel(a.role)) +
         (mine ? ' · ' + esc(t('admYou')) : '') + (a.active ? '' : ' · ' + esc(t('admOffTag'))) + (a.notify ? '' : ' · ' + esc(t('admNoNotify'))) + '</span>' +
+        (a.src === 'prop' ? '<span class="prod__sub prod__sub--mark">' + esc(t('admFromProps')) + '</span>' : '') +
         '<span class="prod__sub">' + esc(permNames(a)) + '</span>';
       return '<li class="prod">' + (a.role === 'owner' || mine ? '<div class="prod__main">' + inner + '</div>'
         : '<button type="button" class="prod__main" data-adm="' + esc(a.id) + '">' + inner + '</button>') + '</li>';
@@ -2714,7 +2728,10 @@
           (can(p[0]) ? '' : ' disabled') + '><span>' + esc(p[1]) + '</span></label>';
       }).join('') + '</div>' +
       fCheck('notify', t('admNotify'), a.notify) + (isNew ? '' : fCheck('active', t('admActive'), a.active)) +
-      (isNew ? '<button type="button" class="btn btn--primary btn--block" data-action="adm-invite">' + esc(t('admInviteMake')) + '</button>' : saveBtn()) + '</form>';
+      (isNew ? '<button type="button" class="btn btn--primary btn--block" data-action="adm-invite">' + esc(t('admInviteMake')) + '</button>' : saveBtn()) +
+      (isNew ? '' : a.src === 'prop'
+        ? '<p class="info">' + esc(t('admFromProps')) + '. ' + esc(t('admPropsHow')) + '</p>'
+        : '<div class="danger"><button type="button" class="btn btn--ghost-danger btn--block" data-action="adm-admin-del">' + icon('trash-2') + esc(t('admDelBtn')) + '</button></div>') + '</form>';
   }
 
   function adminFormValues() {
@@ -2835,7 +2852,9 @@
     }
     var pg = e.target.closest('[data-page]');
     if (pg) {
-      if (!pg.disabled) { adm.pp = Number(pg.getAttribute('data-page')); renderAdminList(); scrollToList(document.getElementById('admList')); }
+      if (pg.disabled) return true;
+      if (adm.archOpen) { adm.ap = Number(pg.getAttribute('data-page')); renderArchiveList(); scrollToList(document.getElementById('archList')); }
+      else { adm.pp = Number(pg.getAttribute('data-page')); renderAdminList(); scrollToList(document.getElementById('admList')); }
       return true;
     }
     var ord = e.target.closest('[data-ord]');
@@ -2884,6 +2903,14 @@
     if (name === 'adm-invite') { createInvite(); return true; }
     if (name === 'adm-invite-done') { goBack(); return true; }
     if (name === 'adm-log') { loadLog(); return true; }
+    if (name === 'adm-arch') { loadArchive(); return true; }
+    if (name === 'adm-archive') { askArchive(adminProduct(adm.edit)); return true; }
+    if (name === 'adm-cat-del') { askDeleteCategory(act); return true; }
+    if (name === 'adm-admin-del') { askDeleteAdmin(adminEntry(adm.admEdit)); return true; }
+    var ar = e.target.closest('[data-arch-restore]');
+    if (ar) { if (!ar.disabled) restoreFromArchive(ar.getAttribute('data-arch-restore'), ar); return true; }
+    var ap = e.target.closest('[data-arch-purge]');
+    if (ap) { if (!ap.disabled) askPurge(ap.getAttribute('data-arch-purge')); return true; }
     if (name === 'adm-link') {
       var linkInput = document.getElementById('a-link');
       if (linkInput) copyText(linkInput.value, linkInput).then(function (ok) { toast(t(ok ? 'admLinkCopied' : 'admLinkFail')); });
@@ -2980,6 +3007,7 @@
       var input = e.target;
       if (input.id === 'admQ') { adm.q = input.value; renderAdminList(); return; }
       if (input.id === 'admPQ') { adm.pq = input.value; adm.pp = 1; renderAdminList(); return; }
+      if (input.id === 'admAQ') { adm.aq = input.value; adm.ap = 1; renderArchiveList(); return; }
       if (!input.name || state.view !== 'checkout') return;
       if (input.name === 'phone') input.value = formatPhone(input.value);
       if (input.getAttribute('aria-invalid')) setError(input.name, '');
@@ -3799,11 +3827,49 @@
     ua: {
       admSwFail: 'Не вдалося зберегти — повернули, як було.',
       admFltOut: 'Немає в наявності', admFltHidden: 'Приховані', admFltNoPhoto: 'Без фото',
+      cfCancel: 'Скасувати', repeatGone: 'Деяких товарів більше немає.', repeatGoneAll: 'Цих товарів більше немає в магазині.', repeatAdded: 'Додано позицій: {a} з {b}.',
+      archTitle: 'Архів товарів', archBtn: 'В архів', archHint: 'Товар зникне з вітрини. З архіву його можна відновити або видалити назавжди.',
+      archAskTitle: 'Перенести товар в архів?', archAskText: '«{name}» зникне з вітрини. Старі замовлення не зміняться. Товар можна буде відновити з архіву.',
+      archAskOk: 'В архів: {name}', archDone: 'Перенесено в архів', archEmpty: 'В архіві порожньо.', archSearch: 'Назва або ID в архіві',
+      archInfo: 'Товари з архіву не видно на вітрині. «Відновити» повертає товар у магазин із тими самими даними.',
+      archSince: 'в архіві з {d}', archRestore: 'Відновити', archRestored: 'Відновлено: {name}', archExists: 'У листі «Товари» вже є товар із таким ID. Відновити не можна.',
+      archPurge: 'Видалити назавжди', archPurgeTitle: 'Видалити товар назавжди?',
+      archPurgeText: 'Це не можна скасувати. «{name}» ({id}) буде стерто з архіву. Старі замовлення не зміняться. ID {id} більше не використовуватиметься для нових товарів.',
+      archPurgeOk: 'Видалити назавжди {name}', archPurged: 'Видалено назавжди: {name}', archOnlyFull: 'Видалити назавжди може лише повний адмін або власник.',
+      archReused: 'ID {id} уже належав товару, якого видалили назавжди. Через це плутаються статистика й «Повторити замовлення». Краще створити товар заново — він отримає новий ID.',
+      catDelBtn: 'Видалити категорію', catDelTitle: 'Видалити категорію?', catDelEmpty: 'У категорії «{name}» немає товарів. Вона зникне з вітрини й панелі.',
+      catDelOk: 'Видалити «{name}»', catDelFull: 'У категорії «{name}» товарів: {n} (разом із прихованими). Спочатку перенесіть їх в іншу категорію.',
+      catDelMove: 'Куди перенести товари', catDelMoveOk: 'Перенести товари й видалити «{name}»', catDelNoOther: 'Немає іншої категорії, куди перенести товари. Спочатку створіть її.',
+      catDelDone: 'Категорію видалено', catDelMoved: 'Категорію видалено, товарів перенесено: {n}',
+      admDelBtn: 'Видалити адміна', admDelTitle: 'Видалити адміна?', admDelText: '«{name}» втратить доступ до адмін-панелі. Повернути доступ можна буде новим запрошенням.',
+      admDelOk: 'Видалити {name}', admDelDone: 'Адміна видалено', admDelStill: 'Рядок видалено, але доступ лишився: приберіть chat id з ADMIN_CHAT_IDS.',
+      admDelBoth: 'Увага: chat id цієї людини записаний ще й в ADMIN_CHAT_IDS (налаштування скрипта). Рядок у листі «Адміни» буде видалено, але доступ у неї залишиться, доки ви не приберете id і там.',
+      admFromProps: 'Доданий у налаштуваннях скрипта',
+      admPropsHow: 'Панель його не видаляє. Щоб прибрати: таблиця → Розширення → Apps Script → Налаштування проєкту (шестерня) → Script Properties → ADMIN_CHAT_IDS — зітріть звідти його chat id і збережіть.',
       pgRange: 'Товари {a}–{b} з {n}', pgPrev: 'Попередня сторінка', pgNext: 'Наступна сторінка', pgNav: 'Сторінки', pgPage: 'Сторінка {n}'
     },
     ru: {
       admSwFail: 'Не удалось сохранить — вернули, как было.',
       admFltOut: 'Нет в наличии', admFltHidden: 'Скрытые', admFltNoPhoto: 'Без фото',
+      cfCancel: 'Отмена', repeatGone: 'Некоторых товаров больше нет.', repeatGoneAll: 'Этих товаров больше нет в магазине.', repeatAdded: 'Добавлено позиций: {a} из {b}.',
+      archTitle: 'Архив товаров', archBtn: 'В архив', archHint: 'Товар исчезнет с витрины. Из архива его можно восстановить или удалить навсегда.',
+      archAskTitle: 'Перенести товар в архив?', archAskText: '«{name}» исчезнет с витрины. Старые заказы не изменятся. Товар можно будет восстановить из архива.',
+      archAskOk: 'В архив: {name}', archDone: 'Перенесено в архив', archEmpty: 'В архиве пусто.', archSearch: 'Название или ID в архиве',
+      archInfo: 'Товары из архива не видны на витрине. «Восстановить» возвращает товар в магазин с теми же данными.',
+      archSince: 'в архиве с {d}', archRestore: 'Восстановить', archRestored: 'Восстановлено: {name}', archExists: 'В листе «Товари» уже есть товар с таким ID. Восстановить нельзя.',
+      archPurge: 'Удалить навсегда', archPurgeTitle: 'Удалить товар навсегда?',
+      archPurgeText: 'Это нельзя отменить. «{name}» ({id}) будет стёрт из архива. Старые заказы не изменятся. ID {id} больше не будет использоваться для новых товаров.',
+      archPurgeOk: 'Удалить навсегда {name}', archPurged: 'Удалено навсегда: {name}', archOnlyFull: 'Удалить навсегда может только полный админ или владелец.',
+      archReused: 'ID {id} уже принадлежал товару, который удалили навсегда. Из-за этого путаются статистика и «Повторить заказ». Лучше создать товар заново — он получит новый ID.',
+      catDelBtn: 'Удалить категорию', catDelTitle: 'Удалить категорию?', catDelEmpty: 'В категории «{name}» нет товаров. Она исчезнет с витрины и из панели.',
+      catDelOk: 'Удалить «{name}»', catDelFull: 'В категории «{name}» товаров: {n} (вместе со скрытыми). Сначала перенесите их в другую категорию.',
+      catDelMove: 'Куда перенести товары', catDelMoveOk: 'Перенести товары и удалить «{name}»', catDelNoOther: 'Нет другой категории, куда перенести товары. Сначала создайте её.',
+      catDelDone: 'Категория удалена', catDelMoved: 'Категория удалена, товаров перенесено: {n}',
+      admDelBtn: 'Удалить админа', admDelTitle: 'Удалить админа?', admDelText: '«{name}» потеряет доступ к админ-панели. Вернуть доступ можно будет новым приглашением.',
+      admDelOk: 'Удалить {name}', admDelDone: 'Админ удалён', admDelStill: 'Строка удалена, но доступ остался: уберите chat id из ADMIN_CHAT_IDS.',
+      admDelBoth: 'Внимание: chat id этого человека записан ещё и в ADMIN_CHAT_IDS (настройки скрипта). Строка в листе «Адміни» будет удалена, но доступ у него останется, пока вы не уберёте id и там.',
+      admFromProps: 'Добавлен в настройках скрипта',
+      admPropsHow: 'Панель его не удаляет. Чтобы убрать: таблица → Расширения → Apps Script → Настройки проекта (шестерёнка) → Script Properties → ADMIN_CHAT_IDS — сотрите оттуда его chat id и сохраните.',
       pgRange: 'Товары {a}–{b} из {n}', pgPrev: 'Предыдущая страница', pgNext: 'Следующая страница', pgNav: 'Страницы', pgPage: 'Страница {n}'
     }
   };
@@ -3944,6 +4010,224 @@
     var tools = document.querySelector('.tools');
     var fixed = tools && state.view === 'catalog' ? tools.getBoundingClientRect().height : 0;
     window.scrollTo(0, Math.max(0, Math.round(head.getBoundingClientRect().top + (window.scrollY || 0) - fixed - 8)));
+  }
+
+  /* ---- А4. Подтверждения, архив товаров, удаление категорий и админов ---- */
+  /**
+   * Подтверждение для заметных и необратимых действий: в заголовке — что произойдёт, на кнопке — точное название
+   * («Видалити назавжди Курага», а не «ОК»). o: { title, text, warn, html, ok, danger, run(done) }.
+   * run получает done(err): без аргумента — шторка закрывается, с текстом — показывается ошибка и кнопка снова активна.
+   */
+  function askConfirm(o) {
+    state.sheet = { kind: 'confirm', o: o };
+    clearTimeout(toastTimer); el.toast.hidden = true; toastAction = null; // старое сообщение не должно закрывать кнопки подтверждения
+    renderSheet();
+    showSheet(false);
+  }
+  function confirmSheetHtml(o) {
+    return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
+      '<div class="sheet__grab" aria-hidden="true"></div>' +
+      '<div class="sheet__body"><h2 class="sheet__title sheet__title--pad" id="sheetTitle">' + esc(o.title) + '</h2>' +
+      (o.text ? '<p class="confirm__text">' + esc(o.text) + '</p>' : '') +
+      (o.warn ? '<p class="note note--out">' + esc(o.warn) + '</p>' : '') + (o.html || '') +
+      '<p class="form__err" id="cfErr" role="alert" hidden></p></div>' +
+      '<div class="sheet__foot sheet__foot--col">' +
+      (o.ok ? '<button type="button" class="btn btn--wrap ' + (o.danger ? 'btn--danger' : 'btn--primary') + '" data-action="cf-ok">' + esc(o.ok) + '</button>' : '') +
+      '<button type="button" class="btn" data-action="cf-cancel">' + esc(t('cfCancel')) + '</button></div>';
+  }
+  el.sheet.addEventListener('click', function (e) {
+    if (!state.sheet || state.sheet.kind !== 'confirm') return;
+    var act = e.target.closest('[data-action]');
+    var kind = act ? act.getAttribute('data-action') : '';
+    if (kind === 'cf-cancel') { closeSheet(); return; }
+    if (kind !== 'cf-ok' || act.disabled) return;
+    var mine = state.sheet;
+    btnBusy(act, '.sheet__foot');
+    mine.o.run(function (err) {
+      if (state.sheet !== mine) return; // шторку уже закрыли
+      if (!err) { closeSheet(); return; }
+      Array.prototype.forEach.call(el.sheet.querySelectorAll('.sheet__foot button'), function (x) { x.disabled = false; });
+      btnFree(act);
+      haptic('error');
+      var box = document.getElementById('cfErr');
+      if (box) { box.textContent = err; box.hidden = false; }
+    });
+  });
+  /** Текст ошибки по ответу сервера. */
+  function apiErr(res, map) {
+    var code = res && res.error;
+    return t((map && map[code]) || (code === 'no_perm' ? 'admNoPerm' : 'admFail'));
+  }
+  function isFullAdmin() { return !adm.me || adm.me.role === 'owner' || adm.me.role === 'admin'; }
+
+  /* Архив: «В архів» из карточки товара */
+  function askArchive(p) {
+    if (!p) return;
+    askConfirm({
+      title: t('archAskTitle'), text: tf('archAskText', { name: p.ua }), ok: tf('archAskOk', { name: p.ua }),
+      run: function (done) {
+        api('admin.archive', { id: p.id }).then(function (res) {
+          if (!res || !res.ok) { done(apiErr(res)); return; }
+          adm.products = (adm.products || []).filter(function (x) { return x.id !== p.id; });
+          adm.arch = null;
+          if (adm.edit === p.id) adm.edit = '';
+          done();
+          renderPage(); window.scrollTo(0, 0);
+          haptic('success');
+          toast(t('archDone'), t('archTitle'), loadArchive);
+          loadCatalog();
+        }).catch(function () { done(t('admFail')); });
+      }
+    });
+  }
+
+  /* Экран «Архів» */
+  function loadArchive() {
+    adm.archOpen = true; adm.arch = null; adm.archErr = false; adm.aq = ''; adm.ap = 1;
+    adm.edit = '';
+    if (state.view !== 'admin') return;
+    renderPage(); window.scrollTo(0, 0);
+    api('admin.archiveList').then(function (res) {
+      if (!res || !res.ok) throw new Error('fail');
+      adm.arch = res.items || [];
+      if (adm.archOpen) renderPage();
+    }).catch(function () { adm.archErr = true; if (adm.archOpen) renderPage(); });
+  }
+  function archiveItem(id) {
+    var found = null;
+    (adm.arch || []).forEach(function (p) { if (p.id === id) found = p; });
+    return found;
+  }
+  function archiveHtml() {
+    var html = '<p class="label">' + esc(t('archTitle')) + '</p>';
+    if (adm.archErr) return html + '<p class="form__err">' + esc(t('admError')) + '</p><button type="button" class="btn btn--block" data-action="adm-arch">' + esc(t('admRefresh')) + '</button>';
+    if (!adm.arch) return html + '<div class="skeleton skeleton--row"></div>';
+    if (!adm.arch.length) return html + '<p class="state__text adm__msg">' + esc(t('archEmpty')) + '</p>';
+    return html + '<p class="info">' + esc(t('archInfo')) + (isFullAdmin() ? '' : ' ' + esc(t('archOnlyFull'))) + '</p>' +
+      '<input class="input" id="admAQ" type="search" autocomplete="off" placeholder="' + esc(t('archSearch')) + '" aria-label="' + esc(t('archSearch')) + '" value="' + esc(adm.aq) + '">' +
+      '<div id="archList">' + archiveListHtml() + '</div>';
+  }
+  function archiveListHtml() {
+    var q = adm.aq.trim().toLowerCase();
+    var list = (adm.arch || []).filter(function (p) { return !q || (p.ua + ' ' + p.ru + ' ' + p.id).toLowerCase().indexOf(q) >= 0; });
+    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    adm.ap = clampPage(adm.ap, list.length, PAGE_SIZE);
+    var from = (adm.ap - 1) * PAGE_SIZE, full = isFullAdmin();
+    return '<ul class="lines">' + list.slice(from, from + PAGE_SIZE).map(function (p) {
+      return '<li class="arch"><span class="prod__name">' + esc(p.ua) + '</span>' +
+        '<span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) + (p.at ? ' · ' + esc(tf('archSince', { d: p.at })) : '') + (p.by ? ' · ' + esc(p.by) : '') + '</span>' +
+        '<div class="arch__acts' + (full ? '' : ' arch__acts--one') + '"><button type="button" class="btn btn--soft" data-arch-restore="' + esc(p.id) + '">' + esc(t('archRestore')) + '</button>' +
+        (full ? '<button type="button" class="btn btn--ghost-danger" data-arch-purge="' + esc(p.id) + '">' + esc(t('archPurge')) + '</button>' : '') + '</div></li>';
+    }).join('') + '</ul>' + pagerHtml(list.length, adm.ap, PAGE_SIZE);
+  }
+  function renderArchiveList() {
+    var box = document.getElementById('archList');
+    if (box) box.innerHTML = archiveListHtml(); else if (state.view === 'admin' && adm.archOpen) renderPage();
+  }
+  function dropFromArchive(id) {
+    adm.arch = (adm.arch || []).filter(function (x) { return x.id !== id; });
+    if (state.view === 'admin' && adm.archOpen) { if (adm.arch.length) renderArchiveList(); else renderPage(); }
+  }
+  /** «Відновити» — действие обратимое, поэтому без вопроса: товар сразу возвращается на витрину. */
+  function restoreFromArchive(id, btn) {
+    var p = archiveItem(id);
+    if (!p || adm.busy) return;
+    adm.busy = true; btnBusy(btn, '.arch__acts');
+    api('admin.restore', { id: id }).then(function (res) {
+      adm.busy = false;
+      if (!res || !res.ok) {
+        haptic('error'); toast(apiErr(res, { exists: 'archExists' }));
+        if (res && res.error === 'not_found') dropFromArchive(id); else renderArchiveList();
+        return;
+      }
+      if (adm.products) adm.products.push(res.product);
+      haptic('success');
+      toast(tf('archRestored', { name: p.ua }));
+      dropFromArchive(id);
+      loadCatalog();
+    }).catch(function () { adm.busy = false; haptic('error'); toast(t('admFail')); renderArchiveList(); });
+  }
+  function askPurge(id) {
+    var p = archiveItem(id);
+    if (!p) return;
+    askConfirm({
+      title: t('archPurgeTitle'), text: tf('archPurgeText', { name: p.ua, id: p.id }), ok: tf('archPurgeOk', { name: p.ua }), danger: true,
+      run: function (done) {
+        api('admin.purge', { id: id }).then(function (res) {
+          if (!res || !res.ok) { done(apiErr(res, { no_perm: 'archOnlyFull' })); return; }
+          done();
+          haptic('success');
+          toast(tf('archPurged', { name: p.ua }));
+          dropFromArchive(id);
+        }).catch(function () { done(t('admFail')); });
+      }
+    });
+  }
+
+  /* Удаление категории: пустую — сразу, с товарами — после переноса в другую категорию */
+  function askDeleteCategory(btn) {
+    var c = adminCat(adm.catEdit);
+    if (!c || adm.busy) return;
+    if (adm.products) { catConfirm(c, adm.products.filter(function (p) { return p.cat === c.ua; }).length); return; }
+    adm.busy = true; btnBusy(btn); // список товаров ещё не загружен — сначала узнаём, сколько товаров в категории
+    api('admin.products').then(function (res) {
+      adm.busy = false; btnFree(btn);
+      if (!res || !res.ok) throw new Error('fail');
+      adm.products = res.products || []; adm.cats = res.categories || adm.cats;
+      catConfirm(c, adm.products.filter(function (p) { return p.cat === c.ua; }).length);
+    }).catch(function () { adm.busy = false; btnFree(btn); toast(t('admFail')); });
+  }
+  function catConfirm(c, count) {
+    var others = (adm.cats || []).filter(function (x) { return x.code !== c.code; });
+    var o = { title: t('catDelTitle'), danger: true };
+    if (!count) {
+      o.text = tf('catDelEmpty', { name: c.ua }); o.ok = tf('catDelOk', { name: c.ua });
+    } else if (!others.length) {
+      o.text = tf('catDelFull', { name: c.ua, n: count }); o.warn = t('catDelNoOther');
+    } else {
+      o.text = tf('catDelFull', { name: c.ua, n: count }); o.ok = tf('catDelMoveOk', { name: c.ua });
+      o.html = '<div class="field"><label class="label" for="cfMove">' + esc(t('catDelMove')) + '</label><select class="input" id="cfMove">' +
+        others.map(function (x) { return '<option value="' + esc(x.code) + '">' + esc(x.ua) + '</option>'; }).join('') + '</select></div>';
+    }
+    o.run = function (done) {
+      var sel = document.getElementById('cfMove');
+      api('admin.categoryDelete', { code: c.code, moveTo: count && sel ? sel.value : '' }).then(function (res) {
+        if (res && res.error === 'not_empty') { // пока окно было открыто, в категории появились товары
+          closeSheet(); catConfirm(c, res.count); return;
+        }
+        if (!res || !res.ok) { done(apiErr(res)); return; }
+        adm.cats = res.categories || [];
+        adm.products = null; // категории у товаров изменились
+        adm.catEdit = '';
+        if (adm.pcat === c.ua) adm.pcat = '';
+        done();
+        renderPage(); window.scrollTo(0, 0);
+        haptic('success');
+        toast(res.moved ? tf('catDelMoved', { n: res.moved }) : t('catDelDone'));
+        loadCatalog();
+      }).catch(function () { done(t('admFail')); });
+    };
+    askConfirm(o);
+  }
+
+  /* Удаление админа */
+  function askDeleteAdmin(a) {
+    if (!a) return;
+    var who = adminTitle(a);
+    askConfirm({
+      title: t('admDelTitle'), text: tf('admDelText', { name: who }), warn: a.inProps ? t('admDelBoth') : '', ok: tf('admDelOk', { name: who }), danger: true,
+      run: function (done) {
+        api('admin.adminDelete', { id: a.id }).then(function (res) {
+          if (!res || !res.ok) { done(apiErr(res, { owner_only: 'admOwnerOnly', self: 'admSelf', in_props: 'admFromProps' })); return; }
+          adm.admins = res.admins || []; adm.invites = res.invites || [];
+          adm.admEdit = '';
+          done();
+          renderPage(); window.scrollTo(0, 0);
+          haptic('success');
+          toast(t(res.still ? 'admDelStill' : 'admDelDone'));
+        }).catch(function () { done(t('admFail')); });
+      }
+    });
   }
 
   // Любое нажатие на кнопку — лёгкая вибрация; занятая кнопка нажатий не принимает.

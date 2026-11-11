@@ -581,6 +581,7 @@ function onOpen() {
     .addItem('Вимкнути щоденні повідомлення клієнтам', 'menuDailyOff')
     .addSeparator()
     .addItem('Етап 8: створити листи й колонки', 'setupStage8')
+    .addItem('Етап 8.2: створити листи «Архів товарів» і «Клієнти»', 'setupWave2a')
     .addToUi();
 }
 
@@ -615,6 +616,13 @@ function checkCatalogText_() {
   if (noPrice.length) {
     lines.push('');
     lines.push('Без ціни або фасування: ' + noPrice.slice(0, 30).join(', ') + (noPrice.length > 30 ? ' …' : ''));
+  }
+  // ID товара, удалённого навсегда, нельзя давать новому товару: путаются статистика и «Повторити замовлення».
+  var gone = deletedIdSet_();
+  var reused = listProductsAdmin_().filter(function (p) { return gone[p.id]; }).map(function (p) { return p.id; });
+  if (reused.length) {
+    lines.push('');
+    lines.push('УВАГА. Ці ID вже належали видаленим товарам — дайте товарам інші ID: ' + reused.slice(0, 30).join(', ') + (reused.length > 30 ? ' …' : ''));
   }
   return lines.join('\n');
 }
@@ -1496,6 +1504,16 @@ function handleAdmin_(body) {
   if (a === 'admin.productAdd') return deny('text') || deny('price') || deny('stock') || updateProduct_('', body.patch || {}, true);
   if (a === 'admin.photo') return deny('photo') || savePhoto_(String(body.id || ''), String(body.data || ''));
   if (a === 'admin.category') return deny('cats') || saveCategory_(body.category || {});
+  // Волна 2а: архив товаров, удаление категорий и админов. Права проверяются здесь, при каждом запросе.
+  if (a === 'admin.archiveList') return deny('text') || listArchive_();
+  if (a === 'admin.archive') return deny('text') || archiveProduct_(String(body.id || ''));
+  if (a === 'admin.restore') return deny('text') || restoreProduct_(String(body.id || ''));
+  if (a === 'admin.purge') { // удалить навсегда может только полный админ или владелец
+    if (me.role !== 'owner' && me.role !== 'admin') return { ok: false, error: 'no_perm', need: 'full' };
+    return purgeProduct_(String(body.id || ''));
+  }
+  if (a === 'admin.categoryDelete') return deny('cats') || deleteCategory_(body.code, body.moveTo);
+  if (a === 'admin.adminDelete') return deny('admins') || deleteAdmin_(me, body, props, token);
   if (a === 'admin.stats') return deny('stats') || salesStats_(true);
   if (a === 'admin.settings') return deny('settings') || { ok: true, fields: settingsFields_() };
   if (a === 'admin.settingsSave') return deny('settings') || saveSettings_(body.values || {});
@@ -1575,9 +1593,12 @@ function listProductsAdmin_() {
   var col = productCols_(sheet);
   var values = sheet.getDataRange().getValues();
   var list = [];
+  var gone = deletedIdSet_();
   for (var r = 1; r < values.length; r++) {
     var p = adminProduct_(values[r], col);
-    if (p.id && p.ua) list.push(p);
+    if (!p.id || !p.ua) continue;
+    if (gone[p.id]) p.reused = 1; // такой ID уже был у товара, удалённого навсегда
+    list.push(p);
   }
   return list;
 }
@@ -1628,6 +1649,7 @@ function updateProduct_(id, patch, create) {
         var m = cell_(values[k], col.id).match(/^([A-Z0-9]+)-(\d+)$/);
         if (m && m[1] === prefix) max = Math.max(max, parseInt(m[2], 10));
       }
+      max = Math.max(max, reservedIdMax_(prefix)); // номера архивных и удалённых навсегда товаров заново не выдаются
       var n = String(max + 1);
       while (n.length < 3) n = '0' + n;
       id = prefix + '-' + n;
@@ -2607,7 +2629,13 @@ function listAdmins_(props) {
     waiting.push({ role: x.role, perms: x.perms, by: x.byName, name: x.name || '', state: x.uid ? 'wait' : 'new',
       left: Math.max(0, Math.round((x.exp - Date.now()) / 3600000)) });
   });
-  return { ok: true, admins: adminList_(props).map(publicAdmin_), invites: waiting, permList: PERMS };
+  var propIds = adminIds_(props);
+  var admins = adminList_(props).map(function (a) {
+    var x = publicAdmin_(a);
+    if (propIds.indexOf(a.id) >= 0) x.inProps = true; // chat id записан в ADMIN_CHAT_IDS: доступ не пропадёт, пока его не уберут оттуда
+    return x;
+  });
+  return { ok: true, admins: admins, invites: waiting, permList: PERMS };
 }
 
 function readInvites_(props) {
@@ -3854,6 +3882,389 @@ function setupStage8() {
     done.push('колонка «ТТН» у «Замовлення»');
   }
   clearCatalogCache_();
+  var text = done.length ? 'Готово, створено:\n• ' + done.join('\n• ') : 'Усе вже створено раніше, нічого не змінено.';
+  console.log(text);
+  try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }
+  return done;
+}
+
+/* ======================================================================== */
+/* ЭТАП 8, волна 2а · А4: архив товаров, удаление категорий и админов        */
+/* ======================================================================== */
+/*
+ * Товар удаляется в два шага: «В архів» (строка переезжает из «Товари» в «Архів товарів») и
+ * «Видалити назавжди» (строка стирается из архива). Из архива товар можно вернуть — «Відновити».
+ * Заказы в листе «Замовлення» не меняются: состав там записан текстом.
+ */
+
+var SHEET_ARCHIVE = 'Архів товарів';
+var ARCHIVE_AT = 'Дата архівації';
+var ARCHIVE_BY = 'Хто архівував';
+var PROP_DELETED_IDS = 'DELETED_IDS';  // ID товаров, удалённых навсегда (через запятую). Не секрет.
+var PROP_ID_MAX = 'PRODUCT_ID_MAX';    // {"NUT":12}: самый большой номер, который уже выдавался в категории
+
+/** Ключи колонок по заголовкам: по ним строка переносится между «Товари» и архивом. Колонки без заголовка получают ключ «#N». */
+function headerKeys_(row) {
+  var seen = {};
+  return row.map(function (h) {
+    var k = String(h === null || h === undefined ? '' : h).replace(/\s+/g, ' ').trim().toLowerCase();
+    seen[k] = (seen[k] || 0) + 1;
+    return !k || seen[k] > 1 ? k + '#' + seen[k] : k;
+  });
+}
+
+/** Значение переносится как есть: текст остаётся текстом (не превращается в формулу, число или дату). */
+function keepCell_(v) {
+  return typeof v === 'string' && v !== '' ? '\'' + v : (v === null || v === undefined ? '' : v);
+}
+
+function headRow_(sheet) {
+  return sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0];
+}
+
+/** Лист «Архів товарів»: те же колонки, что в «Товари», плюс дата и кто архивировал. Новые колонки «Товари» добавляются в конец. */
+function ensureArchiveSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var products = ss.getSheetByName(SHEET_PRODUCTS);
+  var pHead = products ? headRow_(products) : [];
+  var sheet = ss.getSheetByName(SHEET_ARCHIVE);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_ARCHIVE);
+    var head = pHead.filter(function (h) { return String(h).trim() !== ''; }).concat([ARCHIVE_AT, ARCHIVE_BY]);
+    sheet.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+  var have = {};
+  headerKeys_(headRow_(sheet)).forEach(function (k) { have[k] = true; });
+  var pKeys = headerKeys_(pHead);
+  pHead.concat([ARCHIVE_AT, ARCHIVE_BY]).forEach(function (title, i) {
+    var k = i < pKeys.length ? pKeys[i] : String(title).toLowerCase();
+    if (!String(title).trim() || k.indexOf('#') >= 0 || have[k]) return;
+    sheet.getRange(1, sheet.getLastColumn() + 1).setValue(title).setFontWeight('bold');
+    have[k] = true;
+  });
+  return sheet;
+}
+
+function deletedIds_(props) {
+  props = props || PropertiesService.getScriptProperties();
+  return String(props.getProperty(PROP_DELETED_IDS) || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+function deletedIdSet_() {
+  var set = {};
+  try { deletedIds_().forEach(function (id) { set[id] = true; }); } catch (err) { console.warn('deleted ids: ' + err); }
+  return set;
+}
+
+function idMax_(props) {
+  var o = {};
+  try { o = JSON.parse(props.getProperty(PROP_ID_MAX) || '{}') || {}; } catch (err) { o = {}; }
+  return o;
+}
+
+/** Запоминает ID удалённого навсегда товара: новый товар такой ID уже не получит. */
+function rememberDeletedId_(id) {
+  var props = PropertiesService.getScriptProperties();
+  var list = deletedIds_(props);
+  if (list.indexOf(id) < 0) list.push(id);
+  var text = list.join(',');
+  while (text.length > 8500 && list.length > 1) { list.shift(); text = list.join(','); } // лимит свойства — 9 КБ; номера всё равно хранит PRODUCT_ID_MAX
+  props.setProperty(PROP_DELETED_IDS, text);
+  var m = id.match(/^([A-Z0-9]+)-(\d+)$/);
+  if (m) {
+    var max = idMax_(props), n = parseInt(m[2], 10);
+    if (!(max[m[1]] >= n)) { max[m[1]] = n; props.setProperty(PROP_ID_MAX, JSON.stringify(max)); }
+  }
+}
+
+/** Наибольший номер с этим префиксом среди архивных и удалённых навсегда товаров. */
+function reservedIdMax_(prefix) {
+  var max = 0;
+  try {
+    var saved = Number(idMax_(PropertiesService.getScriptProperties())[prefix]) || 0;
+    max = Math.max(max, saved);
+    deletedIds_().forEach(function (id) {
+      var d = id.match(/^([A-Z0-9]+)-(\d+)$/);
+      if (d && d[1] === prefix) max = Math.max(max, parseInt(d[2], 10));
+    });
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ARCHIVE);
+    if (sheet && sheet.getLastRow() > 1) {
+      var values = sheet.getDataRange().getValues();
+      var col = mapHeaders_(values[0], PRODUCT_COLS);
+      for (var r = 1; r < values.length; r++) {
+        var m = cell_(values[r], col.id).match(/^([A-Z0-9]+)-(\d+)$/);
+        if (m && m[1] === prefix) max = Math.max(max, parseInt(m[2], 10));
+      }
+    }
+  } catch (err) {
+    console.error('reserved id: ' + (err && err.stack || err));
+  }
+  return max;
+}
+
+/** Архив для панели: те же клиентские поля, что у списка товаров (служебные колонки не читаются), плюс дата и кто архивировал. */
+function listArchive_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ARCHIVE);
+  if (!sheet || sheet.getLastRow() < 2) return { ok: true, items: [] };
+  var values = sheet.getDataRange().getValues();
+  var col = mapHeaders_(values[0], PRODUCT_COLS);
+  var keys = headerKeys_(values[0]);
+  var atCol = keys.indexOf(ARCHIVE_AT.toLowerCase()), byCol = keys.indexOf(ARCHIVE_BY.toLowerCase());
+  var items = [];
+  for (var r = values.length - 1; r >= 1; r--) { // последние архивированные — сверху
+    var p = adminProduct_(values[r], col);
+    if (!p.id) continue;
+    var d = atCol >= 0 ? values[r][atCol] : '';
+    var isDate = Object.prototype.toString.call(d) === '[object Date]' && !isNaN(d.getTime());
+    p.at = isDate ? Utilities.formatDate(d, 'Europe/Kiev', 'dd.MM.yyyy') : String(d || '');
+    p.by = cell_(values[r], byCol);
+    items.push(p);
+  }
+  return { ok: true, items: items };
+}
+
+/** «В архів»: строка товара переносится из «Товари» в «Архів товарів». С витрины товар пропадает. */
+function archiveProduct_(id) {
+  id = String(id || '').trim();
+  if (!id) return { ok: false, error: 'bad_form' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
+    var col = productCols_(sheet);
+    var values = sheet.getDataRange().getValues();
+    var r = -1;
+    for (var i = 1; i < values.length; i++) if (cell_(values[i], col.id) === id) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' };
+    var name = cell_(values[r], col.nameUa);
+
+    var arch = ensureArchiveSheet_();
+    var aHead = headRow_(arch);
+    var at = {};
+    headerKeys_(aHead).forEach(function (k, j) { at[k] = j; });
+    var row = aHead.map(function () { return ''; });
+    headerKeys_(values[0]).forEach(function (k, j) {
+      if (k.indexOf('#') < 0 && at[k] !== undefined) row[at[k]] = keepCell_(values[r][j]);
+    });
+    var atCol = at[ARCHIVE_AT.toLowerCase()], byCol = at[ARCHIVE_BY.toLowerCase()];
+    if (atCol !== undefined) row[atCol] = new Date();
+    if (byCol !== undefined) row[byCol] = keepCell_(clean_(actor_ ? actor_.name : 'система', 80));
+    // Сначала строка появляется в архиве, и только потом исчезает из «Товари»: при сбое товар не потеряется.
+    arch.appendRow(row);
+    if (atCol !== undefined) arch.getRange(arch.getLastRow(), atCol + 1).setNumberFormat('dd.MM.yyyy HH:mm');
+    SpreadsheetApp.flush();
+    sheet.deleteRow(r + 1);
+    SpreadsheetApp.flush();
+    clearCatalogCache_();
+    logAction_('Товар: в архів', id + ' ' + name, 'на вітрині', 'в архіві');
+    return { ok: true, id: id, name: name };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Формулы (маржа, цена за 100 г и т. п.) в новой строке повторяют формулы строки выше — как при протягивании в таблице. */
+function copyRowFormulas_(sheet, fromRow, toRow) {
+  try {
+    if (fromRow < 2) return;
+    var n = sheet.getLastColumn();
+    var src = sheet.getRange(fromRow, 1, 1, n);
+    if (typeof src.getFormulasR1C1 !== 'function') return;
+    var f = src.getFormulasR1C1()[0];
+    for (var c = 0; c < n; c++) if (f[c]) sheet.getRange(toRow, c + 1).setFormulaR1C1(f[c]);
+  } catch (err) {
+    console.warn('formulas: ' + err);
+  }
+}
+
+/** «Відновити»: строка возвращается из архива в конец листа «Товари», товар снова на витрине с прежними данными. */
+function restoreProduct_(id) {
+  id = String(id || '').trim();
+  if (!id) return { ok: false, error: 'bad_form' };
+  var result;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var arch = ss.getSheetByName(SHEET_ARCHIVE);
+    if (!arch || arch.getLastRow() < 2) return { ok: false, error: 'not_found' };
+    var aValues = arch.getDataRange().getValues();
+    var aCol = mapHeaders_(aValues[0], PRODUCT_COLS);
+    var r = -1;
+    for (var i = aValues.length - 1; i >= 1; i--) if (cell_(aValues[i], aCol.id) === id) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' };
+
+    var sheet = ss.getSheetByName(SHEET_PRODUCTS);
+    var col = productCols_(sheet);
+    var pValues = sheet.getDataRange().getValues();
+    for (var k = 1; k < pValues.length; k++) if (cell_(pValues[k], col.id) === id) return { ok: false, error: 'exists' }; // товар с таким ID уже есть в «Товари»
+    var at = {};
+    headerKeys_(pValues[0]).forEach(function (key, j) { at[key] = j; });
+    var row = pValues[0].map(function () { return ''; });
+    headerKeys_(aValues[0]).forEach(function (key, j) {
+      if (key.indexOf('#') < 0 && at[key] !== undefined) row[at[key]] = keepCell_(aValues[r][j]);
+    });
+    var lastRow = sheet.getLastRow();
+    sheet.appendRow(row);
+    var newRow = sheet.getLastRow();
+    copyRowFormulas_(sheet, lastRow, newRow);
+    SpreadsheetApp.flush();
+    arch.deleteRow(r + 1);
+    SpreadsheetApp.flush();
+    clearCatalogCache_();
+    var fresh = sheet.getRange(newRow, 1, 1, sheet.getLastColumn()).getValues()[0];
+    result = { ok: true, product: adminProduct_(fresh, col) };
+    logAction_('Товар: відновлено з архіву', id + ' ' + result.product.ua, 'в архіві', 'на вітрині');
+  } finally {
+    lock.releaseLock();
+  }
+  // Подписки «Повідомити, коли з’явиться» на этот товар снова действуют. Сбой рассылки восстановление не отменяет.
+  if (result.product.stock) {
+    try { notifyBackInStock_(); } catch (err) { console.error('back in stock: ' + (err && err.stack || err)); }
+  }
+  return result;
+}
+
+/** «Видалити назавжди»: строка стирается из архива. Отменить нельзя. ID запоминается и новому товару не достанется. */
+function purgeProduct_(id) {
+  id = String(id || '').trim();
+  if (!id) return { ok: false, error: 'bad_form' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var arch = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ARCHIVE);
+    if (!arch || arch.getLastRow() < 2) return { ok: false, error: 'not_found' };
+    var values = arch.getDataRange().getValues();
+    var col = mapHeaders_(values[0], PRODUCT_COLS);
+    var r = -1;
+    for (var i = values.length - 1; i >= 1; i--) if (cell_(values[i], col.id) === id) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' }; // удалить навсегда можно только то, что уже лежит в архиве
+    var name = cell_(values[r], col.nameUa);
+    rememberDeletedId_(id);
+    arch.deleteRow(r + 1);
+    SpreadsheetApp.flush();
+    logAction_('Товар: видалено назавжди', id + ' ' + name, 'в архіві', 'видалено');
+    return { ok: true, id: id, name: name };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Удаление категории. Пустая удаляется сразу. Если в ней есть товары (включая скрытые) — нужен moveTo:
+ * код категории, куда их перенести. Архивные товары категорию не держат.
+ */
+function deleteCategory_(codeRaw, moveToRaw) {
+  var code = String(codeRaw || '').trim().toUpperCase();
+  var moveTo = String(moveToRaw || '').trim().toUpperCase();
+  if (!code) return { ok: false, error: 'bad_form' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(SHEET_CATEGORIES);
+    if (!sheet) return { ok: false, error: 'not_found' };
+    var values = sheet.getDataRange().getValues();
+    var col = mapHeaders_(values[0], CATEGORY_COLS);
+    var r = -1;
+    for (var i = 1; i < values.length; i++) if (cell_(values[i], col.code).toUpperCase() === code) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' };
+    var cats = listCategoriesAdmin_();
+    var mine = null, target = null;
+    var byName = {}, byCode = {};
+    cats.forEach(function (c) {
+      var cc = c.code.toUpperCase();
+      if (cc === code) mine = c;
+      if (moveTo && cc === moveTo) target = c;
+      byName[c.ua.toLowerCase()] = cc;
+      byName[c.ru.toLowerCase()] = cc;
+      byCode[cc] = true;
+    });
+    if (!mine) return { ok: false, error: 'not_found' };
+
+    // Товары категории ищем так же, как витрина: по названию, иначе по префиксу ID.
+    var ps = ss.getSheetByName(SHEET_PRODUCTS);
+    var pc = productCols_(ps);
+    var pv = ps.getDataRange().getValues();
+    var rows = [];
+    for (var k = 1; k < pv.length; k++) {
+      var id = cell_(pv[k], pc.id);
+      if (!id) continue;
+      var found = byName[cell_(pv[k], pc.catUa).toLowerCase()] || byName[cell_(pv[k], pc.catRu).toLowerCase()];
+      if (!found) { var prefix = id.split('-')[0].toUpperCase(); if (byCode[prefix]) found = prefix; }
+      if (found === code) rows.push(k);
+    }
+    if (rows.length) {
+      if (!moveTo) return { ok: false, error: 'not_empty', count: rows.length };
+      if (!target || target.code.toUpperCase() === code || pc.catUa < 0) return { ok: false, error: 'bad_form' };
+      rows.forEach(function (row) {
+        ps.getRange(row + 1, pc.catUa + 1).setValue(safeCell_(target.ua));
+        if (pc.catRu >= 0) ps.getRange(row + 1, pc.catRu + 1).setValue(safeCell_(target.ru));
+      });
+    }
+    sheet.deleteRow(r + 1);
+    SpreadsheetApp.flush();
+    clearCatalogCache_();
+    logAction_('Категорія: видалено', code + ' ' + mine.ua, rows.length ? 'товарів: ' + rows.length : 'порожня',
+      rows.length ? 'товари перенесено в «' + target.ua + '»' : 'видалено');
+    return { ok: true, categories: listCategoriesAdmin_(), moved: rows.length };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Удаление админа: стирается его строка в листе «Адміни». Правила те же, что при отключении:
+ * владельца удалить нельзя, себя нельзя, полных админов удаляет только владелец.
+ * Админа, который записан только в ADMIN_CHAT_IDS, панель не удаляет: Script Properties меняют вручную.
+ */
+function deleteAdmin_(me, body, props, token) {
+  var id = String(body.id || '');
+  var target = null;
+  adminList_(props).forEach(function (a) { if (a.id === id) target = a; });
+  if (!target) return { ok: false, error: 'not_found' };
+  if (target.role === 'owner') return { ok: false, error: 'owner_locked' };
+  if (target.id === me.id) return { ok: false, error: 'self' };
+  if (target.src !== 'sheet') return { ok: false, error: 'in_props' };
+  if (target.role === 'admin' && me.role !== 'owner') return { ok: false, error: 'owner_only' };
+  if (me.role !== 'owner' && target.active && Object.keys(target.perms).some(function (k) { return !me.perms[k]; })) {
+    return { ok: false, error: 'no_perm', need: 'grant' }; // забрать можно только те права, которые есть у самого
+  }
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ADMINS);
+    if (!sheet) return { ok: false, error: 'not_found' };
+    var values = sheet.getDataRange().getValues();
+    var col = mapHeaders_(values[0], ADMIN_COLS);
+    var r = -1;
+    for (var i = 1; i < values.length; i++) if (cell_(values[i], col.id) === id) { r = i; break; }
+    if (r < 0) return { ok: false, error: 'not_found' };
+    sheet.deleteRow(r + 1);
+    SpreadsheetApp.flush();
+    adminsMemo_ = null;
+  } finally {
+    lock.releaseLock();
+  }
+  var still = adminIds_(props).indexOf(id) >= 0; // chat id есть ещё и в ADMIN_CHAT_IDS — доступ у человека остаётся
+  var label = (target.name || 'id ' + id) + (target.username ? ' ' + target.username : '');
+  var was = target.active ? permsText_(target.role, target.perms) : 'вимкнено';
+  logAction_('Адміни: видалено', label, was, still ? 'рядок видалено; доступ лишився через ADMIN_CHAT_IDS' : 'видалено');
+  notifyOwner_(props, token, (actor_ ? actor_.name : 'Адмін') + ' видалив адміна: ' + label + ', id ' + id + '\nБуло: ' + was +
+    (still ? '\nУвага: цей chat id записаний у ADMIN_CHAT_IDS, тому доступ у нього лишився.' : ''));
+  if (!still) setAdminCommands_(token, id, false);
+  var out = listAdmins_(props);
+  out.still = still;
+  return out;
+}
+
+/** Меню PAMIR → «Етап 8.2: створити листи…» (или запуск из редактора). Можно запускать повторно: существующие данные не трогает. */
+function setupWave2a() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var done = [];
+  if (!ss.getSheetByName(SHEET_ARCHIVE)) { ensureArchiveSheet_(); done.push('лист «' + SHEET_ARCHIVE + '»'); }
   var text = done.length ? 'Готово, створено:\n• ' + done.join('\n• ') : 'Усе вже створено раніше, нічого не змінено.';
   console.log(text);
   try { SpreadsheetApp.getUi().alert(text); } catch (err) { /* запуск из редактора */ }

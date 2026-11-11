@@ -881,6 +881,175 @@ const smallTargets = page => page.evaluate(() => {
     await page.context().close(); st.server.close();
   }
 
+  console.log('Волна 2а · А4: архив и удаление');
+  {
+    const st = await start(8819, undefined, s => {
+      withPhotos(s);
+      s.props.ADMIN_CHAT_IDS = '900,950,960'; // 950 — только в настройках скрипта, 960 — и там, и в листе «Адміни»
+      s.sheets['Категорії'].push(['NEW', 'Порожня', 'Пустая', '', 9]);
+    });
+    const g = st.gas, n = action => st.log.filter(x => x.action === action).length;
+    g.call('writeAdminRow_', { id: '741', name: 'Менеджер Текстів', username: '', role: 'manager', perms: { text: true }, notify: false, active: true, by: 'тест' });
+    g.call('writeAdminRow_', { id: '742', name: 'Менеджер Замовлень', username: '', role: 'manager', perms: { st: true }, notify: false, active: true, by: 'тест' });
+    g.call('writeAdminRow_', { id: '960', name: 'Обидва', username: '', role: 'manager', perms: { st: true }, notify: false, active: true, by: 'тест' });
+    const P = g.sheets['Товари'].rows, inSheet = id => P.some(r => r[0] === id);
+    const { page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
+    await page.waitForSelector('.ord');
+    const sheetText = () => text(page, '#sheet');
+    const toastText = () => page.evaluate(() => document.getElementById('toastText').textContent);
+
+    // «В архів» из карточки товара: подтверждение с названием, один запрос
+    await page.locator('[data-tab="products"]').click();
+    await page.waitForSelector('.prod');
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.waitForSelector('[data-action="adm-archive"]');
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'карточка товара с кнопкой «В архів»: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.click('[data-action="adm-archive"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Перенести товар в архів\?/.test(await sheetText()) && /«Волоський горіх, половинки» зникне з вітрини/.test(await sheetText()) && /В архів: Волоський горіх, половинки/.test(await text(page, '[data-action="cf-ok"]')),
+      'подтверждение архивации называет товар', await sheetText());
+    ok(!(await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger'))), 'архивация обратима — кнопка не красная');
+    await page.waitForTimeout(400); // шторка выезжает снизу
+    await page.screenshot({ path: OUT + '/58-confirm-archive.png' });
+    await page.click('[data-action="cf-cancel"]');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    ok(n('admin.archive') === 0 && inSheet('NUT-004'), '«Скасувати» ничего не меняет');
+    st.opt.delay = 400;
+    await page.click('[data-action="adm-archive"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    await page.evaluate(() => { const b = document.querySelector('[data-action="cf-ok"]'); b.click(); b.click(); });
+    ok(await page.evaluate(() => { const b = document.querySelector('[data-action="cf-ok"]'); return b.classList.contains('is-busy') && b.disabled && document.querySelector('[data-action="cf-cancel"]').disabled; }), 'кнопка подтверждения показывает индикатор и блокируется');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    st.opt.delay = 0;
+    await page.waitForSelector('.prod');
+    ok(n('admin.archive') === 1 && !inSheet('NUT-004') && await count(page, '[data-edit="NUT-004"]') === 0 && /Перенесено в архів/.test(await toastText()), 'товар ушёл в архив одним запросом и пропал из списка', [n('admin.archive'), await toastText()]);
+    ok(!g.get({ action: 'catalog' }).products.some(p => p.id === 'NUT-004'), 'на витрине архивного товара нет');
+
+    // экран «Архів»
+    await page.click('[data-action="adm-arch"]');
+    await page.waitForSelector('.arch');
+    ok(await count(page, '.arch') === 1 && /Волоський горіх, половинки/.test(await text(page, '.arch')) && /NUT-004/.test(await text(page, '.arch')) && /в архіві з \d\d\.\d\d\.\d{4}/.test(await text(page, '.arch')),
+      'экран «Архів»: товар, его ID и дата архивации', await text(page, '.arch'));
+    ok(await count(page, '[data-arch-restore]') === 1 && await count(page, '[data-arch-purge]') === 1 && await count(page, '#admAQ') === 1, 'у товара кнопки «Відновити» и «Видалити назавжди», есть поиск');
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'экран «Архів»: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.screenshot({ path: OUT + '/59-archive.png' });
+    await page.fill('#admAQ', 'немає такого');
+    ok(await count(page, '.arch') === 0, 'поиск в архиве фильтрует список');
+    await page.fill('#admAQ', 'nut-004');
+    ok(await count(page, '.arch') === 1, 'поиск в архиве находит по ID');
+
+    // «Видалити назавжди»: красная кнопка с названием, «Це не можна скасувати»
+    await page.click('[data-arch-purge="NUT-004"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/Це не можна скасувати/.test(await sheetText()) && /Старі замовлення не зміняться/.test(await sheetText()) && /ID NUT-004 більше не використовуватиметься/.test(await sheetText()), 'подтверждение удаления: «Це не можна скасувати», про заказы и про ID', await sheetText());
+    ok((await text(page, '[data-action="cf-ok"]')).trim() === 'Видалити назавжди Волоський горіх, половинки' && await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger') && getComputedStyle(b).backgroundColor === 'rgb(158, 47, 38)'),
+      'красная кнопка «Видалити назавжди {назва}», а не «ОК»', await text(page, '[data-action="cf-ok"]'));
+    ok((await smallTargets(page)).length === 0 && await noOverflow(page), 'окно подтверждения: кнопки ≥ 44 px, без горизонтальной прокрутки', await smallTargets(page));
+    await page.waitForTimeout(400); // шторка выезжает снизу
+    await page.screenshot({ path: OUT + '/60-confirm-purge.png' });
+    await page.click('[data-action="cf-cancel"]');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    ok(n('admin.purge') === 0 && g.sheets['Архів товарів'].rows.length === 2, 'отмена: товар остался в архиве');
+
+    // «Відновити»
+    await page.click('[data-arch-restore="NUT-004"]');
+    await page.waitForFunction(() => /Відновлено: Волоський горіх/.test(document.getElementById('toastText').textContent));
+    ok(inSheet('NUT-004') && g.sheets['Архів товарів'].rows.length === 1 && /В архіві порожньо/.test(await text(page, '.page')), '«Відновити»: товар снова в «Товари», архив пуст');
+    ok(g.get({ action: 'catalog' }).products.some(p => p.id === 'NUT-004'), 'восстановленный товар снова на витрине');
+    await page.click('[data-nav="back"]');
+    await page.waitForSelector('.prod');
+    await page.fill('#admPQ', 'NUT-004');
+    ok(await count(page, '[data-edit="NUT-004"]') === 1, 'восстановленный товар снова в списке товаров панели');
+
+    // архив → удалить навсегда
+    await page.locator('[data-edit="NUT-004"]').click();
+    await page.click('[data-action="adm-archive"]');
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => document.getElementById('sheet').hidden);
+    await page.click('#toastBtn'); // кнопка «Архів товарів» в сообщении
+    await page.waitForSelector('.arch');
+    await page.click('[data-arch-purge="NUT-004"]');
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Видалено назавжди/.test(document.getElementById('toastText').textContent));
+    ok(n('admin.purge') === 1 && !inSheet('NUT-004') && g.sheets['Архів товарів'].rows.length === 1 && g.props.DELETED_IDS === 'NUT-004', 'удалено навсегда: строки нет ни в «Товари», ни в архиве; ID запомнен', g.props.DELETED_IDS);
+    await page.click('[data-nav="back"]');
+
+    // удаление категории: с товарами — через перенос, пустая — сразу
+    await page.locator('[data-tab="cats"]').click();
+    await page.waitForSelector('.page [data-cat="TEA"]');
+    await page.locator('.page [data-cat="TEA"]').click();
+    await page.click('[data-action="adm-cat-del"]');
+    await page.waitForSelector('#cfMove');
+    ok(/У категорії «Чай» товарів: 5 \(разом із прихованими\)/.test(await sheetText()) && /Перенести товари й видалити «Чай»/.test(await text(page, '[data-action="cf-ok"]')) && await count(page, '#cfMove option') === 6,
+      'категория с товарами: панель просит сначала перенести их и даёт список категорий', await sheetText());
+    await page.waitForTimeout(400); // шторка выезжает снизу
+    await page.screenshot({ path: OUT + '/61-confirm-category.png' });
+    await page.selectOption('#cfMove', 'DRY');
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /товарів перенесено: 5/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Категорії'].rows.some(r => r[0] === 'TEA') && P.find(r => r[0] === 'TEA-001')[1] === 'Сухофрукти' && await count(page, '.page [data-cat="TEA"]') === 0, 'категория удалена, товары перенесены в выбранную');
+    await page.locator('.page [data-cat="NEW"]').click();
+    await page.click('[data-action="adm-cat-del"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/немає товарів/.test(await sheetText()) && (await text(page, '[data-action="cf-ok"]')).trim() === 'Видалити «Порожня»' && await count(page, '#cfMove') === 0, 'пустая категория: простое подтверждение с названием', await sheetText());
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Категорію видалено/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Категорії'].rows.some(r => r[0] === 'NEW') && await count(page, '.page [data-cat="NEW"]') === 0, 'пустая категория удалена');
+
+    // удаление админа
+    await page.locator('[data-tab="admins"]').click();
+    await page.waitForSelector('[data-adm="950"]');
+    ok(/Доданий у налаштуваннях скрипта/.test(await text(page, '[data-adm="950"]')) && !/Доданий у налаштуваннях/.test(await text(page, '[data-adm="742"]')), 'админ из ADMIN_CHAT_IDS помечен в списке');
+    await page.screenshot({ path: OUT + '/62-admins.png', fullPage: true });
+    await page.locator('[data-adm="950"]').click();
+    await page.waitForSelector('#admForm');
+    ok(await count(page, '[data-action="adm-admin-del"]') === 0 && /ADMIN_CHAT_IDS/.test(await text(page, '#admForm')) && /Script Properties/.test(await text(page, '#admForm')), 'у админа из настроек скрипта вместо «Видалити» — подсказка, где его убрать');
+    await page.click('[data-nav="back"]');
+    await page.locator('[data-adm="960"]').click();
+    await page.click('[data-action="adm-admin-del"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok(/ADMIN_CHAT_IDS/.test(await sheetText()) && /доступ у неї залишиться/.test(await sheetText()), 'записан и в листе, и в ADMIN_CHAT_IDS: подтверждение предупреждает, что доступ останется', await sheetText());
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /доступ лишився/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Адміни'].rows.some(r => String(r[0]) === '960'), 'строка в листе «Адміни» удалена');
+    await page.locator('[data-adm="742"]').click();
+    await page.click('[data-action="adm-admin-del"]');
+    await page.waitForSelector('#sheet [data-action="cf-ok"]');
+    ok((await text(page, '[data-action="cf-ok"]')).trim() === 'Видалити Менеджер Замовлень' && await page.locator('[data-action="cf-ok"]').evaluate(b => b.classList.contains('btn--danger')) && !/ADMIN_CHAT_IDS/.test(await sheetText()), 'красная кнопка «Видалити {ім’я}»', await text(page, '[data-action="cf-ok"]'));
+    await page.click('#sheet [data-action="cf-ok"]');
+    await page.waitForFunction(() => /Адміна видалено/.test(document.getElementById('toastText').textContent));
+    ok(!g.sheets['Адміни'].rows.some(r => String(r[0]) === '742') && await count(page, '[data-adm="742"]') === 0, 'админ удалён из листа и из списка');
+    ok(await count(page, '[data-adm="900"]') === 0, 'владельца открыть на удаление нельзя');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок (владелец)', errors);
+    await page.context().close();
+
+    // менеджер с правом «Тексти товарів»: архивирует и восстанавливает, но не удаляет навсегда
+    g.post({ action: 'admin.archive', initData: g.initData({ id: 900, first_name: 'Власник' }), id: 'NUT-001' });
+    const m = await open(browser, st.url, { uid: 741, query: '?admin=1' });
+    await m.page.waitForSelector('.ord, .adm__msg');
+    await m.page.locator('[data-tab="products"]').click();
+    await m.page.waitForSelector('.prod');
+    await m.page.click('[data-action="adm-arch"]');
+    await m.page.waitForSelector('.arch');
+    ok(await count(m.page, '[data-arch-restore]') === 1 && await count(m.page, '[data-arch-purge]') === 0 && /лише повний адмін або власник/.test(await text(m.page, '.page')), 'менеджер видит «Відновити», но не «Видалити назавжди»');
+    ok(g.post({ action: 'admin.purge', initData: g.initData({ id: 741, first_name: 'М' }), id: 'NUT-001' }).error === 'no_perm', 'и сервер менеджеру удаление навсегда не разрешает');
+    ok(m.errors.length === 0, 'в консоли браузера нет ошибок (менеджер)', m.errors);
+    await m.page.context().close();
+
+    // покупатель: «Повторити замовлення» с архивным товаром — пропуск и подсказка, а не ошибка
+    const c = await open(browser, st.url, { uid: 501, query: '?view=orders' });
+    await c.page.waitForSelector('[data-repeat="P-0001"]');
+    await c.page.click('[data-repeat="P-0001"]'); // курага + мигдаль (мигдаль в архиве)
+    await c.page.waitForSelector('.line');
+    ok(await count(c.page, '.line') === 1 && /Курага/.test(await text(c.page, '.line')) && /Деяких товарів більше немає/.test(await text(c.page, '.page')), 'повтор заказа: архивный товар пропущен, показано «Деяких товарів більше немає»', await text(c.page, '.page'));
+    await c.page.screenshot({ path: OUT + '/63-repeat-gone.png' });
+    await c.page.click('.tabbar [data-go="catalog"]');
+    await c.page.waitForSelector('.card');
+    ok(await count(c.page, '.mini[data-id="NUT-001"]') === 0 && await count(c.page, '.mini[data-id="DRY-039"]') > 0, 'в подборках «Купити знову» и «Ваше звичне» архивного товара нет');
+    ok(c.errors.length === 0, 'в консоли браузера нет ошибок (покупатель)', c.errors);
+    await c.page.context().close(); st.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);

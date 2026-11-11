@@ -63,6 +63,7 @@ class Sheet {
   hideColumns() {}
   clearContents() { this.rows = []; }
   deleteRows(start, n) { this.rows.splice(start - 1, n); }
+  deleteRow(at) { this.rows.splice(at - 1, 1); }
 }
 
 function formatDate(date, tz, fmt) {

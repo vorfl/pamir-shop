@@ -930,3 +930,17 @@ button.prod__main:active, .ord__head:active { background: var(--surface-sunken);
 #admPChips { display: flex; flex-direction: column; gap: var(--space-2); }
 #admPChips:empty { display: none; }
 .chips--wrap { flex-wrap: wrap; overflow: visible; }
+
+/* ---------- А4. Архив, удаление, подтверждения ---------- */
+.btn--danger { background: var(--pomegranate); border-color: var(--pomegranate); color: var(--surface-raised); }
+.btn--ghost-danger { border-color: transparent; background: transparent; color: var(--pomegranate); }
+.btn--wrap { height: auto; padding-top: var(--space-2); padding-bottom: var(--space-2); white-space: normal; overflow-wrap: anywhere; }
+.sheet__foot--col { display: flex; flex-direction: column; gap: var(--space-2); }
+.confirm__text { margin: 0; font-size: 15px; line-height: 22px; overflow-wrap: anywhere; }
+.danger { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--line); }
+.danger .field__hint { text-align: center; }
+.arch { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
+.arch__acts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin-top: var(--space-2); }
+.arch__acts--one { grid-template-columns: 1fr; }
+.arch__acts .btn { padding: 0 var(--space-2); font-size: 14px; line-height: 18px; }
+.prod__sub--mark { color: var(--lapis); font-weight: 600; }
