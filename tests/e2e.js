@@ -1130,6 +1130,18 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForSelector('#perfLine');
     ok(/product: \d+ мс = сервер \d+ \(підпис і права \d+, таблиця \d+, дія \d+, журнал \d+\) \+ мережа й Google \d+/.test(await text(page, '#perfLine')), 'с PERF_LOG = 1 внизу экрана видно время по этапам', await text(page, '#perfLine'));
     ok(await noOverflow(page), 'строка с замерами не ломает вёрстку');
+    // строка замеров живёт только в админ-панели
+    await page.click('[data-nav="back"]');
+    await page.waitForSelector('.card');
+    ok(await page.locator('#perfLine').isVisible() === false, 'админ вышел из панели в магазин — строки с замерами не видно');
+    const cust = await open(browser, st.url, { uid: 651, query: '?view=orders' });
+    await cust.page.waitForSelector('.page__title');
+    await cust.page.click('.tabbar [data-go="catalog"]');
+    await cust.page.waitForSelector('.card');
+    await cust.page.locator('.card [data-quick="1"]').first().click().catch(() => {});
+    await cust.page.waitForTimeout(600);
+    ok(await count(cust.page, '#perfLine') === 0 && st.gas.props.PERF_LOG === '1', 'у покупателя строки с замерами нет, даже когда PERF_LOG включён');
+    await cust.page.context().close();
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close(); st.server.close();
   }

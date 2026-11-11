@@ -1524,6 +1524,7 @@ function handleAdmin_(body) {
   var me = user ? adminAccess_(user.id, props) : null;
   perfMark_('підпис і права');
   if (!me) return { ok: false, error: 'forbidden' };
+  if (perf_) perf_.admin = true; // замеры отдаются только действующему админу
   actor_ = { id: String(user.id), name: clean_((user.first_name || '') + (user.username ? ' @' + user.username : ''), 60) || me.name || ROLE_UA[me.role] };
   var mine = { role: me.role, perms: Object.keys(me.perms) };
   /** Нет права — отказ. Витрина прячет такие кнопки, но решает всегда сервер. */
@@ -4535,7 +4536,7 @@ function perfEnd_(out) {
     if (scriptProps_().getProperty('PERF_LOG') !== '1') return;
     var total = Date.now() - p.t0;
     console.log('PERF ' + p.label + ' ' + total + ' ms | ' + p.marks.map(function (m) { return m[0] + ' ' + m[1]; }).join(' | '));
-    if (out && typeof out === 'object') out._t = { total: total, marks: p.marks };
+    if (p.admin && out && typeof out === 'object') out._t = { total: total, marks: p.marks }; // тому, кто не прошёл проверку прав, замеры не уходят
   } catch (err) {
     console.warn('perf: ' + err);
   }

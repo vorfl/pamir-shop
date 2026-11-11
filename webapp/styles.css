@@ -950,4 +950,6 @@ button.prod__main:active, .ord__head:active { background: var(--surface-sunken);
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 70; pointer-events: none;
   padding: var(--space-1) var(--space-2); background: var(--surface-sunken); color: var(--ink-muted);
   font-size: 11px; line-height: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-variant-numeric: tabular-nums;
+  display: none;
 }
+body[data-view="admin"] .perfline { display: block; } /* только в админ-панели: в магазине строки нет даже у самого админа */

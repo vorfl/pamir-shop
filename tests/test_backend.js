@@ -848,7 +848,9 @@ console.log('Скорость админ-панели: меньше обраще
   const t = adm(g, 900, 'admin.status', { num, code: 'c' });
   ok(t.ok && t._t && typeof t._t.total === 'number' && t._t.marks.map(m => m[0]).join() === 'підпис і права,таблиця,Telegram,дія,журнал' && t._t.marks.every(m => typeof m[1] === 'number'),
     'с PERF_LOG = 1 ответ несёт время по этапам: подпись и права, таблица, Telegram, журнал', t._t);
-  ok(JSON.stringify(adm(g, 5555, 'admin.orders')) === JSON.stringify({ ok: false, error: 'forbidden' }) || adm(g, 5555, 'admin.orders').error === 'forbidden', 'постороннему замеры ничего не открывают');
+  ok(JSON.stringify(adm(g, 5555, 'admin.orders')) === JSON.stringify({ ok: false, error: 'forbidden' }), 'постороннему замеры не уходят: в ответе только отказ', adm(g, 5555, 'admin.orders'));
+  ok(JSON.stringify(g.post({ action: 'admin.orders', initData: 'x' })) === JSON.stringify({ ok: false, error: 'forbidden' }), 'запросу без подписи замеры не уходят');
+  ['orders.my', 'cart', 'notify', 'ev'].forEach(a => { const r = g.post({ action: a, initData: g.initData(U(44)), items: [], events: [{ e: 'open', t: Date.now() }], id: 'NUT-008' }); ok(r._t === undefined, 'запрос покупателя «' + a + '»: замеров в ответе нет', r); });
   ok(g.get({ action: 'catalog' })._t === undefined && order(g, U(43), [{ id: 'NUT-007', g: 0, q: 1 }], 85)._t === undefined, 'в каталог и заказ замеры не попадают');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
 }
