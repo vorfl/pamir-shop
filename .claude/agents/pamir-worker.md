@@ -1,6 +1,6 @@
 ---
 name: pamir-worker
-description: Исполнитель Cloudflare Worker PAMIR (worker/worker.js): webhook Telegram, кэш каталога, слежение. Звать только для задач про Worker.
+description: "Исполнитель Cloudflare Worker PAMIR (worker/worker.js): webhook Telegram, кэш каталога, слежение. Звать только для задач про Worker."
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: sonnet
 ---
