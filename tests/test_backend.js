@@ -2674,5 +2674,128 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     ok(g.sandbox.__errors.length === 0, 'в логах нового блока нет ошибок', g.sandbox.__errors);
   }
 }
+console.log('Волна Б1, исправления приёмки: забытый файл, блокировки, flushJob');
+{
+  const evPost = (g, uid, events) => g.post({ action: 'ev', initData: g.initData(U(uid)), sid: 's' + uid, events });
+  const evRows = g => (g.sheets['Події'] ? g.sheets['Події'].rows.slice(1) : []);
+  const heldAt = (g, i) => { let h = 0; for (let k = 0; k < i; k++) { const l = g.lockLog[k]; if (l.kind !== 'script') continue; if ((l.op === 'try' || l.op === 'wait') && l.ok) h++; else if (l.op === 'release') h--; } return h; };
+  const oneEv = (g, uid) => g.call('bufferPush_', { e: [[Date.now(), String(uid), 's', 'view', 'DRY-039', '']] });
+
+  // --- 1. Stage9b.gs не добавлен
+  {
+    const s = seed(); s.skipFiles = ['Stage9b.gs'];
+    const g = createGas(CODE, s);
+    g.props.FAST_MODE = '1'; g.cache.fb_hb = '1'; g.props.WORKER_URL = 'https://pamir-worker.example.workers.dev';
+    ok(typeof g.sandbox.purgeWorkerIfPending_ === 'undefined' && typeof g.sandbox.fastMode_ === 'undefined', 'стенд без Stage9b.gs: функций из него нет');
+    let err = null, res = {};
+    try {
+      res.cat = g.get({ action: 'catalog' });
+      res.order = order(g, U(42), [{ id: 'DRY-039', g: 500, q: 2 }], 380);
+      res.ev = evPost(g, 77, [{ e: 'open', t: Date.now() }, { e: 'view', id: 'DRY-039', t: Date.now() }]);
+      res.orders = adm(g, 900, 'admin.orders');
+      res.products = adm(g, 900, 'admin.products');
+      res.product = adm(g, 900, 'admin.product', { id: 'NUT-002', patch: { price: 123 } });
+      res.settings = adm(g, 900, 'admin.settingsSave', { values: { min_order: '150' } });
+      res.message = adm(g, 900, 'admin.message', { num: res.order.number, text: 'привіт' });
+      res.stats = adm(g, 900, 'admin.stats');
+      res.err = g.post({ action: 'err', did: 'abcdef123456', items: [{ m: 'oops', s: 'a', v: '1' }] });
+      res.hook = tgPost(g, { message: { chat: { id: 900 }, from: { id: 900 }, text: '/start' } });
+      g.call('hourlyJob');
+      g.call('onOpen');
+    } catch (e) { err = e; }
+    ok(!err, 'без Stage9b.gs: каталог, заказ, события, панель, err, бот, hourlyJob — без исключений', err && String(err.stack || err).slice(0, 300));
+    ok(res.cat && res.cat.ok && res.order && res.order.ok && res.orders && res.orders.ok && res.products && res.products.ok && res.product && res.product.ok && res.settings && res.settings.ok, 'без Stage9b.gs: каталог, заказ и админ-панель отвечают ok', [res.order, res.product && res.product.error]);
+    ok(res.ev && res.ev.ok && evRows(g).length === 2 && g.sheets['Клієнти'].rows.some(r => r[0] === '77'), 'без Stage9b.gs: события и отметка клиента пишутся прямо в лист, как раньше', evRows(g).length);
+    ok(res.message && res.message.ok === true && res.message.told === true, 'без Stage9b.gs: admin.message работает (счётчики под обычной блокировкой)', res.message);
+    ok(res.err && res.err.ok === true && !g.sheets['Помилки'], 'без Stage9b.gs: action err отвечает ok и ничего не пишет');
+    ok(g.fetched.length === 0, 'без Stage9b.gs: purge Worker не шлётся');
+  }
+
+  // --- 2. «Кошики»: записи напоминаний под блокировкой, Telegram — вне её
+  {
+    const g = fresh();
+    g.post({ action: 'cart', initData: g.initData(U(80)), items: [['NUT-007', 0, 1]], lang: 'ua' });
+    g.sheets['Кошики'].rows[1][1] = new Date(Date.now() - 4 * 3600e3);
+    g.lockLog.length = 0;
+    ok(g.call('remindCarts_') === 1, 'напоминание ушло');
+    const writes = g.lockLog.map((l, i) => ({ l, i })).filter(x => x.l.kind === 'sheet' && x.l.sheet === 'Кошики' && x.l.op !== 'read');
+    ok(writes.length >= 2 && writes.every(x => heldAt(g, x.i) > 0), 'remindCarts_: отметка и журнал «Події нагадувань» пишутся под блокировкой скрипта', writes.map(x => heldAt(g, x.i)));
+    const msg = g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '80').pop();
+    ok(msg && msg.lockHeld === 0, 'запрос к Telegram идёт вне блокировки', msg && msg.lockHeld);
+    ok(g.sheets['Кошики'].rows[1].some(v => /"s":\[/.test(String(v))), 'журнал отправки записан');
+  }
+
+  // --- 3а. порции под блокировкой, отметки клиентов пачкой
+  {
+    const g = fresh(); g.call('menuFastOn');
+    for (let i = 0; i < 250; i++) evPost(g, 5000 + i, i < 60 ? [{ e: 'open', t: Date.now() }, { e: 'view', id: 'DRY-039', t: Date.now() }] : [{ e: 'view', id: 'DRY-039', t: Date.now() }]);
+    const rows0 = g.sheets['Клієнти'] ? g.sheets['Клієнти'].rows.length : 0;
+    let injected = null;
+    const origGet = g.sandbox.LockService.getScriptLock;
+    g.sandbox.LockService.getScriptLock = () => {
+      const l = origGet();
+      const rel = l.releaseLock;
+      l.releaseLock = () => {
+        rel.call(l);
+        if (!injected) {
+          injected = { eventsThen: evRows(g).length };
+          injected.res = order(g, U(6001), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+        }
+      };
+      return l;
+    };
+    g.lockLog.length = 0;
+    g.call('flushJob');
+    g.sandbox.LockService.getScriptLock = origGet;
+    const tries = g.lockLog.map((l, i) => ({ l, i })).filter(x => x.l.kind === 'script' && x.l.op === 'try' && x.l.ok);
+    ok(evRows(g).length === 310 && tries.length >= 3, 'flushJob: 250 пачек записаны за несколько порций, каждая со своей блокировкой', [evRows(g).length, tries.length]);
+    ok(tries.every(x => heldAt(g, x.i) === 0), 'между порциями блокировка отпущена (новая порция берётся, когда прежняя снята)');
+    const evW = g.lockLog.map((l, i) => ({ l, i })).filter(x => x.l.kind === 'sheet' && x.l.sheet === 'Події' && x.l.op === 'write');
+    ok(evW.length >= 3 && evW.every(x => heldAt(g, x.i) > 0), 'запись событий — только под блокировкой, по порциям', evW.length);
+    ok(injected && injected.res.ok && injected.eventsThen > 0 && injected.eventsThen < 310 && g.sheets['Замовлення'].rows.slice(-1)[0][3] === '6001', 'заказ, пришедший между порциями, прошёл сразу (событий в листе было меньше, чем в итоге)', injected && injected.eventsThen);
+    const clientW = g.lockLog.filter(l => l.kind === 'sheet' && l.sheet === 'Клієнти' && l.op !== 'read').length;
+    ok(g.sheets['Клієнти'].rows.length - rows0 >= 60 && clientW <= 12, 'новые клиенты дописаны пачкой (несколько обращений к листу, не по ячейке)', [g.sheets['Клієнти'].rows.length - rows0, clientW]);
+    const tFlush = g.cache.fb_t === g.cache.fb_n;
+    ok(tFlush, 'указатель дошёл до конца очереди');
+  }
+
+  // --- 3б. пропавшие ключи очереди
+  {
+    const g = fresh(); g.call('menuFastOn');
+    for (let i = 1; i <= 40; i++) oneEv(g, 7000 + i);
+    const gone = [3, 7, 8, 15, 16, 17, 22, 30, 31, 40];
+    gone.forEach(k => { delete g.cache['fb_' + k]; });
+    g.call('flushJob');
+    ok(evRows(g).length === 30, 'пропуски ключей: остальные 30 пачек записаны сразу, очередь не остановилась на первом пропуске', evRows(g).length);
+    g.advance(60000);
+    g.call('flushJob');
+    ok(evRows(g).length === 30 && g.cache.fb_t === '40' && g.sandbox.__warns.some(w => /втрачено подій\/відміток: 10\b/.test(w)), 'на втором запуске все 10 пропусков — потеря (счётчик 10), указатель в конце', [evRows(g).length, g.cache.fb_t, g.sandbox.__warns.slice(-2)]);
+    g.advance(60000); g.call('flushJob');
+    ok(evRows(g).length === 30, 'дальше ничего не дублируется');
+    // позднее появление данных до второго запуска: пачка записывается
+    const g2 = fresh(); g2.call('menuFastOn');
+    for (let i = 1; i <= 12; i++) oneEv(g2, 7100 + i);
+    const saved = g2.cache.fb_5; delete g2.cache.fb_5; delete g2.cache.fb_6;
+    g2.call('flushJob');
+    g2.cache.fb_5 = saved; g2.advance(60000); g2.call('flushJob');
+    ok(evRows(g2).length === 11 && g2.cache.fb_t === '12', 'ключ, появившийся до следующего запуска, записывается; второй — потеря', [evRows(g2).length, g2.cache.fb_t]);
+  }
+
+  // --- 3в. ошибка ротации после записи: без дублей
+  {
+    const g = fresh(); g.call('menuFastOn');
+    g.call('ensureEventsSheet_');
+    g.sandbox.EVENTS_KEEP_ROWS = -4999; // ротация срабатывает всегда
+    g.sheets['Події'].deleteRows = () => { throw new Error('rotate boom'); };
+    for (let i = 1; i <= 5; i++) oneEv(g, 7200 + i);
+    g.call('flushJob');
+    ok(evRows(g).length === 5 && g.cache.fb_t === '5', 'ошибка ротации после записи: строки записаны, указатель сдвинут', [evRows(g).length, g.cache.fb_t]);
+    g.advance(60000); g.call('flushJob');
+    ok(evRows(g).length === 5, 'повторный запуск не пишет строки второй раз', evRows(g).length);
+    oneEv(g, 7299);
+    g.advance(60000); g.call('flushJob');
+    ok(evRows(g).length === 6, 'следующая порция после ошибки ротации проходит', evRows(g).length);
+  }
+}
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
 process.exit(fail ? 1 : 0);

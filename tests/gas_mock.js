@@ -39,8 +39,9 @@ class Range {
 }
 
 class Sheet {
-  constructor(name, rows, ops) { this.name = name; this.rows = rows || []; this.ops = ops || null; }
-  _op(kind) { if (this.ops) this.ops[kind] = (this.ops[kind] || 0) + 1; }
+  constructor(name, rows, ops, trace) { this.name = name; this.rows = rows || []; this.ops = ops || null; this.trace = trace || null; }
+  // trace — общий журнал (lockLog): записи листа попадают в него как { kind: 'sheet', op, sheet }, чтобы видеть порядок «блокировка → запись»
+  _op(kind) { if (this.ops) this.ops[kind] = (this.ops[kind] || 0) + 1; if (this.trace && kind !== 'read') this.trace.push({ kind: 'sheet', op: kind, sheet: this.name }); }
   _set(r, c, v) {
     while (this.rows.length < r) this.rows.push([]);
     const row = this.rows[r - 1];
@@ -85,8 +86,9 @@ function createGas(codePath, seed) {
   // показывает, сколько таких обращений делает один запрос. Времени стенд не имитирует.
   const ops = {};
   const op = (kind, n) => { ops[kind] = (ops[kind] || 0) + (n || 1); };
+  const lockLog = [];
   const sheets = {};
-  Object.keys(seed.sheets).forEach(name => { sheets[name] = new Sheet(name, seed.sheets[name].map(r => r.slice()), ops); });
+  Object.keys(seed.sheets).forEach(name => { sheets[name] = new Sheet(name, seed.sheets[name].map(r => r.slice()), ops, lockLog); });
   const props = Object.assign({}, seed.props);
   const cache = {};
   const sent = []; // всё, что бэкенд отправил в Telegram
@@ -96,7 +98,6 @@ function createGas(codePath, seed) {
   // Выпуск 9Б: «блокировка занята N мс» (script/doc), журнал обращений к блокировкам, не-Telegram запросы (Worker), Drive.
   // Стенд НЕ воспроизводит настоящую конкуренцию Google: busy — условное время, которое запрос ждал бы; реального ожидания нет.
   const lockCfg = { script: 0, doc: 0, docNull: false }; // docNull: LockService.getDocumentLock() возвращает null (так бывает в веб-приложении)
-  const lockLog = [];
   const lockWaited = { script: 0, doc: 0 };
   const fetched = []; // запросы не к Telegram: { url, method, headers, payload }
   const fetchCfg = { fail: false, code: 200 };
@@ -112,13 +113,13 @@ function createGas(codePath, seed) {
     return {
       waitLock(ms) { if (kind === 'script') op('lock'); if (!rec('wait', ms, lockCfg[kind] <= ms)) throw new Error('Lock timeout: waitLock'); },
       tryLock(ms) { if (kind === 'script') op('lock'); return rec('try', ms, lockCfg[kind] <= ms); },
-      releaseLock() { held[kind] = Math.max(0, held[kind] - 1); }
+      releaseLock() { lockLog.push({ kind, op: 'release' }); held[kind] = Math.max(0, held[kind] - 1); }
     };
   }
 
   const ss = {
     getSheetByName: n => sheets[n] || null,
-    insertSheet: n => { sheets[n] = new Sheet(n, [], ops); return sheets[n]; },
+    insertSheet: n => { sheets[n] = new Sheet(n, [], ops, lockLog); return sheets[n]; },
     getSpreadsheetTimeZone: () => 'Europe/Kiev',
     getId: () => 'SS-ID-1',
     // «Создать копию»: стенд запоминает имя и снимок всех листов на момент копии
@@ -167,7 +168,7 @@ function createGas(codePath, seed) {
       if (!batched) op('tg'); // отдельный вызов Telegram; вызовы из fetchAll идут параллельно и считаются одной пачкой
       const method = url.split('/').pop().split('?')[0];
       const payload = opts && opts.payload ? JSON.parse(opts.payload) : {};
-      sent.push({ method, payload });
+      sent.push({ method, payload, lockHeld: held.script + held.doc });
       // failTelegram: true — любой вызов падает; функция (method, payload) → свой ответ Telegram или null (обычный успех)
       const custom = typeof failTelegram === 'function' ? failTelegram(method, payload) : null;
       const body = custom || (failTelegram && typeof failTelegram !== 'function' ? { ok: false, description: 'mock failure' } : { ok: true, result: { message_id: ++msgId, username: 'pamir_test_bot' } });

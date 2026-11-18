@@ -738,7 +738,7 @@ function menuRefreshCatalog() {
   clearCatalogCache_();
   var cat = buildCatalog_();
   cachePutLarge_(CACHE_KEY, JSON.stringify(cat));
-  purgeWorkerIfPending_();
+  if (typeof purgeWorkerIfPending_ === 'function') purgeWorkerIfPending_();
   SpreadsheetApp.getUi().alert('Каталог оновлено: ' + cat.products.length + ' товарів.');
 }
 
@@ -835,7 +835,7 @@ function doPost(e) {
     if (body.action === 'order') out = handleOrder_(body);
     else if (body.action === 'orders.my') out = handleMyOrders_(body);
     else if (body.action === 'ev') out = handleEvents_(body);
-    else if (body.action === 'err') out = handleErr_(body); // ошибки витрины: без initData, см. Stage9b.gs
+    else if (body.action === 'err') out = typeof handleErr_ === 'function' ? handleErr_(body) : { ok: true }; // нет Stage9b.gs — ошибки молча принимаем без записи; ошибки витрины: без initData, см. Stage9b.gs
     else if (body.action === 'notify') out = handleNotify_(body);
     else if (body.action === 'cart') out = handleCart_(body);
     else if (body.action === 'wh.prices') out = handleWhPrices_(body);
@@ -849,7 +849,7 @@ function doPost(e) {
   }
   if (isAdmin) perfMark_('дія');
   flushLog_();
-  if (isAdmin) purgeWorkerIfPending_(); // уже вне блокировок; покупатель (заказ, отзыв, корзина) Worker не уведомляет
+  if (isAdmin && typeof purgeWorkerIfPending_ === 'function') purgeWorkerIfPending_(); // уже вне блокировок; покупатель (заказ, отзыв, корзина) Worker не уведомляет
   else purgePending_ = false;
   if (isAdmin) { perfMark_('журнал'); perfEnd_(out); }
   return jsonText_(JSON.stringify(out));
@@ -1682,6 +1682,11 @@ function replyTemplates_() {
   return out;
 }
 
+/** Запасная блокировка для счётчиков сообщений, если Stage9b.gs не добавлен: ScriptLock с tryLock(2000). Не взяли — null. */
+function adminMsgLockFallback_() {
+  try { var l = LockService.getScriptLock(); return l && l.tryLock(2000) ? l : null; } catch (err) { return null; }
+}
+
 /** Сообщение клиенту от бота простым текстом (без parse_mode: разметка из текста не работает). */
 function adminMessage_(me, num, rawText, token) {
   var text = multiline_(rawText, 2000).replace(/[ \t]*\n[ \t]*/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -1694,7 +1699,7 @@ function adminMessage_(me, num, rawText, token) {
   // Счётчики читаются и растут под короткой блокировкой: параллельные запросы не обходят лимит. Не взяли — rate_limit.
   var cache = CacheService.getScriptCache();
   var key = 'amsg_' + (actor_ ? actor_.id : 'x'), keyOrd = 'amso_' + o.num;
-  var mlock = counterLock_(2000, 2000);
+  var mlock = typeof counterLock_ === 'function' ? counterLock_(2000, 2000) : adminMsgLockFallback_(); // нет Stage9b.gs — обычная блокировка скрипта
   if (!mlock) return { ok: false, error: 'rate_limit' };
   try {
     var count = parseInt(cache.get(key), 10) || 0, countOrd = parseInt(cache.get(keyOrd), 10) || 0;
@@ -1702,7 +1707,7 @@ function adminMessage_(me, num, rawText, token) {
     cache.put(key, String(count + 1), 3600);
     cache.put(keyOrd, String(countOrd + 1), 3600);
   } finally {
-    unlock_(mlock);
+    try { mlock.releaseLock(); } catch (errU) { /* уже снята */ }
   }
   var head = (o.lang === 'ru' ? 'PAMIR · заказ ' : 'PAMIR · замовлення ') + o.num;
   var res = tg_(token, 'sendMessage', { chat_id: o.uid, text: head + '\n' + text });
@@ -2758,7 +2763,7 @@ function handleEvents_(body) {
   var reqUsed = parseInt(cacheQ.get('evq_' + uid), 10) || 0;
   if (reqUsed >= MAX_EV_REQUESTS_PER_HOUR) return { ok: true, n: 0 }; // один человек не забивает буфер для всех
   cacheQ.put('evq_' + uid, String(reqUsed + 1), 3600);
-  var fast = fastMode_(); // выпуск 9Б, б7.2: события и отметка клиента копятся в кэше, лист пишет flushJob раз в минуту
+  var fast = typeof fastMode_ === 'function' && fastMode_(); // выпуск 9Б, б7.2: события и отметка клиента копятся в кэше, лист пишет flushJob раз в минуту
   var rec = null;
   // Лист «Клієнти»: открытие магазина. Пишется не чаще раза в несколько часов на человека.
   // Источник (?startapp=qr1): событие «src». Метка проверяется; ID товара, ref_, adm_, rec… — не метки.
@@ -2834,7 +2839,7 @@ function handleEvents_(body) {
  * (без тестовых, отменённых и «немає в наявності»). Нет колонки или данных — пустой массив. Только метки и числа.
  */
 function sourcesStats_(ss) {
-  flushBeforeStats_(); // быстрый режим: сначала дописываем буфер (если блокировка свободна)
+  if (typeof flushBeforeStats_ === 'function') flushBeforeStats_(); // быстрый режим: сначала дописываем буфер (если блокировка свободна)
   var now = Date.now(), d7 = now - 7 * 24 * 3600 * 1000, d14 = now - 14 * 24 * 3600 * 1000;
   var map = {};
   function item(src) { return map[src] || (map[src] = { src: src, u7: {}, u14: {}, ord7: 0, ord14: 0 }); }
@@ -2890,7 +2895,7 @@ function ensureEventsSheet_() {
  * и самые просматриваемые товары — подсказка, чего не хватает в ассортименте и что стоит показать выше.
  */
 function eventsFunnel_(ss, fromMs, orders) {
-  flushBeforeStats_();
+  if (typeof flushBeforeStats_ === 'function') flushBeforeStats_();
   var sheet = ss.getSheetByName(SHEET_EVENTS);
   if (!sheet || sheet.getLastRow() < 2) return null;
   var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, EVENT_HEADERS.length).getValues();
@@ -3098,7 +3103,7 @@ function dailyJob() {
 /** Раз в час (тот же пункт меню PAMIR): напоминание о брошенной корзине. */
 function hourlyJob() {
   try { remindCarts_(); } catch (err) { console.error('hourly carts: ' + safeErr_(err, true)); }
-  try { errorsJob(); } catch (err) { console.error('hourly errors: ' + safeErr_(err)); } // сводка ошибок витрины (Stage9b.gs)
+  try { if (typeof errorsJob === 'function') errorsJob(); } catch (err) { console.error('hourly errors: ' + safeErr_(err)); } // сводка ошибок витрины (Stage9b.gs)
 }
 
 function menuDailyOff() {
@@ -4455,9 +4460,18 @@ function stopCartReminders_(uid) {
   return until.getTime();
 }
 
+/** Выполняет запись в «Кошики» под блокировкой скрипта (tryLock 5 с). Не взяли — false, запись не сделана. */
+function cartLocked_(fn) {
+  var lock = LockService.getScriptLock();
+  var got = false;
+  try { got = lock.tryLock(5000); } catch (err) { got = false; }
+  if (!got) return false;
+  try { fn(); return true; } finally { lock.releaseLock(); }
+}
+
 /**
  * Раз в час: если корзина лежит cart_remind_hours часов и заказа нет — одно сообщение «Ваш кошик чекає».
- * Одна корзина — одно напоминание, одному человеку — не чаще раза в 7 дней, после «Не нагадувати» — никогда.
+ * Одна корзина — одно напоминание, одному человеку — не чаще раза в 7 дней, после «Не нагадувати» — пауза cart_mute_days дней (старая отметка «так» — навсегда).
  */
 function remindCarts_() {
   var st = readSettings_();
@@ -4495,7 +4509,9 @@ function remindCarts_() {
       if (p && p.a && names.length < 6) names.push('• ' + ((ru && p.ru) || p.ua) + (it[1] ? ' ' + weightLabel_(it[1]) : '') + ' × ' + it[2]);
     });
     if (!names.length) return; // всё, что было в корзине, закончилось — не зовём
-    sheet.getRange(r + 2, 5).setValue(new Date()); // отмечаем до отправки: второй попытки не будет
+    // отмечаем до отправки: второй попытки не будет. Запись — под блокировкой и только на время записи (не на время запроса к Telegram).
+    // Не взяли блокировку — человека пропускаем: напомним в следующий час.
+    if (!cartLocked_(function () { var at = cartRow_(sheet, uid); if (at) sheet.getRange(at, 5).setValue(new Date()); })) return;
     var res = tg_(token, 'sendMessage', {
       chat_id: uid,
       text: (ru ? 'Ваша корзина ждёт:\n' : 'Ваш кошик чекає:\n') + names.join('\n'),
@@ -4504,7 +4520,7 @@ function remindCarts_() {
         [{ text: cartMuteLabel_(muteDays, ru), callback_data: 'nc' }]
       ] }
     });
-    if (res.ok) { sent++; cartLogAdd_(sheet, uid, 's'); }
+    if (res.ok) { sent++; cartLocked_(function () { cartLogAdd_(sheet, uid, 's'); }); }
   });
   return sent;
 }
@@ -5313,6 +5329,44 @@ function ensureClientsSheet_() {
 }
 
 /**
+ * Проверки touchClient_ без записи: только личные чаты, метка источника, «недавно уже писали». Возвращает запись отметки или null.
+ * В кэш пишутся те же ключи cl_/cls_, что и раньше.
+ */
+function touchPrep_(user, lang, sure, src) {
+  var uid = String(user && user.id !== undefined && user.id !== null ? user.id : '').trim();
+  if (!/^\d+$/.test(uid)) return null; // только личные чаты
+  var cache = CacheService.getScriptCache();
+  src = srcLabel_(src, null, true); // источник — только проверенная метка из src_list; пишется один раз (первый), не перезаписывается
+  if (src && cache.get('cls_' + uid)) src = ''; // источник этому человеку уже записывали недавно
+  if (!sure && !src && cache.get('cl_' + uid)) return null;
+  cache.put('cl_' + uid, '1', CLIENT_TOUCH_SEC);
+  if (src) cache.put('cls_' + uid, '1', CLIENT_TOUCH_SEC);
+  return {
+    id: uid, fn: clean_(user.first_name, 60), ln: clean_(user.last_name, 60), lc: clean_(user.language_code, 8),
+    lang: lang === 'ru' || lang === 'ua' ? lang : '', sure: !!sure, src: src, at: Date.now()
+  };
+}
+
+/**
+ * Пачка строк в лист «Події» (под блокировкой скрипта — её держит вызывающий). rows: [Date, uid, sid, name, id, v].
+ * Ротация листа — отдельным шагом (trimEventsSheet_): сбой ротации не отменяет уже записанные строки. skipTrim = true — ротацию делает вызывающий;
+ * тогда возвращается лист (или null). Иначе ротация делается здесь, её ошибка только в журнал.
+ */
+function writeEventRows_(rows, skipTrim) {
+  if (!rows.length) return null;
+  var sheet = ensureEventsSheet_();
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, EVENT_HEADERS.length).setValues(rows);
+  if (skipTrim) return sheet;
+  try { trimEventsSheet_(sheet); } catch (err) { console.warn('events trim: ' + safeErr_(err)); }
+  return null;
+}
+
+/** Лист не растёт бесконечно: самые старые строки удаляются. */
+function trimEventsSheet_(sheet) {
+  if (sheet.getLastRow() > EVENTS_KEEP_ROWS + 5000) sheet.deleteRows(2, 5000);
+}
+
+/**
  * Записывает клиента или обновляет «Останній вхід». user — объект Telegram (id, first_name, last_name, language_code).
  * lang — язык, выбранный в магазине ('ua' | 'ru'); sure = true — язык известен точно (заказ), он заменяет догадку по Telegram.
  * Никогда не бросает исключений: сбой здесь не должен мешать заказу или ответу бота.
@@ -5323,7 +5377,7 @@ function touchClient_(user, lang, sure, src) {
     if (!rec) return;
     src = rec.src;
     var uid = rec.id;
-    if (fastMode_()) { // быстрый режим: отметка уходит в буфер; не вышло — отметку заказа пишем сразу, как раньше, остальные отбрасываем
+    if (typeof fastMode_ === 'function' && fastMode_()) { // быстрый режим: отметка уходит в буфер; не вышло — отметку заказа пишем сразу, как раньше, остальные отбрасываем
       if (bufferPush_({ c: rec })) return;
       if (!sure) { touchUndo_(rec); return; }
     }

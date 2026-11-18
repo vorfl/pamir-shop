@@ -111,8 +111,11 @@ function purgeWorkerIfPending_() {
 var FB_TTL = 21600;           // срок жизни в кэше, максимум CacheService — 6 часов
 var FB_MAX_PENDING = 4000;    // сколько пачек ждёт записи; больше — новые отбрасываются (счётчик потерь fb_lost)
 var FB_MAX_BYTES = 90000;     // предел значения кэша — 100 КБ
-var FB_FLUSH_BATCHES = 600;   // пачек за один проход flushJob (блокировка скрипта держится недолго)
-var FB_FLUSH_ROUNDS = 8;      // проходов за один запуск flushJob (до 4800 пачек; между проходами блокировка свободна)
+var FB_FLUSH_BATCHES = 100;   // пачек за одну порцию flushJob (блокировка скрипта держится недолго)
+var FB_FLUSH_ROUNDS = 60;     // порций за один запуск flushJob (до 6000 пачек; между порциями блокировка свободна)
+var FB_PORTION_MS = 3000;     // порция кончается раньше, если блокировка держится дольше этого времени (по часам)
+var FB_JOB_BUDGET_MS = 35000; // общее время flushJob: новые порции позже не начинаются (минутные запуски не накладываются)
+var FB_GAP_WAIT_MS = 20000;   // пропущенные номера очереди ждут столько, прежде чем считаться потерянными
 var FB_SLOTS = 200;           // запасных слотов на минуту (запись без блокировки)
 var FB_SLOT_LOOKBACK = 30;    // сколько прошедших минут flushJob ещё смотрит в слотах
 var FB_GET_CHUNK = 100;       // ключей за один cache.getAll
@@ -243,33 +246,7 @@ function touchUndo_(rec) {
   } catch (err) { /* не критично */ }
 }
 
-/**
- * Проверки touchClient_ без записи: только личные чаты, метка источника, «недавно уже писали». Возвращает запись отметки или null.
- * В кэш пишутся те же ключи cl_/cls_, что и раньше.
- */
-function touchPrep_(user, lang, sure, src) {
-  var uid = String(user && user.id !== undefined && user.id !== null ? user.id : '').trim();
-  if (!/^\d+$/.test(uid)) return null; // только личные чаты
-  var cache = CacheService.getScriptCache();
-  src = srcLabel_(src, null, true); // источник — только проверенная метка из src_list; пишется один раз (первый), не перезаписывается
-  if (src && cache.get('cls_' + uid)) src = ''; // источник этому человеку уже записывали недавно
-  if (!sure && !src && cache.get('cl_' + uid)) return null;
-  cache.put('cl_' + uid, '1', CLIENT_TOUCH_SEC);
-  if (src) cache.put('cls_' + uid, '1', CLIENT_TOUCH_SEC);
-  return {
-    id: uid, fn: clean_(user.first_name, 60), ln: clean_(user.last_name, 60), lc: clean_(user.language_code, 8),
-    lang: lang === 'ru' || lang === 'ua' ? lang : '', sure: !!sure, src: src, at: Date.now()
-  };
-}
-
-/** Пачка строк в лист «Події» (под блокировкой скрипта — её держит вызывающий). rows: [Date, uid, sid, name, id, v]. */
-function writeEventRows_(rows) {
-  if (!rows.length) return;
-  var sheet = ensureEventsSheet_();
-  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, EVENT_HEADERS.length).setValues(rows);
-  // Лист не растёт бесконечно: самые старые строки удаляются.
-  if (sheet.getLastRow() > EVENTS_KEEP_ROWS + 5000) sheet.deleteRows(2, 5000);
-}
+/* touchPrep_ и writeEventRows_ перенесены в Code.gs: нужны и без быстрого режима (устойчивость к забытому файлу). */
 
 /**
  * Пачка отметок клиентов одним чтением листа «Клієнти» (под блокировкой скрипта). Те же правила, что у touchClient_:
@@ -284,8 +261,13 @@ function applyClientTouches_(touches) {
   var idx = {};
   for (var i = 1; i < values.length; i++) { var key = cell_(values[i], col.id); if (idx[key] === undefined) idx[key] = i; }
   var origLen = values.length, width = Math.max(sheet.getLastColumn(), 1);
-  var sets = {};
-  function set(r, c, v) { values[r][c] = v; if (r < origLen) sets[r + ':' + c] = [r, c, v]; }
+  var changed = {}; // строка → [первая, последняя изменённая колонка]: пишем только их, одним setValues на строку
+  function set(r, c, v) {
+    values[r][c] = v;
+    if (r >= origLen) return;
+    var ch = changed[r];
+    if (!ch) changed[r] = [c, c]; else { if (c < ch[0]) ch[0] = c; if (c > ch[1]) ch[1] = c; }
+  }
   touches.forEach(function (t) {
     var uid = String(t.id);
     var now = new Date(Number(t.at) || Date.now());
@@ -312,16 +294,32 @@ function applyClientTouches_(touches) {
     if (col.last >= 0) set(r, col.last, now);
     if (col.blocked >= 0 && cell_(values[r], col.blocked)) set(r, col.blocked, '');
   });
-  Object.keys(sets).forEach(function (k) { var s = sets[k]; sheet.getRange(s[0] + 1, s[1] + 1).setValue(s[2]); });
+  Object.keys(changed).forEach(function (k) {
+    var ch = changed[k], r = Number(k);
+    sheet.getRange(r + 1, ch[0] + 1, 1, ch[1] - ch[0] + 1).setValues([values[r].slice(ch[0], ch[1] + 1)]);
+  });
   var added = values.slice(origLen);
   if (added.length) sheet.getRange(sheet.getLastRow() + 1, 1, added.length, width).setValues(added);
   return touches.length;
 }
 
+/** Состояние пропусков очереди: { w: до какого номера просмотрено, g: [пропущенные номера], at: когда пропуски последний раз добавлялись }. */
+function gapParse_(raw) {
+  try {
+    var o = JSON.parse(String(raw || ''));
+    if (o && typeof o === 'object' && Array.isArray(o.g)) return { w: Number(o.w) || 0, g: o.g.map(Number).filter(function (x) { return x > 0; }), at: Number(o.at) || 0 };
+  } catch (err) { /* нет состояния */ }
+  return { w: 0, g: [], at: 0 };
+}
+
 /**
- * Один проход записи буфера. lockMs — сколько ждать блокировку скрипта (tryLock). Возвращает { deferred, batches, events, clients, more, gap }.
+ * Одна порция записи буфера (блокировка скрипта держится только на неё). lockMs — сколько ждать блокировку (tryLock).
+ * Возвращает { deferred, batches, events, clients, more, gap, error }.
  * deferred: блокировка занята — ничего не записано и не потеряно, следующий запуск продолжит.
- * Буфер пуст (ни пачек, ни слотов) — возврат сразу: ни таблицы, ни блокировки.
+ * Порция: до FB_FLUSH_BATCHES пачек и не дольше FB_PORTION_MS по часам. Буфер пуст (ни пачек, ни слотов) — возврат сразу: ни таблицы, ни блокировки.
+ * Пропуски (номер занят, данных нет): все сразу ждут FB_GAP_WAIT_MS, при следующей порции после этого считаются потерянными;
+ * очередь при этом не останавливается (просмотр идёт дальше, остальное пишется сразу).
+ * Указатель fb_t сдвигается сразу после успешной записи в лист, до ротации листа и чистки кэша.
  */
 function flushBuffer_(lockMs) {
   var res = { deferred: false, batches: 0, events: 0, clients: 0, more: false, error: false, gap: false };
@@ -336,15 +334,22 @@ function flushBuffer_(lockMs) {
   var got = false;
   try { got = lock.tryLock(lockMs); } catch (err) { got = false; }
   if (!got) { res.deferred = true; return res; }
+  var sheetToTrim = null, afterKeys = [];
   try {
+    var t0 = Date.now();
     var both = cache.getAll(['fb_n', 'fb_t', 'fb_gap']);
     var n = parseInt(both.fb_n, 10) || 0, t = parseInt(both.fb_t, 10) || 0;
     var from = Math.max(t, n - FB_MAX_PENDING); // более старые уже не помещаются в очередь
-    var to = Math.min(n, from + FB_FLUSH_BATCHES);
+    var st = gapParse_(both.fb_gap);
+    var oldGaps = st.g.filter(function (x) { return x > from && x <= n; });
+    var waitOld = oldGaps.length > 0 && Date.now() - st.at < FB_GAP_WAIT_MS; // прежние пропуски ждут один цикл
+    var w = Math.max(st.w, from);                 // номера до w (кроме пропусков) уже обработаны
+    var upper = Math.min(n, w + FB_FLUSH_BATCHES);
     var keys = [];
-    for (var k = from + 1; k <= to; k++) keys.push('fb_' + k);
+    if (!waitOld) oldGaps.forEach(function (x) { keys.push('fb_' + x); });
+    for (var k = w + 1; k <= upper; k++) keys.push('fb_' + k);
     var got2 = keys.length ? cacheGetAll_(cache, keys) : {};
-    var events = [], touches = [], missing = n > t ? from - t : 0, gapAt = 0, dropKeys = [];
+    var events = [], touches = [], missing = n > t ? from - t : 0, dropKeys = [], newGaps = [], keptGaps = waitOld ? oldGaps : [];
     function take(raw) {
       try {
         var b = JSON.parse(raw);
@@ -353,28 +358,33 @@ function flushBuffer_(lockMs) {
         res.batches++;
       } catch (err) { missing++; }
     }
-    var prevGap = String(both.fb_gap || '');
-    for (var i = 0; i < keys.length; i++) {
-      var raw = got2[keys[i]];
-      if (typeof raw !== 'string') {
-        // номер уже занят, а данных ещё нет: запрос не успел положить. Ждём один цикл, потом считаем потерянной.
-        if (String(from + 1 + i) === prevGap) { missing++; continue; }
-        gapAt = from + 1 + i;
-        break;
-      }
+    if (!waitOld) {
+      oldGaps.forEach(function (x) { // прошёл цикл: пришло — пишем, иначе считаем потерей
+        var raw0 = got2['fb_' + x];
+        if (typeof raw0 === 'string') { take(raw0); dropKeys.push('fb_' + x); } else missing++;
+      });
+    }
+    var scanned = w;
+    for (var num = w + 1; num <= upper; num++) {
+      if (num > w + 1 && Date.now() - t0 > FB_PORTION_MS) break; // порция не держит блокировку дольше срока
+      var raw = got2['fb_' + num];
+      scanned = num;
+      if (typeof raw !== 'string') { newGaps.push(num); continue; } // номер занят, данных нет: ждём цикл (общий для всех пропусков)
       take(raw);
-      dropKeys.push(keys[i]);
+      dropKeys.push('fb_' + num);
     }
-    var newT = gapAt ? gapAt - 1 : to;
-    var slotKeys = [];
+    var allGaps = keptGaps.concat(newGaps);
+    var newT = allGaps.length ? Math.max(t, Math.min.apply(null, allGaps) - 1) : Math.max(t, scanned);
+    var slotKeys = [], slotDone = 0;
     if (slotMins.length) {
-      var sl = slotRead_(cache, 'fs_', slotMins);
+      var sm = slotMins.slice(0, 1); // за порцию — одна минута слотов
+      var sl = slotRead_(cache, 'fs_', sm);
       sl.keys.forEach(function (key) { if (typeof sl.vals[key] === 'string') { take(sl.vals[key]); slotKeys.push(key); } });
+      slotDone = slotMins.length > 1 ? sm[0] : slotTo;
     }
-    if (missing) fbLost_(missing);
     try {
       applyClientTouches_(touches); // сначала отметки (повтор безвреден), потом события
-      writeEventRows_(events);
+      sheetToTrim = writeEventRows_(events, true);
       cache.remove('fb_fail');
     } catch (err) {
       // Запись не удалась: fb_t не сдвигается, следующий запуск повторит. Пять неудач подряд — пачку отбрасываем, чтобы не застрять.
@@ -384,19 +394,27 @@ function flushBuffer_(lockMs) {
       if (fails < 5) { cache.put('fb_fail', String(fails), 3600); return res; }
       cache.remove('fb_fail');
       fbLost_(dropKeys.length + slotKeys.length);
-      res.batches = 0; events = []; touches = [];
+      res.batches = 0; events = []; touches = []; sheetToTrim = null;
     }
-    if (n > t) cache.put('fb_t', String(newT), FB_TTL);
-    if (gapAt) cache.put('fb_gap', String(gapAt), FB_TTL); else if (prevGap) cache.remove('fb_gap');
-    if (slotMins.length) cache.put('fs_done', String(slotTo), FB_TTL);
-    if (dropKeys.length || slotKeys.length) cacheRemoveAll_(cache, dropKeys.concat(slotKeys));
+    // Указатель — сразу после записи, до любых необязательных действий (ротация, чистка кэша): сбой дальше не вызовет повторной записи.
+    try {
+      if (n > t) cache.put('fb_t', String(newT), FB_TTL);
+      if (allGaps.length) cache.put('fb_gap', JSON.stringify({ w: scanned, g: allGaps, at: newGaps.length || !waitOld ? Date.now() : st.at }), FB_TTL);
+      else if (both.fb_gap) cache.remove('fb_gap');
+      if (slotMins.length) cache.put('fs_done', String(slotDone), FB_TTL);
+    } catch (errP) { console.error('flush pointer: ' + safeErr_(errP)); }
+    if (missing) fbLost_(missing);
+    afterKeys = dropKeys.concat(slotKeys);
     res.events = events.length;
     res.clients = touches.length;
-    res.gap = !!gapAt;
-    res.more = newT < n && !gapAt;
+    res.gap = allGaps.length > 0;
+    res.more = (scanned < n || slotMins.length > 1);
+    if (sheetToTrim) { try { trimEventsSheet_(sheetToTrim); } catch (errT) { console.warn('flush trim: ' + safeErr_(errT)); } } // ротация не откатывает указатель
   } finally {
     lock.releaseLock();
   }
+  // Чистка кэша — уже вне блокировки; ошибка не мешает следующей порции.
+  try { if (afterKeys.length) cacheRemoveAll_(cache, afterKeys); } catch (errC) { /* ключи сами истекут */ }
   return res;
 }
 
@@ -411,8 +429,8 @@ function flushJob() {
     if (scriptProps_().getProperty('FAST_MODE') === '1') cache.put('fb_hb', '1', FB_HEARTBEAT_SEC);
     var started = Date.now();
     for (var round = 0; round < FB_FLUSH_ROUNDS; round++) {
-      var res = flushBuffer_(2000);
-      if (res.deferred || res.error || !res.more || Date.now() - started > 25000) break; // между проходами блокировка свободна: заказ пройдёт
+      var res = flushBuffer_(2000); // одна порция под блокировкой; между порциями она свободна, заказ проходит
+      if (res.deferred || res.error || !res.more || Date.now() - started > FB_JOB_BUDGET_MS) break; // остаток — на следующий запуск
     }
     var lost = parseInt(cache.get('fb_lost'), 10) || 0;
     if (lost) { console.warn('flush: втрачено подій/відміток: ' + lost); cache.remove('fb_lost'); }
