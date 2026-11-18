@@ -50,8 +50,8 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
     const father = await text(page, '.father');
     ok(/Спеції від батька/.test(father) && /Ці суміші батько збирає сам — для плову, шурпи й шашлику\./.test(father) && await count(page, '.father .mini') === 3, 'подборка «Спеції від батька» видна: заголовок, текст и три смеси', await count(page, '.father .mini'));
     ok(await count(page, '.perk') === 0, 'шуточных подарков на главной нет');
-    ok(await count(page, '.recs__item') === 7 && /Плов з урюком/.test(await text(page, '.recs')), 'блок «Рецепти»: 7 рецептов');
-    ok(await count(page, '.bizline--quiz') === 1, 'кнопка «Підібрати смаколики» есть');
+    ok(await count(page, '.rcard') === 7 && /Плов з урюком/.test(await text(page, '.recs')), 'блок «Рецепти»: 7 рецептов');
+    ok(await count(page, '.plus__item[data-k="quiz"]') === 1, 'кнопка «Підібрати смаколики» есть');
     ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'главная: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
     // Все категории: ровно 50 товаров, чужих марок нет.
     const chips = await page.locator('.chip[data-cat]').evaluateAll(list => list.map(c => c.getAttribute('data-cat')).filter(Boolean));
@@ -120,7 +120,7 @@ const KEEP = {}; DATA.products.forEach(p => { KEEP[p.id] = p; });
     setStock('SPS-002', 'немає'); // главный ингредиент шурпы
     const h = await open(browser, st.url, { uid: 4205 });
     await h.page.waitForSelector('.recs');
-    ok(await count(h.page, '.recs__item') === 6 && !/Шурпа/.test(await text(h.page, '.recs')), 'главный ингредиент «немає» — рецепт с главной пропал');
+    ok(await count(h.page, '.rcard') === 6 && !/Шурпа/.test(await text(h.page, '.recs')), 'главный ингредиент «немає» — рецепт с главной пропал');
     await h.page.context().close();
     setStock('SPS-002', 'є');
 

@@ -2369,7 +2369,8 @@
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
     edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false, sales: null, salesOpen: false,
     me: null, admins: null, invites: null, permList: null, admEdit: '', invite: null, logOpen: false, log: null, reviews: null, pending: {},
-    pp: 1, pcat: '', pf: { out: false, hidden: false, nophoto: false },
+    pp: 1, pcat: '', pf: { out: false, hidden: false, nophoto: false, noprice: false }, pvis: false,
+    today: null, todayOld: false, replies: [], canMsg: false, more: '', saved: {}, qdraft: {}, setOpen: {},
     archOpen: false, arch: null, archErr: false, aq: '', ap: 1 }; // экран «Архів» // товары в панели: страница, категория, фильтры
 
   /** Есть ли у меня право. Пока сервер не прислал роль (или бэкенд ещё старый) — показываем всё: решает всё равно сервер. */
@@ -2412,13 +2413,14 @@
         store.set(ADMIN_KEY, '1');
         admAt[kind] = Date.now();
         if (res.me) adm.me = res.me;
-        if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; }
+        if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; adm.replies = Array.isArray(res.replies) ? res.replies : []; adm.canMsg = Array.isArray(res.replies); fetchToday(); }
         else if (kind === 'settings') adm.settings = res.fields || [];
         else if (kind === 'reviews') adm.reviews = res.reviews || [];
         else if (kind === 'admins') { adm.admins = res.admins || []; adm.invites = res.invites || []; adm.permList = res.permList || []; }
         else if (kind === 'wh') adm.wh = { apps: res.apps || [], clients: res.clients || [] };
         else if (kind === 'mail') adm.mail = { mails: res.mails || [], every: res.every || 0, trigger: res.trigger ? 1 : 0 };
         else { adm.products = res.products || []; adm.cats = res.categories || []; }
+        renderToday();
       } else if (res && res.error === 'forbidden') {
         store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true;
       }
@@ -2452,13 +2454,13 @@
       btnFree(document.querySelector('[data-action="adm-refresh"]'));
       if (adm.loading !== kind) return; // пока шёл ответ, открыли другую вкладку: данные сохранены, экран не трогаем
       adm.loading = false;
-      if (!res || !res.ok) adm.error = res && res.error === 'forbidden' ? 'admForbidden' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admError';
+      if (!res || !res.ok) adm.error = res && res.error === 'forbidden' ? 'admForbidden' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admOffline';
       if (state.view === 'admin') renderPage();
       if (res && res.ok && kind === 'orders') prefetchAdmin('products'); // следующая вкладка, куда обычно идут
     }).catch(function () {
       btnFree(document.querySelector('[data-action="adm-refresh"]'));
       if (adm.loading !== kind) return;
-      adm.loading = false; adm.error = 'admError';
+      adm.loading = false; adm.error = 'admOffline';
       if (state.view === 'admin') renderAdminList();
     });
   }
@@ -2477,6 +2479,7 @@
       return '<button type="button" data-tab="' + tab[0] + '" aria-pressed="' + (adm.tab === tab[0]) + '">' + esc(t(tab[1])) + '</button>';
     }).join('') + '</div>';
     if (adm.tab === 'orders') {
+      html += '<div id="admToday">' + todayHtml() + '</div>';
       if (adm.stats) {
         html += '<div class="stats"><div><span>' + esc(t('admToday')) + '</span><b>' + adm.stats.today.n + ' · ' + money(adm.stats.today.sum) + '</b></div>' +
           '<div><span>' + esc(t('admWeek')) + '</span><b>' + adm.stats.week.n + ' · ' + money(adm.stats.week.sum) + '</b></div></div>' +
@@ -2498,7 +2501,7 @@
         '<button type="button" class="btn btn--block" data-action="adm-log">' + esc(t('admLog')) + '</button>';
     }
     return html + '<div id="admList">' + adminListHtml() + '</div>' +
-      (adm.tab === 'settings' ? '' : '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>');
+      (adm.tab === 'settings' || adm.error ? '' : '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>');
   }
 
   /* ---- Статистика продаж ---- */
@@ -2571,18 +2574,13 @@
     var box = document.getElementById('admList');
     if (box) box.innerHTML = adminListHtml();
     // Числа на чипах-фильтрах товаров («Без фото · 12») обновляются вместе со списком; прокрутка ряда категорий сохраняется.
-    var chips = document.getElementById('admPChips');
-    if (chips && adm.tab === 'products') {
-      var row = chips.querySelector('.chips'), left = row ? row.scrollLeft : 0;
-      chips.innerHTML = productChipsHtml();
-      row = chips.querySelector('.chips');
-      if (row) row.scrollLeft = left;
-    }
+    refreshChips();
+    renderToday();
   }
 
   function adminListHtml() {
     if (adm.loading) return '<p class="state__text adm__msg">' + esc(t('admLoading')) + '</p>';
-    if (adm.error) return '<p class="form__err">' + esc(t(adm.error)) + '</p>';
+    if (adm.error) return adminErrHtml();
     if (adm.tab === 'orders') return ordersHtml();
     if (adm.tab === 'products') return productsHtml();
     if (adm.tab === 'cats') return catsHtml();
@@ -2593,37 +2591,79 @@
     return settingsHtml();
   }
 
+  /** Следующий шаг заказа: код статуса для большой кнопки. Из других статусов (выполнено, нет в наличии) большой кнопки нет. */
+  var NEXT_STEP = { 'новий': 'c', 'підтверджено': 's', 'відправлено': 'd' };
+  function orderById(num) {
+    var found = null;
+    (adm.orders || []).forEach(function (o) { if (o.num === num) found = o; });
+    return found;
+  }
+  function stBtnHtml(b, o, big) {
+    var pend = adm.stPending && adm.stPending.num === o.num; // статус уже показан новым, сервер ещё отвечает
+    return '<button type="button" class="btn' + (big ? ' btn--primary btn--big' : '') + (!big && o.status === b[2] ? ' btn--soft' : '') +
+      (pend && adm.stPending.code === b[0] ? ' is-busy" aria-busy="true' : '') +
+      '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' + (o.status === b[2] || pend ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
+  }
+  /** Одна большая кнопка следующего шага; остальные статусы — под кнопкой «Ще». */
+  function orderActsHtml(o) {
+    var next = NEXT_STEP[o.status] || '', open = adm.more === o.num;
+    var html = '<div class="ord__acts">';
+    STATUS_BTNS.forEach(function (b) { if (b[0] === next) html += stBtnHtml(b, o, true); });
+    html += '<button type="button" class="btn' + (next ? '' : ' btn--wide') + '" data-more="' + esc(o.num) + '" aria-expanded="' + open + '">' + esc(t(next ? 'ordMore' : 'stChange')) + '</button>';
+    if (open) {
+      html += '<div class="ord__more">' + STATUS_BTNS.filter(function (b) { return b[0] !== next; }).map(function (b) { return stBtnHtml(b, o, false); }).join('') + '</div>';
+    }
+    return html + '</div>';
+  }
+  function orderAddress(o) {
+    return [o.city, o.branch].filter(function (x) { return x && String(x).trim(); }).join(', ');
+  }
+  function telHref(phone) { return 'tel:' + String(phone || '').replace(/[^\d+]/g, ''); }
+  function chatUrl(o) { return o.username ? 'https://t.me/' + o.username.replace(/^@/, '') : 'https://t.me/' + o.phone; }
+
   function ordersHtml() {
     var q = adm.q.trim().toLowerCase().replace(/\s+/g, '');
     var list = (adm.orders || []).filter(function (o) {
       if (adm.filter && o.status !== adm.filter) return false;
       return !q || (o.num + ' ' + o.phone + ' ' + o.name).toLowerCase().replace(/\s+/g, '').indexOf(q) >= 0;
     });
-    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    if (!list.length) return emptyHtml(!(adm.orders || []).length ? 'admEmptyOrders' : 'admNoMatch', !(adm.orders || []).length ? 'admEmptyOrdersHint' : 'admNoMatchHint', !!(adm.filter || q));
+    // Новые — сверху (порядок внутри групп прежний: свежие раньше).
+    list = list.filter(function (o) { return o.status === 'новий'; }).concat(list.filter(function (o) { return o.status !== 'новий'; }));
     return '<ul class="lines">' + list.map(function (o) {
       var open = adm.open === o.num;
-      var html = '<li class="ord"><button type="button" class="ord__head" data-ord="' + esc(o.num) + '" aria-expanded="' + open + '">' +
+      var html = '<li class="ord' + (o.status === 'новий' ? ' ord--new' : '') + '"><button type="button" class="ord__head" data-ord="' + esc(o.num) + '" aria-expanded="' + open + '">' +
         '<span class="ord__num">' + esc(o.num) + '</span><span class="badge ' + (STATUS_BADGE[o.status] || '') + '">' + esc(o.status) + '</span>' +
         (o.test ? '<span class="badge">' + esc(t('admTest')) + '</span>' : '') + (o.wh ? '<span class="badge badge--opt">' + esc(t('whOrder')) + '</span>' : '') +
         '<span class="ord__sum">' + money(o.total) + '</span>' +
         '<span class="ord__meta">' + esc(o.date) + ' · ' + esc(o.name) + '</span></button>';
       if (open) {
+        var addr = orderAddress(o);
         html += '<div class="ord__body"><ul class="ord__items">' + String(o.items).split('; ').map(function (s) {
           return s ? '<li>' + esc(s) + '</li>' : '';
         }).join('') + '</ul>' +
-          '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br><a href="tel:' + esc(o.phone) + '">' + esc(o.phone) + '</a></p>' +
+          '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br>' + esc(o.phone) + '</p>' +
           '<p>' + esc(o.delivery) + (o.city ? ': ' + esc(o.city) + ', ' + esc(o.branch) : '') + '<br>' + esc(o.pay) + '</p>' +
           (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) + payAdminHtml(o) +
-          (can('st') ? '<div class="ord__acts">' + STATUS_BTNS.map(function (b) {
-            var pend = adm.stPending && adm.stPending.num === o.num; // статус уже показан новым, сервер ещё отвечает
-            return '<button type="button" class="btn' + (o.status === b[2] ? ' btn--soft' : '') + (pend && adm.stPending.code === b[0] ? ' is-busy" aria-busy="true' : '') +
-              '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' + (o.status === b[2] || pend ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
-          }).join('') + '</div>' : '') +
-          '<button type="button" class="btn btn--block" data-chat="' + esc(o.username ? 'https://t.me/' + o.username.replace(/^@/, '') : 'https://t.me/' + o.phone) + '">' +
-          esc(t('admWrite')) + '</button></div>';
+          (can('st') ? orderActsHtml(o) : '') +
+          '<div class="ord__tools">' + (o.phone ? '<a class="btn" href="' + esc(telHref(o.phone)) + '" data-call="' + esc(o.num) + '">' + esc(t('ordCall')) + '</a>' : '') +
+          (can('st') && adm.canMsg ? '<button type="button" class="btn" data-write="' + esc(o.num) + '">' + esc(t('ordWrite')) + '</button>'
+            : '<button type="button" class="btn" data-chat="' + esc(chatUrl(o)) + '">' + esc(t('admWrite')) + '</button>') +
+          (addr ? '<button type="button" class="btn btn--wide" data-copyaddr="' + esc(o.num) + '">' + esc(t('ordCopy')) + '</button>' : '') + '</div></div>';
       }
       return html + '</li>';
     }).join('') + '</ul>';
+  }
+
+  /** Пустой или ошибочный список: что произошло и что нажать. reset — кнопка «Скинути фільтри». */
+  function emptyHtml(titleKey, hintKey, reset) {
+    return '<div class="adm__empty"><p class="adm__empty-t">' + esc(t(titleKey)) + '</p><p class="adm__empty-h">' + esc(t(hintKey)) + '</p>' +
+      (reset ? '<button type="button" class="btn btn--block" data-action="adm-reset">' + esc(t('admReset')) + '</button>' : '') + '</div>';
+  }
+  function adminErrHtml() {
+    var perm = adm.error === 'admNoPerm' || adm.error === 'admForbidden';
+    return '<div class="adm__empty" role="alert"><p class="adm__empty-t">' + esc(t(adm.error)) + '</p>' +
+      (perm ? '' : '<button type="button" class="btn btn--primary btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>') + '</div>';
   }
 
   function adminPrice(p) {
@@ -2638,11 +2678,13 @@
       if (adm.pf.out && p.stock) return false;
       if (adm.pf.hidden && !p.hidden) return false;
       if (adm.pf.nophoto && p.img) return false;
+      if (adm.pf.noprice && p.price > 0) return false;
+      if (adm.pvis && p.hidden) return false; // открыто с карточки «Сьогодні»: сервер считает только видимые товары
       return !q || (p.ua + ' ' + p.ru + ' ' + p.id).toLowerCase().indexOf(q) >= 0;
     });
   }
 
-  /** Чипы над списком товаров: категории и фильтры «немає в наявності», «приховані», «без фото» (с числом товаров). */
+  /** Чипы над списком товаров: категории и фильтры «приховані», «чекають ціну», «немає», «без фото» (с числом товаров). */
   function productChipsHtml() {
     var all = adm.products || [];
     if (!all.length) return '';
@@ -2650,8 +2692,8 @@
     (adm.cats || []).forEach(function (c) { if (!seenCat[c.ua]) { seenCat[c.ua] = 1; cats.push(c.ua); } });
     all.forEach(function (p) { if (p.cat && !seenCat[p.cat]) { seenCat[p.cat] = 1; cats.push(p.cat); } }); // категория, которой нет в листе «Категорії»
     function n(test) { return all.filter(test).length; }
-    var flags = [['out', 'admFltOut', n(function (p) { return !p.stock; })], ['hidden', 'admFltHidden', n(function (p) { return p.hidden; })],
-      ['nophoto', 'admFltNoPhoto', n(function (p) { return !p.img; })]];
+    var flags = [['hidden', 'admFltHidden', n(function (p) { return p.hidden; })], ['noprice', 'admFltPrice', n(function (p) { return !(p.price > 0); })],
+      ['out', 'admFltOut', n(function (p) { return !p.stock; })], ['nophoto', 'admFltNoPhoto', n(function (p) { return !p.img; })]];
     return '<div class="chips chips--flush" role="group" aria-label="' + esc(t('admCat')) + '">' +
       '<button type="button" class="chip" data-pcat="" aria-pressed="' + (adm.pcat === '') + '">' + esc(t('admAll')) + '</button>' +
       cats.map(function (c) { return '<button type="button" class="chip" data-pcat="' + esc(c) + '" aria-pressed="' + (adm.pcat === c) + '">' + esc(c) + '</button>'; }).join('') + '</div>' +
@@ -2660,17 +2702,32 @@
       }).join('') + '</div>';
   }
 
+  var SAVED_MS = 2200; // сколько на карточке товара видна отметка «Збережено»
+  function priceText(v) { return v > 0 ? String(v).replace('.', ',') : ''; }
+  /** Одна строка товара: название, переключатель «є / немає», быстрая цена. */
+  function prodRowHtml(p) {
+    var mark = adm.saved[p.id] && Date.now() - adm.saved[p.id] < SAVED_MS;
+    var draft = adm.qdraft[p.id], val = draft !== undefined ? draft : priceText(p.price);
+    var busyQ = adm.pending['q:' + p.id];
+    var dirty = draft !== undefined && draft !== priceText(p.price);
+    var cur = p.t === 'w' ? '₴/' + weight(1000) : '₴';
+    return '<li class="prod prod--q' + (mark ? ' is-saved' : '') + '" data-pid="' + esc(p.id) + '"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
+      '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) +
+      (p.hidden ? ' · ' + esc(t('admHiddenTag')) : '') + (p.img ? '' : ' · ' + esc(t('admNoPhoto'))) + '</span></button>' +
+      '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"' + (can('stock') && !adm.pending[p.id] ? '' : ' disabled') + (adm.pending[p.id] ? ' aria-busy="true"' : '') + '><span></span></button>' +
+      (can('price') ? '<div class="prod__quick"><input class="input" type="text" inputmode="decimal" maxlength="9" autocomplete="off" data-qprice="' + esc(p.id) + '" aria-label="' +
+        esc(t(p.t === 'w' ? 'admPriceKg' : 'admPriceUnit')) + '" value="' + esc(val) + '"' + (busyQ ? ' disabled' : '') + '><span class="prod__cur">' + esc(cur) + '</span>' +
+        '<button type="button" class="btn' + (busyQ ? ' is-busy" aria-busy="true' : '') + '" data-qsave="' + esc(p.id) + '"' + (dirty && !busyQ ? '' : ' disabled') + '>' + esc(t('qpSave')) + '</button></div>' +
+        '<p class="form__err prod__err" role="alert" hidden></p>' : '') +
+      '<span class="prod__ok" role="status"' + (mark ? '' : ' hidden') + '>' + icon('check') + esc(t('admSaved')) + '</span></li>';
+  }
+
   function productsHtml() {
     var list = adminProductList();
-    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    if (!list.length) return emptyHtml(!(adm.products || []).length ? 'admEmptyProducts' : 'admNoMatch', !(adm.products || []).length ? 'admEmptyProductsHint' : 'admNoMatchHint', !!(adm.products || []).length);
     adm.pp = clampPage(adm.pp, list.length, PAGE_SIZE);
     var from = (adm.pp - 1) * PAGE_SIZE;
-    var html = '<ul class="lines">' + list.slice(from, from + PAGE_SIZE).map(function (p) {
-      return '<li class="prod"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
-        '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) +
-        (p.hidden ? ' · ' + esc(t('admHiddenTag')) : '') + (p.img ? '' : ' · ' + esc(t('admNoPhoto'))) + '</span></button>' +
-        '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"' + (can('stock') && !adm.pending[p.id] ? '' : ' disabled') + (adm.pending[p.id] ? ' aria-busy="true"' : '') + '><span></span></button></li>';
-    }).join('') + '</ul>';
+    var html = (adm.pvis ? '<p class="field__hint">' + esc(t('admVisOnly')) + '</p>' : '') + '<ul class="lines">' + list.slice(from, from + PAGE_SIZE).map(prodRowHtml).join('') + '</ul>';
     return html + pagerHtml(list.length, adm.pp, PAGE_SIZE);
   }
 
@@ -2699,7 +2756,7 @@
   }
   function fVal(id) { var x = document.getElementById('a-' + id); return x ? x.value.trim() : ''; }
   function fNum(id) { return Number(fVal(id).replace(/\s/g, '').replace(',', '.') || 0); }
-  function fOn(id) { var x = document.getElementById('a-' + id); return !!(x && x.checked); }
+  function fOn(id) { var x = document.getElementById('a-' + id); return !!(x && (x.getAttribute('role') === 'switch' ? x.getAttribute('aria-checked') === 'true' : x.checked)); }
   function fErr(key) {
     var err = document.getElementById('admErr');
     if (err) { err.textContent = t(key); err.hidden = false; err.scrollIntoView({ block: 'center' }); }
@@ -2720,8 +2777,9 @@
     var photo = isNew
       ? '<p class="info info__muted">' + esc(t('admPhotoLater')) + '</p>'
       : '<div class="photo"><div class="photo__box">' + (p.img ? '<img src="' + esc(p.img) + '" alt="" referrerpolicy="no-referrer">' : MARK) + '</div>' +
-        '<div class="photo__acts">' + (can('photo') ? '<label class="btn btn--block">' + esc(t(p.img ? 'admPhotoChange' : 'admPhotoPick')) +
-        '<input type="file" id="a-photo" accept="image/*" hidden></label>' +
+        '<div class="photo__acts">' + (can('photo') ? '<label class="btn btn--block">' + esc(t('admPhotoCam')) +
+        '<input type="file" id="a-photo-cam" accept="image/*" capture="environment" hidden></label>' +
+        '<label class="btn btn--block">' + esc(t('admPhotoGal')) + '<input type="file" id="a-photo" accept="image/*" hidden></label>' +
         (p.img ? '<button type="button" class="btn btn--block" data-action="adm-photo-del">' + esc(t('admPhotoDel')) + '</button>' : '') : '') +
         '<p class="field__hint" id="photoMsg"></p></div></div>';
     var lockedNote = Object.keys(PATCH_PERM).some(function (k) { return !can(PATCH_PERM[k]); }) ? '<p class="info info__muted">' + esc(t('admLocked')) + '</p>' : '';
@@ -2854,7 +2912,8 @@
     if (!p || !file || adm.busy) return;
     adm.busy = true;
     var pick = document.querySelector('.photo__acts label.btn');
-    if (pick) pick.classList.add('is-busy');
+    var picks = Array.prototype.slice.call(document.querySelectorAll('.photo__acts label.btn'));
+    picks.forEach(function (x) { x.classList.add('is-busy'); });
     if (msg) msg.textContent = t('admPhotoUp');
     compressPhoto(file).then(function (data) {
       return api('admin.photo', { id: p.id, data: data });
@@ -2867,7 +2926,7 @@
       if (state.view === 'admin' && adm.edit === p.id) renderPage();
     }).catch(function () {
       adm.busy = false;
-      if (pick) pick.classList.remove('is-busy');
+      picks.forEach(function (x) { x.classList.remove('is-busy'); });
       if (msg) msg.textContent = t('admPhotoFail');
     });
   }
@@ -3048,24 +3107,96 @@
   }
 
   /* ---- Настройки магазина ---- */
+  /** Группы настроек. Ключ, которого нет ни в одной группе (новый на сервере), попадает в «Інше» — без пояснения. */
+  var SET_GROUPS = [
+    ['shop', 'setGShop', /^(notice_|contact$|feature_|father_|home_rails_max$|low_stock$|fresh_days$)/],
+    ['gifts', 'setGGifts', /^(gift_|loyal_|referral_)/],
+    ['pay', 'setGPay', /^(pay_|min_order$|address_|hours_)/],
+    ['texts', 'setGTexts', /^(bot_|greeting|welcome_|biz_soon_|confirm_|remind_text_|story_|reply_)/],
+    ['season', 'setGSeason', /^(theme|ny_)/]
+  ];
+  var SET_SWITCH = /^(pay_|ny_snow$|gift_note$|referral_on$)/; // включено/выключено — переключателем
+  function settingGroup(k) {
+    for (var i = 0; i < SET_GROUPS.length; i++) if (SET_GROUPS[i][2].test(k)) return SET_GROUPS[i][0];
+    return 'other';
+  }
+  function setBase(k) { return k.replace(/^reply_\d_(ua|ru)$/, 'reply').replace(/_(ua|ru)$/, ''); }
+  /** Что видит покупатель под полем: какой макет и на каком языке. null — для этой настройки превью нет. */
+  function previewKind(k) {
+    var m = k.match(/_(ua|ru)$/), lang = m ? m[1] : state.lang;
+    var kind = /^notice(_text)?_(ua|ru)$/.test(k) ? 'notice' : /^gift_text_/.test(k) ? 'gift' : /^loyal_text_/.test(k) ? 'loyal' :
+      /^(feature|father)_title_/.test(k) ? 'title' : /^(feature|father)_text_/.test(k) ? 'text' : /^reply_\d_/.test(k) ? 'reply' : /^ny_order_until_/.test(k) ? 'plain' : '';
+    return kind ? { kind: kind, lang: lang } : null;
+  }
+  function tIn(lang, key) { return (I18N[lang] && I18N[lang][key]) || I18N.ua[key] || key; }
+  function previewHtml(k, value) {
+    var pk = previewKind(k);
+    if (!pk) return '';
+    var v = String(value || '').trim();
+    if (!v) return '<span class="spv__empty">' + esc(t('spvEmpty')) + '</span>';
+    if (pk.kind === 'notice') return '<div class="spv__notice">' + esc(v) + '</div>';
+    if (pk.kind === 'gift') return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'giftOk').replace('{g}', v)) + '</span></div>';
+    if (pk.kind === 'loyal') {
+      var every = document.getElementById('a-loyal_every'), n = every ? Math.round(Number(every.value)) : 0;
+      return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'loyalText').replace('{k}', n >= 2 ? n : 'N').replace('{g}', v)) + '</span></div>';
+    }
+    if (pk.kind === 'title') return '<div class="feature__title">' + esc(v) + '</div>';
+    if (pk.kind === 'text') return '<div class="feature__text">' + esc(v) + '</div>';
+    if (pk.kind === 'reply') return '<div class="spv__bubble">' + esc(v) + '</div>';
+    return '<div class="spv__plain">' + esc(v) + '</div>';
+  }
+  function refreshPreview(k) {
+    var box = document.getElementById('pv-' + k), input = document.getElementById('a-' + k);
+    if (box && input) box.innerHTML = previewHtml(k, input.value);
+  }
+  function setHintsHtml(k) {
+    var base = setBase(k), h = I18N[state.lang]['sh_' + base] || I18N.ua['sh_' + base] || '';
+    var ex = I18N.ua['sx_' + k] || I18N.ua['sx_' + base] || ''; // пример — это образец текста, он на языке самого поля
+    var html = '';
+    if (h) html += '<p class="field__hint">' + esc(h) + '</p>';
+    if (h && ex) html += '<p class="field__hint field__ex">' + esc(t('setExample')) + ' ' + esc(ex) + '</p>';
+    return html;
+  }
+  function setPreviewBox(f) {
+    return previewKind(f.k) ? '<div class="spv"><p class="spv__label">' + esc(t('spvTitle')) + '</p><div class="spv__box" id="pv-' + esc(f.k) + '" aria-live="polite">' + previewHtml(f.k, f.v) + '</div></div>' : '';
+  }
+  function setFieldHtml(f) {
+    if (SET_SWITCH.test(f.k)) {
+      var on = f.k.indexOf('pay_') === 0 ? /^так$/i.test(f.v) : /^(1|так|да|yes|true)$/i.test(String(f.v).trim());
+      return '<div class="field sfield"><div class="sfield__sw"><span class="label" id="l-' + esc(f.k) + '">' + esc(f.label) + '</span>' +
+        '<button type="button" class="sw" role="switch" id="a-' + esc(f.k) + '" aria-labelledby="l-' + esc(f.k) + '" aria-checked="' + on + '" data-setsw="' + esc(f.k) + '"><span></span></button></div>' +
+        setHintsHtml(f.k) + '</div>';
+    }
+    var inner;
+    if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+    else if (/^(gift|loyal)_text_/.test(f.k)) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
+    else if (f.k === 'referral_min_order' || f.k === 'mail_every_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+    else if (f.k.indexOf('referral_gift') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
+    else if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
+    else if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
+    else inner = fArea(f.k, f.label, f.v, /^reply_/.test(f.k) ? 300 : 500);
+    // подсказка и превью — внутрь того же блока поля
+    return inner.replace(/<\/div>$/, setHintsHtml(f.k) + setPreviewBox(f) + '</div>').replace('<div class="field">', '<div class="field sfield">')
+      .replace(' id="a-' + f.k + '"', ' id="a-' + f.k + '"' + (previewKind(f.k) ? ' data-prev="' + f.k + '"' : ''));
+  }
   function settingsHtml() {
     if (!adm.settings) return '';
-    return '<form class="form" id="admForm" novalidate>' + FORM_ERR + adm.settings.map(function (f) {
-      if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
-      if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
-      if (/^(gift|loyal)_text_/.test(f.k)) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
-      if (f.k === 'referral_on' || f.k === 'referral_min_order' || f.k === 'mail_every_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
-      if (f.k.indexOf('referral_gift') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
-      if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
-      if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
-      return fArea(f.k, f.label, f.v, 500);
+    var groups = {};
+    adm.settings.forEach(function (f) { var g = settingGroup(f.k); (groups[g] = groups[g] || []).push(f); });
+    var order = SET_GROUPS.map(function (g) { return [g[0], g[1]]; }).concat([['other', 'setGOther']]);
+    return '<form class="form" id="admForm" novalidate>' + FORM_ERR + order.filter(function (g) { return groups[g[0]]; }).map(function (g) {
+      var open = adm.setOpen[g[0]] !== false;
+      return '<details class="sgroup" data-sg="' + g[0] + '"' + (open ? ' open' : '') + '><summary class="sgroup__sum"><span>' + esc(t(g[1])) + '</span><span class="sgroup__n">' + groups[g[0]].length + '</span></summary>' +
+        '<div class="sgroup__body">' + groups[g[0]].map(setFieldHtml).join('') + '</div></details>';
     }).join('') + saveBtn() + '</form>';
   }
 
   function saveSettingsForm() {
     if (adm.busy || !adm.settings) return;
     var values = {};
-    adm.settings.forEach(function (f) { values[f.k] = f.k.indexOf('pay_') === 0 ? fOn(f.k) : fVal(f.k); });
+    adm.settings.forEach(function (f) {
+      values[f.k] = f.k.indexOf('pay_') === 0 ? fOn(f.k) : SET_SWITCH.test(f.k) ? (fOn(f.k) ? '1' : '0') : fVal(f.k);
+    });
     if (!values.pay_cash && !values.pay_card) { fErr('admErrPay'); return; }
     var btn = saveBtnEl();
     adm.busy = true; btnBusy(btn);
@@ -3091,6 +3222,7 @@
     }
     var pc = e.target.closest('[data-pcat], [data-pflt]');
     if (pc) { // категория или фильтр товаров: список с первой страницы
+      adm.pvis = false;
       if (pc.hasAttribute('data-pcat')) adm.pcat = pc.getAttribute('data-pcat');
       else adm.pf[pc.getAttribute('data-pflt')] = !adm.pf[pc.getAttribute('data-pflt')];
       adm.pp = 1;
@@ -3109,30 +3241,20 @@
     var ord = e.target.closest('[data-ord]');
     if (ord) { var num = ord.getAttribute('data-ord'); adm.open = adm.open === num ? '' : num; renderAdminList(); return true; }
     var st = e.target.closest('[data-st]');
-    if (st && !st.disabled) {
-      var order = null;
-      adm.orders.forEach(function (o) { if (o.num === st.getAttribute('data-num')) order = o; });
-      if (!order || adm.busy) return true;
-      // Новый статус показываем сразу, не дожидаясь сервера; если сервер откажет — возвращаем прежний и говорим об этом.
-      var stCode = st.getAttribute('data-st'), stWas = order.status, stNext = stWas;
-      STATUS_BTNS.forEach(function (b) { if (b[0] === stCode) stNext = b[2]; });
-      adm.busy = true; adm.stPending = { num: order.num, code: stCode };
-      order.status = stNext;
-      renderAdminList();
-      var stDone = function (text, back) {
-        adm.busy = false; adm.stPending = null;
-        if (back) { order.status = stWas; haptic('error'); }
-        toast(text);
-        if (state.view === 'admin') renderAdminList();
-      };
-      api('admin.status', { num: order.num, code: stCode }).then(function (res) {
-        if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
-        if (!res || !res.ok) throw new Error('fail');
-        order.status = res.status;
-        stDone(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''), false);
-      }).catch(function () { stDone(t('admStBack'), true); });
-      return true;
-    }
+    if (st) { if (!st.disabled) startStatus(st); return true; }
+    var more = e.target.closest('[data-more]');
+    if (more) { var mn = more.getAttribute('data-more'); adm.more = adm.more === mn ? '' : mn; renderAdminList(); return true; }
+    var wr = e.target.closest('[data-write]');
+    if (wr) { var wo = orderById(wr.getAttribute('data-write')); if (wo) openMessageSheet(wo); return true; }
+    var ca = e.target.closest('[data-copyaddr]');
+    if (ca) { copyAddress(ca); return true; }
+    if (e.target.closest('[data-call]')) return false; // обычная ссылка tel:
+    var td = e.target.closest('[data-today]');
+    if (td) { goToday(td.getAttribute('data-today')); return true; }
+    var qs = e.target.closest('[data-qsave]');
+    if (qs) { if (!qs.disabled) saveQuickPrice(qs); return true; }
+    var ssw = e.target.closest('[data-setsw]');
+    if (ssw) { ssw.setAttribute('aria-checked', String(ssw.getAttribute('aria-checked') !== 'true')); return true; }
     var chat = e.target.closest('[data-chat]');
     if (chat) {
       var url = chat.getAttribute('data-chat');
@@ -3153,6 +3275,9 @@
     var act = e.target.closest('[data-action]');
     var name = act ? act.getAttribute('data-action') : '';
     if (name === 'adm-refresh') { if (!adm.loading) { btnBusy(act); loadAdmin(true); } return true; }
+    if (name === 'adm-reset') {
+      adm.filter = ''; adm.q = ''; resetProductFilters(); renderPage(); return true;
+    }
     if (name === 'adm-sales') { if (!adm.salesLoading) loadSales(); return true; }
     if (name === 'adm-save') {
       if (adm.edit) saveProductForm(); else if (adm.catEdit) saveCategoryForm(); else if (adm.admEdit) saveAdminForm(); else saveSettingsForm();
@@ -3272,6 +3397,19 @@
       var input = e.target;
       if (input.id === 'admQ') { adm.q = input.value; renderAdminList(); return; }
       if (input.id === 'admPQ') { adm.pq = input.value; adm.pp = 1; renderAdminList(); return; }
+      if (input.hasAttribute && input.hasAttribute('data-qprice')) {
+        var qid = input.getAttribute('data-qprice'), qp = adminProduct(qid), qli = input.closest('.prod');
+        adm.qdraft[qid] = input.value;
+        input.removeAttribute('aria-invalid');
+        if (qli) {
+          var qe = qli.querySelector('.prod__err'), qb = qli.querySelector('[data-qsave]');
+          if (qe) qe.hidden = true;
+          if (qb) qb.disabled = !qp || input.value === priceText(qp.price) || !!adm.pending['q:' + qid];
+        }
+        return;
+      }
+      if (input.hasAttribute && input.hasAttribute('data-prev')) refreshPreview(input.getAttribute('data-prev'));
+      if (input.id === 'a-loyal_every') { refreshPreview('loyal_text_ua'); refreshPreview('loyal_text_ru'); }
       if (input.id === 'admAQ') { adm.aq = input.value; adm.ap = 1; renderArchiveList(); return; }
       if (!input.name || state.view !== 'checkout') return;
       if (input.name === 'phone') input.value = formatPhone(input.value);
@@ -3285,7 +3423,7 @@
     });
     el.page.addEventListener('change', function (e) {
       if (e.target.id === 'a-role' && adm.admEdit) { var pb = document.getElementById('admPerms'); if (pb) pb.hidden = e.target.value === 'admin'; return; }
-      if (e.target.id === 'a-photo' && e.target.files && e.target.files[0]) uploadPhoto(e.target.files[0]);
+      if ((e.target.id === 'a-photo' || e.target.id === 'a-photo-cam') && e.target.files && e.target.files[0]) { uploadPhoto(e.target.files[0]); try { e.target.value = ''; } catch (err) { /* поле файла не сбрасывается — не страшно */ } }
       if ((e.target.id === 'a-stock' || e.target.id === 'a-hidden') && adm.edit && adm.edit !== '+') toggleInForm(e.target);
     });
     el.page.addEventListener('submit', function (e) { e.preventDefault(); });
@@ -5275,6 +5413,7 @@
       if (!res || !res.ok) throw new Error(res && res.error === 'no_perm' ? 'admNoPerm' : 'admSwFail');
       Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
       delete adm.pending[p.id];
+      markSaved(p.id); fetchToday(true);
       catalogSoon();
       if (state.view === 'admin') renderAdminList();
     }).catch(function (err) {
@@ -5574,6 +5713,418 @@
       }
     });
   }
+
+  /* ======================================================================== */
+  /* ЭТАП 9, выпуск Б, волна Б1, блок 2: админка удобнее                       */
+  /* ======================================================================== */
+  /* ---- «Сьогодні»: числа первого экрана ---- */
+  var todayAgain = false;
+  /** Числа считает сервер (admin.today). Старый бэкенд такого действия не знает — тогда считаем честно по уже загруженным спискам. */
+  function fetchToday(force) {
+    if (!cfg.API_URL || !inTelegram || adm.todayOld) return;
+    if (admFlight.today) { if (force) todayAgain = true; return; }
+    admFlight.today = api('admin.today').then(function (res) {
+      delete admFlight.today;
+      if (res && res.ok && res.today && typeof res.today === 'object') { adm.today = res.today; adm.todayOld = false; }
+      else if (res && res.error !== 'forbidden' && res.error !== 'no_perm') adm.todayOld = true;
+      if (todayAgain) { todayAgain = false; fetchToday(false); }
+      renderToday();
+    }, function () { delete admFlight.today; todayAgain = false; });
+  }
+  function isRealOrder(o) { return !o.test; }
+  function todayItems() {
+    var out = [];
+    function add(key, label, n) { if (typeof n === 'number' && isFinite(n)) out.push({ key: key, label: label, n: n }); }
+    if (adm.today && !adm.todayOld) {
+      add('new', 'tdNew', adm.today.newOrders); add('ship', 'tdShip', adm.today.toShip);
+      add('out', 'tdOut', adm.today.outOfStock); add('price', 'tdPrice', adm.today.noPrice); add('photo', 'tdPhoto', adm.today.noPhoto);
+    } else if (adm.todayOld) { // старый бэкенд: только то, что видно в уже загруженных списках
+      var os = adm.orders, ps = adm.products;
+      if (os && can('st')) {
+        add('new', 'tdNew', os.filter(function (o) { return isRealOrder(o) && o.status === 'новий'; }).length);
+        add('ship', 'tdShip', os.filter(function (o) { return isRealOrder(o) && o.status === 'підтверджено'; }).length);
+      }
+      if (ps && can('stock')) add('out', 'tdOut', ps.filter(function (p) { return !p.hidden && !p.stock; }).length);
+      if (ps && can('price')) add('price', 'tdPrice', ps.filter(function (p) { return !(p.price > 0); }).length);
+      if (ps && can('photo')) add('photo', 'tdPhoto', ps.filter(function (p) { return !p.hidden && !p.img; }).length);
+    }
+    return out;
+  }
+  function todayHtml() {
+    var items = todayItems();
+    if (!items.length) return '';
+    return '<section class="today" aria-label="' + esc(t('admToday')) + '"><p class="label">' + esc(t('admToday')) + '</p><div class="today__grid">' + items.map(function (c) {
+      return '<button type="button" class="tcard' + (c.n ? '' : ' is-zero') + '" data-today="' + c.key + '"><b class="tcard__n">' + c.n + '</b><span class="tcard__l">' + esc(t(c.label)) + '</span></button>';
+    }).join('') + '</div></section>';
+  }
+  function renderToday() {
+    var box = document.getElementById('admToday');
+    if (box && state.view === 'admin' && adm.tab === 'orders') box.innerHTML = todayHtml();
+  }
+  function setOrderFilter(value) {
+    adm.filter = value; adm.q = ''; adm.open = '';
+    var q = document.getElementById('admQ'); if (q) q.value = '';
+    Array.prototype.forEach.call(document.querySelectorAll('#admFilter .chip'), function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-filter') === adm.filter));
+    });
+    renderAdminList();
+  }
+  function resetProductFilters() {
+    adm.pcat = ''; adm.pq = ''; adm.pp = 1; adm.pvis = false;
+    adm.pf = { out: false, hidden: false, nophoto: false, noprice: false };
+  }
+  /** Нажатие на карточку «Сьогодні»: открывается именно тот список, число из которого на карточке. */
+  function goToday(kind) {
+    if (kind === 'new' || kind === 'ship') {
+      setOrderFilter(kind === 'new' ? 'новий' : 'підтверджено');
+      scrollToList(document.getElementById('admFilter'));
+      return;
+    }
+    resetProductFilters();
+    if (kind === 'out') { adm.pf.out = true; adm.pvis = true; }
+    else if (kind === 'photo') { adm.pf.nophoto = true; adm.pvis = true; }
+    else adm.pf.noprice = true;
+    adm.tab = 'products'; adm.error = '';
+    renderPage(); loadAdmin(false); window.scrollTo(0, 0);
+  }
+
+  /* ---- Смена статуса: шторка с точным текстом для клиента ---- */
+  function stLabel(code) { var v = ''; STATUS_BTNS.forEach(function (b) { if (b[0] === code) v = b[2]; }); return v; }
+  function startStatus(btn) {
+    var order = orderById(btn.getAttribute('data-num')), code = btn.getAttribute('data-st');
+    if (!order || adm.busy) return;
+    adm.busy = true; btnBusy(btn, '.ord__acts'); // кнопка сразу «занята», пока идёт запрос превью
+    function release() { adm.busy = false; if (state.view === 'admin') renderAdminList(); }
+    function sheet(text, extra) {
+      release();
+      openStatusSheet(order, code, text, extra);
+    }
+    if (!adm.canMsg) { sheet('', ''); return; } // старый бэкенд превью не умеет: текст недоступен, подтвердить можно
+    api('admin.statusPreview', { num: order.num, code: code }).then(function (res) {
+      if (res && res.error === 'no_perm') { release(); haptic('error'); toast(t('admNoPerm')); return; }
+      if (res && res.error === 'not_found') { release(); haptic('error'); toast(t('stGone')); return; }
+      if (res && res.ok && res.willSend === false) { adm.busy = false; applyStatusDirect(order, code, t('stNoMsg')); return; }
+      if (res && res.ok && res.willSend === true) { sheet(String(res.text || ''), res.extra || ''); return; }
+      sheet('', '');
+    }).catch(function () { sheet('', ''); });
+  }
+  function openStatusSheet(order, code, text, extra) {
+    var html = '<p class="confirm__text">' + esc(tf('stAskText', { num: order.num })) + '</p>' +
+      (text ? '<blockquote class="spv__quote" id="stText">' + esc(text) + '</blockquote>' : '<p class="note note--out" id="stText">' + esc(t('stNoPreview')) + '</p>') +
+      (extra === 'fop' ? '<p class="info info__muted">' + esc(t('stFop')) + '</p>' : '');
+    askConfirm({
+      title: tf('stAskTitle', { s: stLabel(code) }), html: html, ok: t('stOk'),
+      run: function (done) {
+        api('admin.status', { num: order.num, code: code }).then(function (res) {
+          if (res && res.error === 'no_perm') { done(t('admNoPerm')); return; }
+          if (!res || !res.ok) throw new Error('fail');
+          order.status = res.status;
+          done();
+          haptic('success');
+          toast(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''));
+          if (state.view === 'admin') renderAdminList();
+          fetchToday(true);
+        }).catch(function () { done(t('stFail')); });
+      }
+    });
+  }
+  /** Клиент сообщения не получит (или шторка не нужна): новый статус виден сразу, при ошибке возвращается прежний. */
+  function applyStatusDirect(order, stCode, note) {
+    if (adm.busy) return;
+    var stWas = order.status, stNext = stLabel(stCode) || stWas;
+    adm.busy = true; adm.stPending = { num: order.num, code: stCode };
+    order.status = stNext;
+    renderAdminList();
+    var stDone = function (text, back) {
+      adm.busy = false; adm.stPending = null;
+      if (back) { order.status = stWas; haptic('error'); }
+      toast(text);
+      if (state.view === 'admin') renderAdminList();
+      fetchToday(true);
+    };
+    api('admin.status', { num: order.num, code: stCode }).then(function (res) {
+      if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
+      if (!res || !res.ok) throw new Error('fail');
+      order.status = res.status;
+      stDone(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : note ? '. ' + note : ''), false);
+    }).catch(function () { stDone(t('admStBack'), true); });
+  }
+
+  /* ---- «Написати»: шторка с шаблонами ---- */
+  var MSG_ERR = { bad_form: 'msgBad', not_found: 'msgNotFound', test_order: 'msgTest', no_chat: 'msgNoChat', rate_limit: 'msgRate', no_perm: 'admNoPerm' };
+  var MSG_MAX = 500;
+  function tplListHtml(lang) {
+    return (adm.replies || []).map(function (r, i) {
+      var text = String((lang === 'ru' ? r.ru : r.ua) || r.ua || r.ru || '');
+      return text ? '<button type="button" class="btn btn--wrap msg__tpl" data-tpl="' + i + '">' + esc(text) + '</button>' : '';
+    }).join('');
+  }
+  function msgSheetBody(o, lang) {
+    var tpl = (adm.replies || []).length
+      ? '<div class="msg__tpls"><p class="label">' + esc(t('msgTpl')) + '</p>' +
+        '<div class="chips chips--flush chips--wrap" role="group" aria-label="' + esc(t('msgLang')) + '">' + ['ua', 'ru'].map(function (l) {
+          return '<button type="button" class="chip" data-tlang="' + l + '" aria-pressed="' + (lang === l) + '">' + l.toUpperCase() + '</button>';
+        }).join('') + '</div><div class="msg__list" id="msgTpls">' + tplListHtml(lang) + '</div></div>' : '';
+    return tpl + '<div class="field"><label class="label" for="msgText">' + esc(t('msgField')) + '</label>' +
+      '<textarea class="input input--area" id="msgText" rows="4" maxlength="' + MSG_MAX + '"></textarea>' +
+      '<p class="field__hint" id="msgCnt" aria-live="polite">0 / ' + MSG_MAX + '</p><p class="field__hint">' + esc(t('msgHint')) + '</p></div>' +
+      '<button type="button" class="btn btn--block" data-chat="' + esc(chatUrl(o)) + '">' + esc(t('ordTgChat')) + '</button>';
+  }
+  function openMessageSheet(o) {
+    var lang = o.lang === 'ru' ? 'ru' : o.lang === 'ua' ? 'ua' : state.lang; // язык заказа клиента; если сервер его не прислал — язык панели
+    adm.msgLang = lang;
+    askConfirm({
+      title: tf('msgTitle', { num: o.num }), html: msgSheetBody(o, lang), ok: t('msgSend'), msg: o,
+      run: function (done) {
+        var ta = document.getElementById('msgText'), text = ta ? ta.value.trim() : '';
+        if (!text) { done(t('msgEmpty')); return; }
+        api('admin.message', { num: o.num, text: text }).then(function (res) {
+          if (res && res.ok) {
+            if (res.told === false) { done(t('msgNotTold')); return; }
+            done(); haptic('success'); toast(t('msgSent'));
+            return;
+          }
+          done(t((res && MSG_ERR[res.error]) || 'msgFail'));
+        }).catch(function () { done(t('msgFail')); });
+      }
+    });
+  }
+  function msgCount() {
+    var ta = document.getElementById('msgText'), c = document.getElementById('msgCnt');
+    if (ta && c) c.textContent = ta.value.length + ' / ' + MSG_MAX;
+  }
+  /** Нажатия внутри шторки «Написати»: язык шаблонов, шаблон, чат в Telegram. */
+  function sheetExtraClick(e) {
+    if (!state.sheet || !state.sheet.o || !state.sheet.o.msg) return false;
+    var chat = e.target.closest('[data-chat]');
+    if (chat) {
+      var url = chat.getAttribute('data-chat');
+      try { tg.openTelegramLink(url); } catch (err) { window.open(url, '_blank'); }
+      return true;
+    }
+    var tl = e.target.closest('[data-tlang]');
+    if (tl) {
+      adm.msgLang = tl.getAttribute('data-tlang');
+      Array.prototype.forEach.call(el.sheet.querySelectorAll('[data-tlang]'), function (b) { b.setAttribute('aria-pressed', String(b === tl)); });
+      var box = document.getElementById('msgTpls');
+      if (box) box.innerHTML = tplListHtml(adm.msgLang);
+      return true;
+    }
+    var tp = e.target.closest('[data-tpl]');
+    if (tp) {
+      var r = (adm.replies || [])[Number(tp.getAttribute('data-tpl'))], ta = document.getElementById('msgText');
+      if (r && ta) {
+        ta.value = String((adm.msgLang === 'ru' ? r.ru : r.ua) || r.ua || r.ru || '').slice(0, MSG_MAX);
+        msgCount();
+        var err = document.getElementById('cfErr'); if (err) err.hidden = true;
+        try { ta.focus({ preventScroll: true }); } catch (x) { /* не страшно */ }
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /* ---- Копирование адреса ---- */
+  function copyAddress(btn) {
+    var o = orderById(btn.getAttribute('data-copyaddr')), text = o ? orderAddress(o) : '';
+    if (!text || btn.disabled) return;
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.className = 'copybuf';
+    document.body.appendChild(ta);
+    copyText(text, ta).then(function (ok) {
+      if (ta.parentNode) ta.parentNode.removeChild(ta);
+      if (!ok) { haptic('error'); toast(t('admLinkFail')); return; }
+      haptic('success');
+      var was = btn.innerHTML;
+      btn.classList.add('is-saved'); btn.disabled = true; btn.innerHTML = icon('check') + esc(t('ordCopied'));
+      setTimeout(function () { btn.classList.remove('is-saved'); btn.disabled = false; btn.innerHTML = was; }, 1400);
+    });
+  }
+
+  /* ---- Быстрая цена в списке товаров ---- */
+  function refreshChips() {
+    var chips = document.getElementById('admPChips');
+    if (chips && adm.tab === 'products') {
+      var row = chips.querySelector('.chips'), left = row ? row.scrollLeft : 0;
+      chips.innerHTML = productChipsHtml();
+      row = chips.querySelector('.chips');
+      if (row) row.scrollLeft = left;
+    }
+  }
+  function redrawRow(id) {
+    var li = document.querySelector('#admList .prod[data-pid="' + id + '"]'), p = adminProduct(id);
+    if (!li || !p) return null;
+    var tmp = document.createElement('ul');
+    tmp.innerHTML = prodRowHtml(p);
+    li.parentNode.replaceChild(tmp.firstChild, li);
+    return document.querySelector('#admList .prod[data-pid="' + id + '"]');
+  }
+  /** «Збережено» на карточке на пару секунд; потом отметка гаснет, а товар, который уже не подходит под фильтр, уходит из списка. */
+  function markSaved(id) {
+    adm.saved[id] = Date.now();
+    setTimeout(clearMarks, SAVED_MS + 60);
+  }
+  function clearMarks() {
+    if (state.view !== 'admin' || adm.tab !== 'products' || adm.loading) return;
+    var ids = adminProductList().map(function (p) { return p.id; }), stale = false;
+    Array.prototype.forEach.call(document.querySelectorAll('#admList .prod'), function (li) {
+      var id = li.getAttribute('data-pid');
+      if (adm.saved[id] && Date.now() - adm.saved[id] >= SAVED_MS) {
+        li.classList.remove('is-saved');
+        var ok = li.querySelector('.prod__ok'); if (ok) ok.hidden = true;
+      }
+      if (ids.indexOf(id) < 0) stale = true;
+    });
+    var a = document.activeElement;
+    if (stale && !(a && a.hasAttribute && a.hasAttribute('data-qprice'))) renderAdminList();
+  }
+  function saveQuickPrice(btn) {
+    var id = btn.getAttribute('data-qsave'), p = adminProduct(id);
+    if (!p || adm.pending['q:' + id]) return;
+    var li = btn.closest('.prod'), input = li && li.querySelector('[data-qprice]'), err = li && li.querySelector('.prod__err');
+    if (!input) return;
+    var n = Number(String(input.value).replace(/\s/g, '').replace(',', '.'));
+    if (!(n > 0) || !isFinite(n)) {
+      input.setAttribute('aria-invalid', 'true');
+      if (err) { err.textContent = t('qpBad'); err.hidden = false; }
+      haptic('error');
+      return;
+    }
+    n = Math.round(n * 100) / 100;
+    adm.pending['q:' + id] = true;
+    btnBusy(btn); input.disabled = true;
+    if (err) err.hidden = true;
+    api('admin.product', { id: id, patch: { price: n } }).then(function (res) {
+      if (!res || !res.ok) throw new Error(res && res.error === 'no_perm' ? 'admNoPerm' : 'qpFail');
+      Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
+      delete adm.pending['q:' + id]; delete adm.qdraft[id];
+      haptic('success'); markSaved(id); catalogSoon(); fetchToday(true);
+      if (state.view === 'admin' && adm.tab === 'products') { redrawRow(id); refreshChips(); }
+    }).catch(function (e2) {
+      delete adm.pending['q:' + id]; delete adm.qdraft[id]; // прежнее значение возвращается в поле
+      haptic('error');
+      if (state.view !== 'admin' || adm.tab !== 'products') return;
+      var row = redrawRow(id), msg = row && row.querySelector('.prod__err');
+      if (msg) { msg.textContent = t(e2 && e2.message === 'admNoPerm' ? 'admNoPerm' : 'qpFail'); msg.hidden = false; }
+    });
+  }
+
+  /* ---- Тексты ---- */
+  var I18N_B10 = {
+    ua: {
+      tdNew: 'Нові замовлення', tdShip: 'Треба відправити', tdOut: 'Немає в наявності', tdPrice: 'Чекають ціну', tdPhoto: 'Без фото',
+      ordMore: 'Ще', stChange: 'Змінити статус', ordCall: 'Подзвонити', ordWrite: 'Написати', ordCopy: 'Скопіювати адресу', ordCopied: 'Скопійовано',
+      ordTgChat: 'Відкрити чат у Telegram',
+      stAskTitle: 'Змінити статус на «{s}»?', stAskText: 'Замовлення {num}. Клієнт отримає таке повідомлення:', stOk: 'Надіслати й змінити статус',
+      stNoPreview: 'Текст повідомлення зараз недоступний. Клієнт може отримати повідомлення про зміну статусу.',
+      stFop: 'Реквізити для оплати клієнт отримає окремим повідомленням.', stNoMsg: 'Клієнт повідомлення не отримує',
+      stFail: 'Не вдалося змінити статус. Статус не змінено — спробуйте ще раз.', stGone: 'Замовлення не знайдено. Натисніть «Оновити».',
+      msgTitle: 'Написати клієнту · {num}', msgTpl: 'Готові відповіді', msgLang: 'Мова відповіді', msgField: 'Текст повідомлення', msgSend: 'Надіслати', msgSent: 'Надіслано',
+      msgHint: 'Клієнт отримає це від бота PAMIR у чаті з ботом. Можна виправити шаблон перед надсиланням.',
+      msgEmpty: 'Напишіть текст повідомлення.', msgBad: 'Повідомлення порожнє або довше за 500 знаків.', msgNotFound: 'Замовлення не знайдено. Закрийте вікно й натисніть «Оновити».',
+      msgTest: 'Це тестове замовлення — клієнту нічого не надсилається.', msgNoChat: 'У цього клієнта немає чату з ботом. Зателефонуйте йому або напишіть у Telegram самі.',
+      msgRate: 'Забагато повідомлень за годину. Спробуйте пізніше або зателефонуйте клієнту.', msgFail: 'Не вдалося надіслати. Спробуйте ще раз.',
+      msgNotTold: 'Повідомлення не доставлено: клієнт, схоже, заблокував бота. Зателефонуйте йому або напишіть у Telegram.',
+      qpSave: 'Зберегти', qpBad: 'Введіть число більше нуля.', qpFail: 'Не вдалося зберегти ціну — повернули попередню.',
+      admFltPrice: 'Чекають ціну', admFltOut: 'Немає', admVisOnly: 'Приховані товари тут не показано — так само їх рахує картка «Сьогодні».',
+      admPhotoCam: 'Зняти фото', admPhotoGal: 'Вибрати з галереї',
+      admEmptyOrders: 'Замовлень поки немає', admEmptyOrdersHint: 'Нові замовлення з’являться тут самі. Щоб перевірити зараз, натисніть «Оновити».',
+      admNoMatch: 'Нічого не знайдено', admNoMatchHint: 'Змініть пошук або зніміть фільтри.', admReset: 'Скинути фільтри',
+      admEmptyProducts: 'Товарів поки немає', admEmptyProductsHint: 'Товари з’являться тут, щойно їх буде додано в таблицю.',
+      admOffline: 'Немає зв’язку — натисніть «Оновити»', admNoPerm: 'Немає прав на цю дію — зверніться до власника',
+      setGShop: 'Магазин', setGGifts: 'Подарунки', setGPay: 'Оплата й доставка', setGTexts: 'Тексти', setGSeason: 'Сезон', setGOther: 'Інше',
+      setExample: 'Приклад:', spvTitle: 'Так це бачить покупець', spvEmpty: 'Порожньо — нічого не показується.',
+      sh_notice: 'Рядок угорі магазину; покупець може його закрити. Якщо заповнена «Смужка запуску», показується вона. Порожньо — рядка немає.',
+      sh_notice_text: 'Смужка угорі магазину; головніша за звичайне оголошення. Покупець може її закрити. Порожньо — смужки немає.',
+      sh_gift_from: 'Від якої суми замовлення клієнт отримує подарунок. 0 — подарунка немає. Працює, лише якщо нижче вписано, що саме дарується.',
+      sh_gift_text: 'Що саме дарується, коли сума замовлення досягла порогу.',
+      sh_loyal_every: 'Кожне N-те замовлення клієнта — з подарунком. 0 — вимкнено, мінімум 2. Працює, лише якщо нижче вписано подарунок.',
+      sh_loyal_text: 'Що саме дарується постійному клієнтові.',
+      sh_min_order: 'Менше цієї суми оформити замовлення не вийде. 0 — без обмеження.',
+      sh_pay_cash: 'Чи пропонувати оплату при отриманні. Хоча б один із двох способів — «при отриманні» або «на картку» — має лишатися увімкненим.',
+      sh_pay_card: 'Чи пропонувати оплату переказом на картку. Хоча б один із двох способів — «при отриманні» або «на картку» — має лишатися увімкненим.',
+      sh_pay_cod: 'Накладений платіж пропонується лише при доставці Новою поштою.',
+      sh_address: 'Адреса самовивозу, яку бачать покупці.', sh_hours: 'Години роботи, які бачать покупці.',
+      sh_contact: 'Кому веде кнопка «Написати нам»: @нік або номер телефону. Порожньо — кнопки немає.',
+      sh_feature_id: 'ID товару (або кількох через кому) для блоку угорі каталогу. Порожньо — блоку немає.',
+      sh_feature_title: 'Заголовок блоку угорі каталогу.', sh_feature_text: 'Текст під заголовком блоку угорі каталогу.',
+      sh_father_ids: 'ID товарів через кому для добірки на головній. Порожньо — добірки немає.',
+      sh_father_title: 'Заголовок добірки на головній.', sh_father_text: 'Текст під заголовком добірки. Порожньо — без тексту.',
+      sh_home_rails_max: 'Скільки стрічок товарів показувати на головній. Від 1 до 8.',
+      sh_theme: 'Сезонне оформлення магазину. Порожньо — звичайне; доступні newyear і navruz.',
+      sh_theme_until: 'Остання дата, коли діє сезонна тема (включно). Порожньо — без обмеження.',
+      sh_confirm: 'Текст, який бот пише клієнтові одразу після прийняття замовлення.',
+      sh_reply: 'Готова відповідь для кнопки «Написати» у замовленні: адмін обирає її одним дотиком і може виправити перед надсиланням. Порожньо — шаблону немає.',
+      sx_notice_ua: 'Сьогодні не працюємо. Питання — @pamir_help', sx_notice_ru: 'Сегодня не работаем. Вопросы — @pamir_help',
+      sx_notice_text_ua: 'Магазин щойно відкрився — питання пишіть нам', sx_notice_text_ru: 'Магазин только открылся — вопросы пишите нам',
+      sx_gift_from: '500', sx_gift_text_ua: '100 г кураги', sx_gift_text_ru: '100 г кураги',
+      sx_loyal_every: '5', sx_loyal_text_ua: 'чурчхела', sx_loyal_text_ru: 'чурчхела', sx_min_order: '300',
+      sx_contact: '@pamir_help', sx_feature_id: 'DRY-039', sx_feature_title_ua: 'Наша курага', sx_feature_title_ru: 'Наша курага',
+      sx_feature_text_ua: 'З нашого родинного саду в Ісфарі.', sx_feature_text_ru: 'Из нашего семейного сада в Исфаре.',
+      sx_father_ids: 'SPC-001, SPC-004', sx_father_title_ua: 'Спеції від батька', sx_father_title_ru: 'Специи от отца',
+      sx_father_text_ua: 'Ці суміші батько збирає сам.', sx_father_text_ru: 'Эти смеси отец собирает сам.',
+      sx_home_rails_max: '3', sx_theme: 'newyear', sx_theme_until: '10.01.2027',
+      sx_confirm_ua: 'Ми підтвердимо наявність і напишемо вам сюди.', sx_confirm_ru: 'Мы подтвердим наличие и напишем вам сюда.',
+      sx_reply_ua: 'Замовлення зібрано, відправимо сьогодні.', sx_reply_ru: 'Заказ собран, отправим сегодня.'
+    },
+    ru: {
+      tdNew: 'Новые заказы', tdShip: 'Надо отправить', tdOut: 'Нет в наличии', tdPrice: 'Ждут цену', tdPhoto: 'Без фото',
+      ordMore: 'Ещё', stChange: 'Сменить статус', ordCall: 'Позвонить', ordWrite: 'Написать', ordCopy: 'Скопировать адрес', ordCopied: 'Скопировано',
+      ordTgChat: 'Открыть чат в Telegram',
+      stAskTitle: 'Сменить статус на «{s}»?', stAskText: 'Заказ {num}. Клиент получит такое сообщение:', stOk: 'Отправить и сменить статус',
+      stNoPreview: 'Текст сообщения сейчас недоступен. Клиент может получить сообщение о смене статуса.',
+      stFop: 'Реквизиты для оплаты клиент получит отдельным сообщением.', stNoMsg: 'Клиент сообщение не получает',
+      stFail: 'Не удалось сменить статус. Статус не изменён — попробуйте ещё раз.', stGone: 'Заказ не найден. Нажмите «Обновить».',
+      msgTitle: 'Написать клиенту · {num}', msgTpl: 'Готовые ответы', msgLang: 'Язык ответа', msgField: 'Текст сообщения', msgSend: 'Отправить', msgSent: 'Отправлено',
+      msgHint: 'Клиент получит это от бота PAMIR в чате с ботом. Шаблон можно поправить перед отправкой.',
+      msgEmpty: 'Напишите текст сообщения.', msgBad: 'Сообщение пустое или длиннее 500 знаков.', msgNotFound: 'Заказ не найден. Закройте окно и нажмите «Обновить».',
+      msgTest: 'Это тестовый заказ — клиенту ничего не отправляется.', msgNoChat: 'У этого клиента нет чата с ботом. Позвоните ему или напишите в Telegram сами.',
+      msgRate: 'Слишком много сообщений за час. Попробуйте позже или позвоните клиенту.', msgFail: 'Не удалось отправить. Попробуйте ещё раз.',
+      msgNotTold: 'Сообщение не доставлено: клиент, похоже, заблокировал бота. Позвоните ему или напишите в Telegram.',
+      qpSave: 'Сохранить', qpBad: 'Введите число больше нуля.', qpFail: 'Не удалось сохранить цену — вернули прежнюю.',
+      admFltPrice: 'Ждут цену', admFltOut: 'Нет', admVisOnly: 'Скрытые товары здесь не показаны — так же их считает карточка «Сегодня».',
+      admPhotoCam: 'Снять фото', admPhotoGal: 'Выбрать из галереи',
+      admEmptyOrders: 'Заказов пока нет', admEmptyOrdersHint: 'Новые заказы появятся здесь сами. Чтобы проверить сейчас, нажмите «Обновить».',
+      admNoMatch: 'Ничего не найдено', admNoMatchHint: 'Измените поиск или снимите фильтры.', admReset: 'Сбросить фильтры',
+      admEmptyProducts: 'Товаров пока нет', admEmptyProductsHint: 'Товары появятся здесь, как только их добавят в таблицу.',
+      admOffline: 'Нет связи — нажмите «Обновить»', admNoPerm: 'Нет прав на это действие — обратитесь к владельцу',
+      setGShop: 'Магазин', setGGifts: 'Подарки', setGPay: 'Оплата и доставка', setGTexts: 'Тексты', setGSeason: 'Сезон', setGOther: 'Прочее',
+      setExample: 'Пример:', spvTitle: 'Так это видит покупатель', spvEmpty: 'Пусто — ничего не показывается.',
+      sh_notice: 'Строка вверху магазина; покупатель может её закрыть. Если заполнена «Полоска запуска», показывается она. Пусто — строки нет.',
+      sh_notice_text: 'Полоска вверху магазина; главнее обычного объявления. Покупатель может её закрыть. Пусто — полоски нет.',
+      sh_gift_from: 'С какой суммы заказа клиент получает подарок. 0 — подарка нет. Работает, только если ниже вписано, что именно дарится.',
+      sh_gift_text: 'Что именно дарится, когда сумма заказа достигла порога.',
+      sh_loyal_every: 'Каждый N-й заказ клиента — с подарком. 0 — выключено, минимум 2. Работает, только если ниже вписан подарок.',
+      sh_loyal_text: 'Что именно дарится постоянному клиенту.',
+      sh_min_order: 'Меньше этой суммы оформить заказ не получится. 0 — без ограничения.',
+      sh_pay_cash: 'Предлагать ли оплату при получении. Хотя бы один из двух способов — «при получении» или «на карту» — должен остаться включённым.',
+      sh_pay_card: 'Предлагать ли оплату переводом на карту. Хотя бы один из двух способов — «при получении» или «на карту» — должен остаться включённым.',
+      sh_pay_cod: 'Наложенный платёж предлагается только при доставке Новой почтой.',
+      sh_address: 'Адрес самовывоза, который видят покупатели.', sh_hours: 'Часы работы, которые видят покупатели.',
+      sh_contact: 'Куда ведёт кнопка «Написать нам»: @ник или номер телефона. Пусто — кнопки нет.',
+      sh_feature_id: 'ID товара (или нескольких через запятую) для блока вверху каталога. Пусто — блока нет.',
+      sh_feature_title: 'Заголовок блока вверху каталога.', sh_feature_text: 'Текст под заголовком блока вверху каталога.',
+      sh_father_ids: 'ID товаров через запятую для подборки на главной. Пусто — подборки нет.',
+      sh_father_title: 'Заголовок подборки на главной.', sh_father_text: 'Текст под заголовком подборки. Пусто — без текста.',
+      sh_home_rails_max: 'Сколько лент товаров показывать на главной. От 1 до 8.',
+      sh_theme: 'Сезонное оформление магазина. Пусто — обычное; доступны newyear и navruz.',
+      sh_theme_until: 'Последняя дата, когда действует сезонная тема (включительно). Пусто — без ограничения.',
+      sh_confirm: 'Текст, который бот пишет клиенту сразу после принятия заказа.',
+      sh_reply: 'Готовый ответ для кнопки «Написать» в заказе: админ выбирает его одним касанием и может поправить перед отправкой. Пусто — шаблона нет.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B10[lang]).forEach(function (k) { I18N[lang][k] = I18N_B10[lang][k]; });
+  });
+
+  // Шторка «Написати»: счётчик знаков и нажатия внутри шторки.
+  el.sheet.addEventListener('input', function (e) { if (e.target.id === 'msgText') msgCount(); });
+  el.sheet.addEventListener('click', function (e) { if (sheetExtraClick(e)) e.stopPropagation(); }, true);
+  // Группы настроек запоминают, открыты они или свёрнуты, пока панель на экране.
+  el.page.addEventListener('toggle', function (e) {
+    var sg = e.target && e.target.getAttribute && e.target.getAttribute('data-sg');
+    if (sg) adm.setOpen[sg] = !!e.target.open;
+  }, true);
 
   // Любое нажатие на кнопку — лёгкая вибрация; занятая кнопка нажатий не принимает.
   document.addEventListener('click', function (e) {
