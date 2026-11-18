@@ -3850,11 +3850,12 @@
     if (np.wh[np.ref] !== 'old') return;
     // Старый бэкенд: запрос на ввод, с задержкой, устаревшие ответы отбрасываются.
     clearTimeout(np.whTimer);
-    var q = input.value.trim(), seq = ++np.whSeq;
+    var q = input.value.trim(), seq = ++np.whSeq, ref = np.ref; // ref: ответ по прежнему городу не показываем под новым
     np.whTimer = setTimeout(function () {
+      if (np.ref !== ref) return;
       npBusy('whBusy', true);
-      apiGetTimed('action=np.wh&city=' + encodeURIComponent(np.ref) + '&q=' + encodeURIComponent(q) + '&t=' + (state.form.npType === 'locker' ? 'locker' : ''))
-        .then(function (res) { if (seq === np.whSeq) { npBusy('whBusy', false); suggShow('whSugg', (res && res.ok && res.list) || [], 'np-wh'); } })
+      apiGetTimed('action=np.wh&city=' + encodeURIComponent(ref) + '&q=' + encodeURIComponent(q) + '&t=' + (state.form.npType === 'locker' ? 'locker' : ''))
+        .then(function (res) { if (seq === np.whSeq) { npBusy('whBusy', false); if (np.ref === ref) suggShow('whSugg', (res && res.ok && res.list) || [], 'np-wh'); } })
         .catch(function () { if (seq === np.whSeq) npBusy('whBusy', false); });
     }, 350);
   }

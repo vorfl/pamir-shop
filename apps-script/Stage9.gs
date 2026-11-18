@@ -168,7 +168,7 @@ function stage9Run_() {
   spec.order = ['порядок'];
   var col = mapHeaders_(vals[0], spec);
   // «Порядок» и «Вага упаковки, г» — только точное совпадение заголовка (как в Code.gs), а не «по началу»
-  var exactHead = vals[0].map(function (h) { return String(h || '').replace(/s+/g, ' ').trim().toLowerCase(); });
+  var exactHead = vals[0].map(function (h) { return String(h || '').replace(/\s+/g, ' ').trim().toLowerCase(); });
   col.packG = exactHead.indexOf('вага упаковки, г');
   col.order = exactHead.indexOf('порядок');
   var must = [['id', 'ID'], ['nameUa', 'Назва (UA)'], ['type', 'Тип'], ['pUnit', 'Ціна за упаковку'], ['stock', 'Наявність'], ['photo', 'Фото'], ['catUa', 'Категорія (UA)']];
