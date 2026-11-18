@@ -93,11 +93,34 @@ function createGas(codePath, seed) {
   const triggers = [];
   let msgId = 100;
   let failTelegram = false;
+  // Выпуск 9Б: «блокировка занята N мс» (script/doc), журнал обращений к блокировкам, не-Telegram запросы (Worker), Drive.
+  // Стенд НЕ воспроизводит настоящую конкуренцию Google: busy — условное время, которое запрос ждал бы; реального ожидания нет.
+  const lockCfg = { script: 0, doc: 0 };
+  const lockLog = [];
+  const lockWaited = { script: 0, doc: 0 };
+  const fetched = []; // запросы не к Telegram: { url, method, headers, payload }
+  const fetchCfg = { fail: false, code: 200 };
+  const drive = { folders: [], files: [], seq: 0 };
+  function newFile(name, folder, src) {
+    drive.clock = (drive.clock || Date.now()) + 60000; // каждая следующая копия «создана» на минуту позже
+    return { id: 'FILE-' + (++drive.seq), name, folder, trashed: false, created: new Date(drive.clock), src,
+      getName() { return this.name; }, getDateCreated() { return this.created; }, setTrashed(v) { this.trashed = !!v; return this; } };
+  }
+  const held = { script: 0, doc: 0 }; // сколько блокировок сейчас удерживается (для проверки «не внутри блокировки»)
+  function mkLock(kind) {
+    const rec = (opn, ms, okk) => { lockLog.push({ kind, op: opn, ms, ok: okk }); if (okk) held[kind]++; if (okk && lockCfg[kind] > 0 && lockCfg[kind] !== Infinity) lockWaited[kind] += lockCfg[kind]; return okk; };
+    return {
+      waitLock(ms) { if (kind === 'script') op('lock'); if (!rec('wait', ms, lockCfg[kind] <= ms)) throw new Error('Lock timeout: waitLock'); },
+      tryLock(ms) { if (kind === 'script') op('lock'); return rec('try', ms, lockCfg[kind] <= ms); },
+      releaseLock() { held[kind] = Math.max(0, held[kind] - 1); }
+    };
+  }
 
   const ss = {
     getSheetByName: n => sheets[n] || null,
     insertSheet: n => { sheets[n] = new Sheet(n, [], ops); return sheets[n]; },
     getSpreadsheetTimeZone: () => 'Europe/Kiev',
+    getId: () => 'SS-ID-1',
     // «Создать копию»: стенд запоминает имя и снимок всех листов на момент копии
     copy: name => { copies.push({ name, sheets: JSON.parse(JSON.stringify(Object.fromEntries(Object.keys(sheets).map(k => [k, sheets[k].rows])))) }); return {}; }
   };
@@ -106,8 +129,8 @@ function createGas(codePath, seed) {
     alert(...a) { ui.alerts.push(a.join(' | ')); return ui.answer; },
     createMenu: () => { const m = { items: [], addItem: (t, fn) => { m.items.push([t, fn]); return m; }, addSeparator: () => m, addSubMenu: sub => { m.items.push(['>', sub]); return m; }, addToUi() { ui.menu = m; } }; return m; } };
   const sandbox = {
-    console: { log() {}, warn() {}, error(...a) { sandbox.__errors.push(a.join(' ')); } },
-    __errors: [],
+    console: { log() {}, warn(...a) { sandbox.__warns.push(a.join(' ')); }, error(...a) { sandbox.__errors.push(a.join(' ')); } },
+    __errors: [], __warns: [],
     SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ui },
     CacheService: { getScriptCache: () => ({
       get: k => { op('cache'); return k in cache ? cache[k] : null; },
@@ -122,7 +145,7 @@ function createGas(codePath, seed) {
       getProperties: () => { op('prop'); return Object.assign({}, props); },
       setProperty: (k, v) => { op('prop'); props[k] = String(v); }
     }) },
-    LockService: { getScriptLock: () => ({ waitLock() { op('lock'); }, tryLock() { op('lock'); return true; }, releaseLock() {} }) },
+    LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => mkLock('doc') },
     Utilities: {
       newBlob: (data) => ({ getBytes: () => (typeof data === 'string' ? Array.from(Buffer.from(data, 'utf8')) : data) }),
       computeHmacSha256Signature: (value, key) => {
@@ -136,6 +159,11 @@ function createGas(codePath, seed) {
       getUuid: () => crypto.randomUUID()
     },
     UrlFetchApp: { fetchAll: reqs => { op('tgBatch'); return reqs.map(r => sandbox.UrlFetchApp.fetch(r.url, r, true)); }, fetch: (url, opts, batched) => {
+      if (!/api.telegram.org|novaposhta/.test(url)) { // Worker и прочее: запоминаем, Telegram не трогаем
+        fetched.push({ lockHeld: held.script + held.doc, url, method: opts && opts.method, headers: (opts && opts.headers) || {}, payload: opts && opts.payload });
+        if (fetchCfg.fail) throw new Error('fetch failed: ' + url + ' ' + JSON.stringify((opts && opts.headers) || {}));
+        return { getResponseCode: () => fetchCfg.code, getContentText: () => '' };
+      }
       if (!batched) op('tg'); // отдельный вызов Telegram; вызовы из fetchAll идут параллельно и считаются одной пачкой
       const method = url.split('/').pop().split('?')[0];
       const payload = opts && opts.payload ? JSON.parse(opts.payload) : {};
@@ -149,9 +177,16 @@ function createGas(codePath, seed) {
     ScriptApp: {
       getProjectTriggers: () => triggers.map(t => ({ getHandlerFunction: () => t })),
       deleteTrigger: t => { const i = triggers.indexOf(t.getHandlerFunction()); if (i >= 0) triggers.splice(i, 1); },
-      newTrigger: fn => { const b = { timeBased: () => b, everyMinutes: () => b, everyHours: () => b, everyDays: () => b, atHour: () => b, create: () => { triggers.push(fn); } }; return b; }
+      newTrigger: fn => { const b = { timeBased: () => b, everyMinutes: () => b, everyHours: () => b, everyDays: () => b, onWeekDay: () => b, atHour: () => b, create: () => { triggers.push(fn); } }; return b; },
+      WeekDay: { SUNDAY: 'SUNDAY' }
     },
-    DriveApp: {}
+    DriveApp: {
+      getFolderById: id => { const f = drive.folders.find(x => x.id === id); if (!f) throw new Error('Not found'); return f; },
+      getFoldersByName: name => { const l = drive.folders.filter(x => x.name === name); let i = 0; return { hasNext: () => i < l.length, next: () => l[i++] }; },
+      createFolder: name => { const f = { id: 'FOLDER-' + (++drive.seq), name, trashed: false, getId() { return this.id; }, isTrashed() { return this.trashed; },
+        getFiles() { const l = drive.files.filter(x => x.folder === this && !x.trashed); let i = 0; return { hasNext: () => i < l.length, next: () => l[i++] }; } }; drive.folders.push(f); return f; },
+      getFileById: id => ({ makeCopy: (name, folder) => { drive.files.push(newFile(name, folder, id)); return drive.files[drive.files.length - 1]; } })
+    }
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(codePath, 'utf8'), sandbox, { filename: 'Code.gs' });
@@ -165,7 +200,9 @@ function createGas(codePath, seed) {
   function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; } if (typeof propsMemo_ !== "undefined") { propsMemo_ = null; logBuffer_ = null; perf_ = null; pointsMemo_ = null; } if (typeof whMapMemo_ !== "undefined") { whMapMemo_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
 
   return {
-    sandbox, sheets, props, cache, sent, triggers, ops, copies, ui,
+    sandbox, sheets, props, cache, sent, triggers, ops, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
+    setLockBusy(scriptMs, docMs) { lockCfg.script = scriptMs || 0; lockCfg.doc = docMs || 0; },
+    setFetch(fail, code) { fetchCfg.fail = !!fail; fetchCfg.code = code || 200; },
     resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); },
     setTelegramFail(v) { failTelegram = v; },
     clearCache() { Object.keys(cache).forEach(k => { delete cache[k]; }); },

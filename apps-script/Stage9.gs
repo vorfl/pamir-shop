@@ -103,6 +103,7 @@ function stage9Apply() {
   if (res.ok && typeof clearCatalogCache_ === 'function' && res.changedCells > 0) {
     try { clearCatalogCache_(); } catch (e) { /* кэш живёт 5 минут и без этого */ }
   }
+  if (typeof purgeWorkerIfPending_ === 'function') purgeWorkerIfPending_(); // Worker: каталог изменился (вне блокировки)
   s9Alert_(res.message);
   return res;
 }

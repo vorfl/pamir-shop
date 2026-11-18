@@ -71,6 +71,7 @@ function menuLaunchApply() {
   var answer = ui.alert('Застосувати підготовку до запуску?', head + launchSummaryText_(plan) + '\n\nРезервна копія за сьогодні є. Продовжити?', ui.ButtonSet.YES_NO);
   if (answer !== ui.Button.YES) return;
   var res = launchApply_();
+  if (typeof purgeWorkerIfPending_ === 'function') purgeWorkerIfPending_(); // Worker: каталог изменился (вне блокировки)
   if (res.error === 'busy') { ui.alert('Зараз таблицю змінює інша дія. Зачекайте хвилину й натисніть «3. Застосувати» ще раз.'); return; }
   if (!res.ok) { ui.alert('Не вдалося: ' + (res.message || res.error)); return; }
   if (!res.done) {
