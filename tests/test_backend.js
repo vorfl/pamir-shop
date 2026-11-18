@@ -65,6 +65,21 @@ console.log('Заказ');
   const same = { action: 'order', initData: g.initData(U(43)), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Ігор', phone: '+380671234567', delivery: 'np', city: 'Київ', branch: '12', pay: 'cod', lang: 'ru', rid: 'same-rid' };
   const a = g.post(same), b = g.post(same);
   ok(a.ok && b.ok && a.number === b.number, 'повторная отправка не создаёт второй заказ', [a, b]);
+  { // гонка: дубль с тем же rid целиком выполняется, пока первый запрос ждёт блокировку (ранняя проверка уже пройдена)
+    const gr = fresh();
+    const rows0 = gr.sheets['Замовлення'].rows.length;
+    const race = { action: 'order', initData: gr.initData(U(47)), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Ігор', phone: '+380671234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'race-rid' };
+    const realLock = gr.sandbox.LockService;
+    let inner = null, armed = true;
+    gr.sandbox.LockService = { getScriptLock: () => { const l = realLock.getScriptLock(); return { tryLock: l.tryLock, releaseLock: l.releaseLock, waitLock(ms) { if (armed) { armed = false; inner = gr.post(race); } return l.waitLock(ms); } }; } };
+    const outer = gr.post(race);
+    gr.sandbox.LockService = realLock;
+    const again = gr.post(race);
+    const adminOrderMsgs = gr.sent.filter(m => m.method === 'sendMessage' && m.payload.chat_id === '900' && /P-\d+/.test(m.payload.text || ''));
+    ok(inner && inner.ok && outer.ok && inner.number === outer.number && again.number === outer.number, 'гонка с тем же rid: оба ответа с одним номером', [inner, outer, again]);
+    ok(gr.sheets['Замовлення'].rows.length === rows0 + 1, 'гонка с тем же rid: в листе одна новая строка', gr.sheets['Замовлення'].rows.length - rows0);
+    ok(adminOrderMsgs.length === 1, 'гонка с тем же rid: админу ушло одно сообщение о заказе', adminOrderMsgs.length);
+  }
   let lastRes;
   for (let i = 0; i < 6; i++) lastRes = order(g, U(44), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
   ok(lastRes.error === 'rate_limit', 'не больше 5 заказов в час с одного аккаунта', lastRes);
@@ -1380,6 +1395,326 @@ console.log('Часовой пояс: всё считается по Киеву,
   ok(g.call('saleEnd_', '31.12.2099', 'Europe/Berlin').day === '2099-12-31' && g.call('saleEnd_', '31.12.2099', 'Europe/Kiev').end === g.call('saleEnd_', '31.12.2099', 'Europe/Berlin').end, '«Акція до», записанная текстом, не зависит от часового пояса');
   ok(!/getScriptTimeZone|getTimezoneOffset|\.getHours\(\)|toLocale/.test(require('fs').readFileSync(CODE, 'utf8')), 'в коде нет обращений к часовому поясу проекта (кроме часа ежедневного таймера)');
   ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+}
+
+console.log('Выпуск А, блок 1: полоска, баночки, порядок, курага, первый заказ');
+{
+  const lastAdminMsg = g => g.sent.filter(m => m.method === 'sendMessage' && m.payload.chat_id === '900').pop();
+  const addCol = (g, name, byId) => { // новая колонка в листе «Товари»
+    const rows = g.sheets['Товари'].rows;
+    rows[0].push(name);
+    for (let i = 1; i < rows.length; i++) rows[i].push(byId[rows[i][0]] === undefined ? '' : byId[rows[i][0]]);
+    g.clearCache();
+  };
+  // Полоска
+  {
+    const g = fresh();
+    ok(!g.get({ action: 'catalog' }).shop.notice, 'полоска: настройки пусты — notice нет');
+    settings(g, { notice_ua: 'Старе оголошення', notice_ru: 'Старое объявление' });
+    ok(g.get({ action: 'catalog' }).shop.notice.ua === 'Старе оголошення', 'полоска: старая notice_ua работает');
+    settings(g, { notice_text_ua: 'Ми відкрилися', notice_text_ru: 'Мы открылись' });
+    const n = g.get({ action: 'catalog' }).shop.notice;
+    ok(n.ua === 'Ми відкрилися' && n.ru === 'Мы открылись', 'полоска: notice_text_* главнее старого объявления', n);
+    const g2 = fresh();
+    settings(g2, { notice_text_ua: 'Тільки UA' });
+    const n2 = g2.get({ action: 'catalog' }).shop.notice;
+    ok(n2.ua === 'Тільки UA' && n2.ru === 'Тільки UA', 'полоска: одна заполненная сторона заменяет вторую');
+  }
+  // Сообщение клиенту и пометка админу
+  {
+    const g = fresh();
+    const r1 = order(g, U(7001), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+    const toClient = g.sent.filter(m => m.method === 'sendMessage' && m.payload.chat_id === '7001').pop().payload.text;
+    ok(r1.ok && /\nПитання щодо замовлення — @gladiroon$/.test(toClient), 'клиент (UA): последняя строка про @gladiroon', toClient);
+    ok(/Перше замовлення/.test(lastAdminMsg(g).payload.text), 'админ: у первого заказа клиента есть «Перше замовлення»');
+    const tot1 = g.sheets['Замовлення'].rows.slice(-1)[0][13];
+    order(g, U(7001), [{ id: 'NUT-007', g: 0, q: 1 }], 85, { lang: 'ru' });
+    const toRu = g.sent.filter(m => m.method === 'sendMessage' && m.payload.chat_id === '7001').pop().payload.text;
+    ok(/\nВопросы по заказу — @gladiroon$/.test(toRu), 'клиент (RU): последняя строка про @gladiroon', toRu);
+    ok(!/Перше замовлення/.test(lastAdminMsg(g).payload.text) && tot1 === 85, 'админ: у второго заказа строки нет, сумма та же');
+    const g3 = fresh();
+    const t = g3.post({ action: 'order', initData: g3.initData(U(7002)), test: true, items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua' });
+    ok(t.ok && !/Перше замовлення/.test(lastAdminMsg(g3).payload.text), 'тестовый заказ не помечается как первый');
+    order(g3, U(7002), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
+    ok(/Перше замовлення/.test(lastAdminMsg(g3).payload.text), 'тестовый заказ раньше не мешает первому настоящему');
+    ok(g3.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g3.sandbox.__errors);
+  }
+  // Подарок не меняет сумму
+  {
+    const g = fresh();
+    settings(g, { gift_from: '100', gift_text_ua: 'Баночка спецій батька в подарунок' });
+    const r = order(g, U(7003), [{ id: 'NUT-007', g: 0, q: 2 }], 170);
+    ok(r.ok && r.gifts.length === 1 && g.sheets['Замовлення'].rows.slice(-1)[0][13] === 170, 'подарок от суммы не меняет сумму заказа', r);
+  }
+  // Описание бота
+  {
+    const g = fresh();
+    const n0 = g.sent.length;
+    g.call('menuBotDescription');
+    const calls = g.sent.slice(n0);
+    const sh = calls.filter(c => c.method === 'setMyShortDescription'), ds = calls.filter(c => c.method === 'setMyDescription');
+    ok(calls.length === 4 && sh.length === 2 && ds.length === 2, 'menuBotDescription: 4 вызова Telegram', calls.map(c => c.method));
+    ok(!sh[0].payload.language_code && sh[1].payload.language_code === 'ru' && !ds[0].payload.language_code && ds[1].payload.language_code === 'ru', 'language_code: UA без, RU = ru');
+    ok(sh.every(c => c.payload.short_description.length > 0 && c.payload.short_description.length <= 120) && ds.every(c => c.payload.description.length > 0 && c.payload.description.length <= 512), 'тексты по умолчанию укладываются в 120 и 512 знаков', [sh.map(c => c.payload.short_description.length), ds.map(c => c.payload.description.length)]);
+    const alertText = g.ui.alerts.slice(-1)[0];
+    ok(/готово/.test(alertText) && !/TEST_TOKEN/.test(alertText), 'окно показывает итог без токена', alertText);
+    settings(g, { bot_short_ua: 'x'.repeat(200) });
+    const n1 = g.sent.length;
+    g.call('menuBotDescription');
+    ok(g.sent.slice(n1)[0].payload.short_description.length === 120 && /обрізано/.test(g.ui.alerts.slice(-1)[0]), 'слишком длинное короткое описание обрезается до 120');
+    g.setTelegramFail(true);
+    g.call('menuBotDescription');
+    ok((g.ui.alerts.slice(-1)[0].match(/не вдалося/g) || []).length === 4 && !/mock failure|TEST_TOKEN/.test(g.ui.alerts.slice(-1)[0]), 'при сбое: 4 раза «не вдалося», без текста исключения и токена');
+    g.setTelegramFail(false);
+    const catText = JSON.stringify(g.get({ action: 'catalog' }));
+    ok(!/gladiroon|bot_short|bot_desc/.test(catText), 'настройки bot_* не попадают в ответ catalog');
+  }
+  // Баночки: «Вага упаковки, г»
+  {
+    const g = fresh();
+    ok(g.get({ action: 'catalog' }).products.every(p => p.pw === undefined), 'pw: колонки нет — поля нет (колонка «Вага упаковки, кг» не подхватывается)');
+    addCol(g, 'Вага упаковки, г', { 'SPC-004': 60, 'TEA-004': 'абв', 'NUT-007': 9999, 'SWT-006': '0', 'CND-005': 80.5, 'CND-004': ' 1250 ' });
+    const by = {}; g.get({ action: 'catalog' }).products.forEach(p => { by[p.id] = p; });
+    ok(by['SPC-004'].pw === 60 && by['CND-004'].pw === 1250, 'pw: целое 1–5000 попадает в каталог', [by['SPC-004'].pw, by['CND-004'].pw]);
+    ok(by['TEA-004'].pw === undefined && by['NUT-007'].pw === undefined && by['SWT-006'].pw === undefined && by['CND-005'].pw === undefined && by['DRY-039'].pw === undefined, 'pw: мусор, 0, больше 5000, дробь, пусто — поля нет');
+  }
+  // Упаковка с пустым «Фасування»
+  {
+    const g = fresh();
+    const rows = g.sheets['Товари'].rows, h = rows[0];
+    rows.find(x => x[0] === 'SPC-004')[h.indexOf('Фасування')] = '';
+    g.clearCache();
+    const p = g.get({ action: 'catalog' }).products.find(x => x.id === 'SPC-004');
+    ok(p.t === 'p' && p.p === 45 && p.a === 1 && !p.pk, 'упаковка без «Фасування»: цена за штуку, товар доступен', p);
+    ok(order(g, U(7004), [{ id: 'SPC-004', g: 0, q: 3 }], 1).error === 'changed', 'упаковка: подложенная клиентом сумма отклоняется');
+    const r = order(g, U(7004), [{ id: 'SPC-004', g: 0, q: 3 }], 135);
+    ok(r.ok && g.sheets['Замовлення'].rows.slice(-1)[0][13] === 135, 'упаковка: итог заказа считает сервер (3 × 45 = 135)', r);
+  }
+  // «Порядок»
+  {
+    const base = JSON.stringify(fresh().get({ action: 'catalog' }).products.map(p => p.id));
+    const g = fresh();
+    addCol(g, 'Порядок', {});
+    ok(JSON.stringify(g.get({ action: 'catalog' }).products.map(p => p.id)) === base, 'порядок: колонка есть, но пуста — список прежний');
+    const g2 = fresh();
+    addCol(g2, 'Порядок', { 'SPC-004': 1, 'SPC-003': 2, 'SPC-001': 3 });
+    const ids = g2.get({ action: 'catalog' }).products.map(p => p.id), old = JSON.parse(base);
+    const spice = x => x.startsWith('SPC-');
+    ok(JSON.stringify(ids.filter(spice)) === JSON.stringify(['SPC-004', 'SPC-003', 'SPC-001', 'SPC-002', 'SPC-005']), 'порядок: внутри категории — по возрастанию, без значения — после в прежнем порядке', ids.filter(spice));
+    ok(ids.every((x, i) => spice(x) === spice(old[i])) && JSON.stringify(ids.filter(x => !spice(x))) === JSON.stringify(old.filter(x => !spice(x))), 'порядок: места категории в общем списке и другие категории не сдвинулись');
+    const g3 = fresh();
+    addCol(g3, 'Порядок для сайта', { 'SPC-004': 1 });
+    ok(JSON.stringify(g3.get({ action: 'catalog' }).products.map(p => p.id)) === base, 'порядок: похожий заголовок по префиксу не подхватывается');
+  }
+  // Курага списком
+  {
+    const g = fresh();
+    settings(g, { feature_id: 'dry-039' });
+    let f = g.get({ action: 'catalog' }).shop.feature;
+    ok(f.id === 'DRY-039' && JSON.stringify(f.ids) === '["DRY-039"]', 'feature_id: одно значение работает как раньше (+ ids)', f);
+    settings(g, { feature_id: 'DRY-089, dry-039; HID-001, DRY-039, NUT-001, TEA-001, TEA-002, TEA-003' });
+    const saved = g.sheets['Налаштування'].rows.find(r => r[0] === 'feature_id')[1];
+    ok(saved === 'DRY-089, DRY-039, HID-001, NUT-001, TEA-001', 'feature_id: список сохраняется целиком, до 5, без повторов', saved);
+    f = g.get({ action: 'catalog' }).shop.feature;
+    ok(f.id === 'DRY-039' && JSON.stringify(f.ids) === '["DRY-039","NUT-001","TEA-001"]', 'feature.id — первый существующий и видимый, ids — все такие по порядку', f);
+    tgPress(g, 800, 'm:apr');
+    ok(/p=DRY-039/.test(JSON.stringify(lastTo(g, 800).payload.reply_markup)) === false, 'сообщение «apr» берёт первый ID списка (DRY-089 в таблице нет — открывается магазин)');
+    settings(g, { feature_id: 'NOPE-1' });
+    f = g.get({ action: 'catalog' }).shop.feature;
+    ok(f.id === 'NOPE-1' && f.ids.length === 0, 'feature_id: нет существующих товаров — ids пуст');
+  }
+  // Служебные данные
+  {
+    const g = fresh();
+    addCol(g, 'Порядок', { 'SPC-004': 1 });
+    addCol(g, 'Вага упаковки, г', { 'SPC-004': 60 });
+    const text = JSON.stringify(g.get({ action: 'catalog' }));
+    ok(!/СЕКРЕТ|do-smaku|33%|BOT_TOKEN|TEST_TOKEN/.test(text), 'служебные колонки и токены не в ответе catalog');
+    ok(g.sandbox.__errors.length === 0, 'в логах бэкенда нет ошибок', g.sandbox.__errors);
+  }
+}
+
+console.log('Выпуск А, блок 2: оплата на счёт ФОП');
+{
+  const IBAN = 'UA' + '1'.repeat(27); // выдуманный
+  const FOP = { FOP_NAME: 'ФОП Тестенко Т. Т.', FOP_IBAN: IBAN.replace(/(.{4})/g, '$1 ').trim(), FOP_CODE: '7654321098' };
+  const cardOrder = (g, uid, extra) => order(g, U(uid), [{ id: 'DRY-039', g: 500, q: 1 }], 190, Object.assign({ pay: 'card' }, extra || {}));
+  const toClient = (g, uid) => g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === String(uid));
+  const toAdmin = g => g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '900');
+
+  // Все три заданы
+  {
+    const g = fresh(); Object.assign(g.props, FOP);
+    const logs = []; g.sandbox.console = { log: (...a) => logs.push(a.join(' ')), warn: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push(a.join(' ')) };
+    const cat = g.get({ action: 'catalog' });
+    ok(cat.shop.fop === 1 && Object.keys(cat.shop).every(k => !/iban|name|code/i.test(k)), 'режим ФОП: в каталоге только флаг fop:1');
+    const r = cardOrder(g, 71, { total_client: 1, sum: 5 });
+    ok(r.ok && r.number, 'заказ с оплатой card оформлен', r);
+    const msgs = toClient(g, 71);
+    ok(msgs.length === 2 && /прийнято/.test(msgs[0].payload.text) && !/IBAN/.test(msgs[0].payload.text), 'сначала обычное подтверждение, реквизиты не в нём');
+    const t = msgs[1] && msgs[1].payload.text;
+    ok(msgs[1].payload.parse_mode === 'HTML' && t.includes('<code>ФОП Тестенко Т. Т.</code>') && t.includes('<code>' + IBAN + '</code>') && t.includes('<code>7654321098</code>'), 'получатель, IBAN (без пробелов) и код — в <code>', t);
+    ok(t.includes('<b>190 ₴</b>') && t.includes('<code>Оплата за замовлення ' + r.number + '</code>'), 'сумма с сервера и назначение с номером заказа в <code>', t);
+    const bad = order(g, U(72), [{ id: 'DRY-039', g: 500, q: 1 }], 1, { pay: 'card' });
+    ok(bad.error === 'changed' && toClient(g, 72).length === 0, 'подложенная клиентом сумма не проходит, реквизиты не уходят');
+    const ru = cardOrder(g, 73, { lang: 'ru' });
+    const tr = toClient(g, 73)[1].payload.text;
+    ok(/Получатель/.test(tr) && tr.includes('<code>Оплата за замовлення ' + ru.number + '</code>'), 'для клиента с lang=ru подписи по-русски, назначение платежа то же украинское');
+    const adminMsg = toAdmin(g).find(m => m.payload.text.includes(r.number)).payload.text;
+    ok(/переказ на рахунок ФОП \(IBAN\)/.test(adminMsg) && !adminMsg.includes('7654321098') && !adminMsg.includes(IBAN) && !/Реквізити ФОП не надіслано/.test(adminMsg), 'админу: способ оплаты переименован, реквизитов и предупреждения нет');
+    const cash = order(g, U(74), [{ id: 'DRY-039', g: 500, q: 1 }], 190, { pay: 'cash' });
+    ok(cash.ok && toClient(g, 74).length === 1, 'оплата при получении: реквизиты не отправляются');
+    const svcOf = num => g.sheets['Замовлення'].rows.find(x => x[0] === num)[16];
+    ok(JSON.parse(svcOf(r.number)).r === 1, 'после отправки реквизитов в svc стоит отметка r');
+    const conf = g.call('clientText_', 'c', { num: r.number, lang: 'ua', pay: 'card', delivery: 'pickup', point: '', svc: svcOf(r.number) });
+    ok(!/Реквізити/.test(conf), 'с отметкой подтверждение не обещает реквизиты повторно', conf);
+    const confNo = g.call('clientText_', 'c', { num: 'P-0900', lang: 'ua', pay: 'card', delivery: 'pickup', point: '', svc: '{"i":[]}' });
+    ok(/надішлемо окремим повідомленням/.test(confNo), 'без отметки (заказ до включения режима или сбой отправки) текст как раньше');
+    g.setTelegramFail((m, p) => (/Реквізити для оплати/.test(p.text || '') ? { ok: false, description: 'x' } : null));
+    const rf = cardOrder(g, 75);
+    ok(rf.ok && !('r' in JSON.parse(svcOf(rf.number))), 'сбой отправки реквизитов: отметки нет');
+    g.setTelegramFail(false);
+    const rowCard = g.sheets['Замовлення'].rows.find(x => x[0] === r.number);
+    ok(rowCard && rowCard.includes('переказ на картку'), 'в таблицу пишется прежнее значение оплаты', rowCard);
+    const resp = JSON.stringify([cat, r, g.get({ action: 'np.city', q: 'хар' }), adm(g, 900, 'admin.settings'), adm(g, 900, 'admin.orders'), g.post({ action: 'orders.my', initData: g.initData(U(71)) })]);
+    const journal = JSON.stringify(g.sheets['Журнал'] ? g.sheets['Журнал'].rows : []);
+    const all = resp + journal + logs.join('\n');
+    ok(!all.includes('7654321098') && !all.includes(IBAN) && !all.includes('Тестенко') && !all.includes(FOP.FOP_IBAN), 'реквизиты ФОП не в ответах API, журнале и логах');
+    ok(g.sandbox.__errors.length === 0, 'нет ошибок в логах', g.sandbox.__errors);
+  }
+  // Не хватает одного свойства — как раньше
+  ['FOP_NAME', 'FOP_IBAN', 'FOP_CODE'].forEach(miss => {
+    const g = fresh(); Object.assign(g.props, FOP); g.props[miss] = '  ';
+    const base = fresh();
+    const r = cardOrder(g, 81), rb = cardOrder(base, 81);
+    const same = JSON.stringify(toClient(g, 81).map(m => m.payload.text).map(s => s.replace(/P-\d+/g, 'P'))) === JSON.stringify(toClient(base, 81).map(m => m.payload.text).map(s => s.replace(/P-\d+/g, 'P')));
+    const a1 = toAdmin(g).map(m => m.payload.text.replace(/P-\d+/g, 'P')).join('|'), a2 = toAdmin(base).map(m => m.payload.text.replace(/P-\d+/g, 'P')).join('|');
+    ok(r.ok && !('fop' in g.get({ action: 'catalog' }).shop) && toClient(g, 81).length === 1 && same && a1 === a2 && /переказ на картку/.test(a1) && !/ФОП/.test(a1), 'без ' + miss + ': флага и сообщения нет, тексты прежние (байт-в-байт с чистой таблицей)');
+    ok(/надішлемо окремим повідомленням/.test(g.call('clientText_', 'c', { num: 'P-1', lang: 'ua', pay: 'card', delivery: 'pickup', point: '' })), 'без ' + miss + ': подтверждение обещает реквизиты как раньше');
+  });
+  // Неверный IBAN
+  {
+    const g = fresh(); Object.assign(g.props, FOP, { FOP_IBAN: 'UA12345' });
+    const logs = []; g.sandbox.console = { log: (...a) => logs.push(a.join(' ')), warn: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push(a.join(' ')) };
+    const r = cardOrder(g, 91);
+    ok(r.ok && toClient(g, 91).length === 1 && !('fop' in g.get({ action: 'catalog' }).shop), 'неверный IBAN: реквизиты не отправлены, флага нет');
+    const a = toAdmin(g).find(m => m.payload.text.includes(r.number)).payload.text;
+    ok(/Реквізити ФОП не надіслано: перевірте FOP_IBAN/.test(a) && !a.includes('UA12345') && /переказ на картку/.test(a), 'админу — предупреждение без значения IBAN', a);
+    ok(!logs.join('\n').includes('UA12345') && !JSON.stringify(g.sheets['Журнал'] ? g.sheets['Журнал'].rows : []).includes('UA12345'), 'неверный IBAN не попал в логи');
+    const cash = order(g, U(92), [{ id: 'DRY-039', g: 500, q: 1 }], 190, { pay: 'cash' });
+    ok(!/ФОП/.test(toAdmin(g).find(m => m.payload.text.includes(cash.number)).payload.text), 'предупреждение только у заказов с оплатой card');
+  }
+}
+
+console.log('Выпуск А, блок 2: подсказки Новой почты');
+{
+  const KEY = 'NPKEY-SECRET-xyz';
+  const CITY = 'aaaaaaaa-1111-2222-3333-444444444444';
+  // Стенд API Новой почты: город на 1200 объектов (каждый пятый — почтомат), страницы по Limit.
+  function npStub(g, opts) {
+    const o = Object.assign({ fail: null }, opts || {});
+    const st = { calls: [] };
+    const big = [];
+    for (let i = 1200; i >= 1; i--) big.push({ Number: String(i), ShortAddress: 'Харків, вул. Тестова, ' + i, Description: (i % 5 === 0 ? 'Поштомат "Нова пошта" №' : 'Відділення №') + i, CategoryOfWarehouse: i % 5 === 0 ? 'Postomat' : 'Branch' });
+    g.setTelegramFail((method, payload) => {
+      if (!payload.calledMethod) return null; // не вызов API Новой почты — обычный ответ Telegram
+      st.calls.push(payload);
+      if (o.fail === 'key') return { success: false, errors: ['API key is invalid ' + payload.apiKey], errorCodes: ['20000200068'], data: [] };
+      if (o.fail === 'net') throw new Error('network down https://api.novaposhta.ua/v2.0/json/?k=' + payload.apiKey);
+      const p = payload.methodProperties;
+      if (payload.calledMethod === 'getWarehouses') {
+        const lim = Number(p.Limit), page = Number(p.Page || 1);
+        return { success: true, data: p.CityRef === CITY ? big.slice((page - 1) * lim, page * lim) : [] };
+      }
+      if (payload.calledMethod === 'searchSettlements') {
+        return { success: true, data: [{ Addresses: [
+          { DeliveryCity: 'r-village', Present: 'с. Харківка, Київська обл.', MainDescription: 'Харківка', Warehouses: 1, SettlementTypeCode: 'с.' },
+          { DeliveryCity: 'r-empty', Present: 'м. Харків-пусто', MainDescription: 'Харків-пусто', Warehouses: 0, SettlementTypeCode: 'м.' },
+          { DeliveryCity: CITY, Present: 'м. Харків, Харківська обл.', MainDescription: 'Харків', Warehouses: 1200, SettlementTypeCode: 'м.' }
+        ] }] };
+      }
+      return { success: true, data: [] };
+    });
+    return st;
+  }
+  const adminAlerts = g => g.sent.filter(m => m.method === 'sendMessage' && /Підказки Нової пошти не працюють/.test(m.payload.text));
+
+  {
+    const g = fresh(); g.props.NP_API_KEY = KEY; g.props.FOP_NAME = 'ФОП Тест'; g.props.FOP_IBAN = 'UA' + '1'.repeat(27); g.props.FOP_CODE = '1234500000';
+    const logs = []; g.sandbox.console = { log: (...a) => logs.push(a.join(' ')), warn: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push(a.join(' ')) };
+    const st = npStub(g);
+    const r1 = g.get({ action: 'np.whall', city: CITY });
+    ok(r1.ok && r1.list.length === 1200, 'np.whall: отдаёт все 1200 отделений и почтоматов (несколько страниц)', r1.list && r1.list.length);
+    ok(st.calls.length === 3 && st.calls.every(c => c.methodProperties.Limit === '500'), 'загрузка постранично, Limit 500: три запроса', st.calls.length);
+    ok(r1.list.every((x, i) => x[0] === i + 1 && x[2] === (x[0] % 5 === 0 ? 'p' : 'w') && /Тестова/.test(x[1])), 'отсортировано по номеру, типы w/p верные, адрес короткий');
+    ok(r1.list[0].length === 3 && !JSON.stringify(r1.list[0]).includes('Description'), 'в записи только номер, адрес, тип');
+    const n = st.calls.length;
+    const r2 = g.get({ action: 'np.whall', city: CITY });
+    ok(r2.ok && r2.list.length === 1200 && st.calls.length === n, 'второй вызов — из кэша, без запросов к API');
+    ok(g.get({ action: 'np.whall', city: 'bad' }).ok === false && g.get({ action: 'np.whall', city: '' }).ok === false && st.calls.length === n, 'np.whall: city проверяется по формату Ref, без вызова API');
+    ok(g.get({ action: 'np.whall', city: CITY.replace(/a/g, 'z') }).ok === false, 'np.whall: не-UUID отклонён');
+
+    const c1 = g.get({ action: 'np.city', q: 'Харьков' });
+    const last = st.calls[st.calls.length - 1];
+    ok(last.calledMethod === 'searchSettlements' && last.methodProperties.CityName === 'Харків', 'русское «Харьков» уходит в API как «Харків»', last.methodProperties);
+    ok(c1.ok && c1.list.length === 2 && c1.list[0].ref === CITY && c1.list[1].ref === 'r-village' && !c1.list.some(x => x.ref === 'r-empty'), 'np.city: пункты без отделений отсеяны, город — первым', c1);
+    ok(c1.list[0].n && c1.list[0].s === 'Харків' && Object.keys(c1.list[0]).sort().join() === 'n,ref,s', 'np.city: формат элемента {n, s, ref}');
+    const probe = (q) => { g.get({ action: 'np.city', q }); return st.calls[st.calls.length - 1].methodProperties.CityName; };
+    ok(probe('харьк') === 'Харків' && probe('Киев') === 'Київ' && probe('днепр') === 'Дніпро' && probe('Кривой Рог') === 'Кривий Ріг' && probe('одессa'.replace('a', 'а')) === 'Одеса', 'словарь: полное и частичное русское написание');
+    ok(probe('хар') === 'хар' && probe('Львів') === 'Львів' && probe('Лозова') === 'Лозова', 'украинский ввод не подменяется');
+    const calls = st.calls.length;
+    ok(g.get({ action: 'np.city', q: 'х' }).list.length === 0 && g.get({ action: 'np.city', q: 'я'.repeat(41) }).list.length === 0 && st.calls.length === calls, 'q короче 2 или длиннее 40 — пусто, без вызова API');
+    const old = g.get({ action: 'np.wh', city: CITY, q: '12' });
+    ok(old.ok && Array.isArray(old.list), 'старый np.wh работает', old);
+    ok(g.get({ action: 'catalog' }).shop.np === 1 && g.get({ action: 'catalog' }).shop.fop === 1, 'каталог: флаги np и fop');
+    const all = JSON.stringify([g.get({ action: 'catalog' }), r1, c1, old, adm(g, 900, 'admin.settings'), adm(g, 900, 'admin.orders')]) + JSON.stringify(g.sheets['Журнал'] ? g.sheets['Журнал'].rows : []) + logs.join('\n') + JSON.stringify(g.sent.filter(m => !m.payload.calledMethod).map(m => m.payload));
+    ok(!all.includes(KEY) && !all.includes('1234500000'), 'ключ НП и реквизиты не в ответах API, журнале, логах и сообщениях');
+    ok(adminAlerts(g).length === 0, 'успешная работа — админов не беспокоим');
+  }
+  // Ошибка ключа
+  {
+    const g = fresh(); g.props.NP_API_KEY = KEY;
+    const logs = []; g.sandbox.console = { log: (...a) => logs.push(a.join(' ')), warn: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push(a.join(' ')) };
+    npStub(g, { fail: 'key' });
+    const r = g.get({ action: 'np.city', q: 'Харків' });
+    ok(JSON.stringify(r) === '{"ok":false}' && JSON.stringify(g.get({ action: 'np.whall', city: CITY })) === '{"ok":false}', 'ошибка ключа: витрине ровно {ok:false}, без подробностей');
+    const a = adminAlerts(g);
+    ok(a.length === 1 && String(a[0].payload.chat_id) === '900', 'админу ушло одно сообщение');
+    ok(!a[0].payload.text.includes(KEY) && !/https?:/.test(a[0].payload.text), 'в сообщении нет ключа и ссылок', a[0].payload.text);
+    g.get({ action: 'np.city', q: 'Київ' }); g.clearCache(); g.get({ action: 'np.city', q: 'Одеса' });
+    ok(adminAlerts(g).length === 1, 'повтор в те же сутки — второго сообщения нет');
+    g.props.NP_ALERT_AT = String(Date.now() - 25 * 3600 * 1000); g.clearCache();
+    g.get({ action: 'np.city', q: 'Львів' });
+    ok(adminAlerts(g).length === 2, 'через сутки — сообщение снова');
+    ok(!logs.join('\n').includes(KEY) && !JSON.stringify(g.sheets['Журнал'] ? g.sheets['Журнал'].rows : []).includes(KEY), 'ключ не в логах');
+  }
+  // Сбой сети с ключом в тексте ошибки
+  {
+    const g = fresh(); g.props.NP_API_KEY = KEY;
+    const logs = []; g.sandbox.console = { log: (...a) => logs.push(a.join(' ')), warn: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push(a.join(' ')) };
+    npStub(g, { fail: 'net' });
+    ok(JSON.stringify(g.get({ action: 'np.whall', city: CITY })) === '{"ok":false}', 'сбой сети: {ok:false}');
+    const a = adminAlerts(g);
+    ok(a.length === 1 && !a[0].payload.text.includes(KEY) && !/https?:/.test(a[0].payload.text) && !logs.join('\n').includes(KEY), 'ключ и URL вычищены из причины и лога', a[0] && a[0].payload.text);
+  }
+  // Лимит 600 в час
+  {
+    const g = fresh(); g.props.NP_API_KEY = KEY;
+    const st = npStub(g);
+    for (let i = 0; i < 600; i++) g.get({ action: 'np.city', q: 'Ха' + i });
+    ok(st.calls.length === 600, 'до 600 вызовов в час проходят', st.calls.length);
+    const r = g.get({ action: 'np.city', q: 'Ха-новый' });
+    ok(r.ok === false && st.calls.length === 600, '601-й вызов — {ok:false}, к API не идём');
+    ok(adminAlerts(g).length === 1, 'о лимите админ узнаёт один раз');
+  }
+  // Без ключа
+  {
+    const g = fresh();
+    const st = npStub(g);
+    ok(!('np' in g.get({ action: 'catalog' }).shop), 'без NP_API_KEY в каталоге нет shop.np');
+    const rs = [g.get({ action: 'np.city', q: 'Харків' }), g.get({ action: 'np.whall', city: CITY }), g.get({ action: 'np.wh', city: CITY, q: '1' })];
+    ok(rs.every(x => x.ok === false) && st.calls.length === 0 && adminAlerts(g).length === 0, 'без ключа: ответы пустые, вызовов API и сообщений нет');
+  }
 }
 
 console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');

@@ -258,7 +258,7 @@ button { cursor: pointer; }
   display: flex; flex-direction: column; gap: var(--space-4);
 }
 .sheet__img {
-  position: relative; aspect-ratio: 4 / 3; overflow: hidden; flex: none;
+  position: relative; aspect-ratio: 1 / 1; width: min(100%, 58vh); align-self: center; overflow: hidden; flex: none;
   display: grid; place-items: center;
   border-radius: var(--radius-lg); background: var(--surface-sunken);
 }
@@ -482,7 +482,14 @@ body.has-bar { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
 .check input { width: 22px; height: 22px; accent-color: var(--apricot); }
 
 /* ---------- Этап 5, часть 2: объявление, фото, формы ---------- */
-.notice { padding: var(--space-3) var(--space-4); background: var(--apricot-soft); color: var(--on-apricot-soft); font-size: 15px; line-height: 20px; font-weight: 700; text-align: center; white-space: pre-line; }
+.notice { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4); background: var(--apricot-soft); color: var(--on-apricot-soft); font-size: 14px; line-height: 20px; font-weight: 400; text-align: left; white-space: pre-line; }
+.notice__text { flex: 1; min-width: 0; padding: var(--space-2) 0; overflow-wrap: anywhere; }
+.notice__link { position: relative; font-weight: 700; display: inline-block; color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.notice__link::before { content: ''; position: absolute; left: -4px; right: -4px; top: -12px; bottom: -12px; }
+.notice__x { flex: none; width: var(--tap); height: var(--tap); display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; transition: background-color .15s var(--ease); }
+.notice__x:active { background: color-mix(in srgb, currentColor 16%, transparent); }
+.notice__x .ico { width: 20px; height: 20px; }
+@media (hover: hover) { .notice__x:hover { background: color-mix(in srgb, currentColor 10%, transparent); } }
 select.input { -webkit-appearance: menulist; appearance: auto; }
 .photo { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: var(--space-3); align-items: start; }
 .photo__box { width: 112px; height: 112px; overflow: hidden; display: grid; place-items: center; border-radius: var(--radius-md); background: var(--surface-sunken); }
@@ -1023,3 +1030,15 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .quiz__q { margin: 0 0 var(--space-2); font-family: var(--font-display); font-size: 20px; line-height: 28px; font-weight: 600; overflow-wrap: anywhere; }
 .quiz__opts { display: flex; flex-direction: column; gap: var(--space-2); }
 .quiz__opt { min-height: 52px; font-size: 16px; }
+
+/* ---------- Выпуск А: «Наша курага» из нескольких товаров ---------- */
+.featuregroup { margin-bottom: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+.featuregroup__title { font-size: 17px; line-height: 24px; }
+.featuregroup__text { -webkit-line-clamp: unset; display: block; }
+.feature--item { margin-bottom: 0; }
+.feature--item .feature__img { flex-basis: 96px; width: 96px; align-self: flex-start; }
+.feature__title--item { font-size: 15px; line-height: 20px; }
+
+/* ---------- Нова пошта: статус поиска и подсказки ---------- */
+.np-busy, .np-hint { margin: var(--space-1) 0 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+.sugg button { overflow-wrap: anywhere; }

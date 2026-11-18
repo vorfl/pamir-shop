@@ -1689,6 +1689,424 @@ const smallTargets = page => page.evaluate(() => {
     await o.page.context().close(); st2.server.close();
   }
 
+  console.log('Выпуск А · полоска, баночка, «Наша курага», фото');
+  {
+    const NOTICE = { ua: 'Ми щойно відкрили онлайн-магазин. Якщо щось не працює або є питання щодо замовлення — пишіть @gladiroon, відповімо.', ru: 'Мы только что открыли онлайн-магазин. Если что-то не работает или есть вопросы по заказу — пишите @gladiroon, ответим.' };
+    // Поля, которые даёт новый бэкенд (pw, feature.ids), подставляем в ответ каталога сами: тест не зависит от готовности Code.gs.
+    const patchGas = (st, fn) => { const orig = st.gas.get; st.gas.get = q => { const r = orig(q); if (q.action === 'catalog' && r && r.shop) fn(r); return r; }; };
+    const prod = (r, id) => r.products.find(p => p.id === id);
+    const catalogPatch = (st, o) => patchGas(st, r => {
+      if (o.notice !== undefined) { if (o.notice) r.shop.notice = o.notice; else delete r.shop.notice; }
+      if (o.ids) r.shop.feature = Object.assign({}, r.shop.feature || { id: o.ids[0], title: { ua: 'Наша курага', ru: 'Наша курага' }, text: { ua: 'З нашого саду в Ісфарі.', ru: 'Из нашего сада в Исфаре.' } }, { ids: o.ids });
+      if (o.pw) Object.keys(o.pw).forEach(id => { const p = prod(r, id); if (p) p.pw = o.pw[id]; });
+      if (o.pk) Object.keys(o.pk).forEach(id => { const p = prod(r, id); if (p) p.pk = o.pk[id]; });
+    });
+    const base = { ids: ['DRY-039', 'DRY-001', 'NUT-001'], pw: { 'SPC-004': 60 }, pk: { 'TEA-004': '<img src=x onerror="window.__xss=1">' } };
+    const DRY_SETTINGS = s => { withPhotos(s); s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис'], ['gift_from', '500', ''], ['gift_text_ua', 'Баночка спецій батька в подарунок', ''], ['gift_text_ru', 'Баночка специй отца в подарок', ''], ['feature_id', 'DRY-039', '']]; };
+
+    // --- полоска ---
+    const st0 = await start(8830, undefined, DRY_SETTINGS);
+    catalogPatch(st0, { notice: '' });
+    const n0 = await open(browser, st0.url, { uid: 801 });
+    await n0.page.waitForSelector('.card');
+    ok(await n0.page.locator('#notice').isHidden() && await n0.page.locator('#notice').innerHTML() === '', 'полоска скрыта, когда настройка пустая');
+    await n0.page.context().close(); st0.server.close();
+
+    const st1 = await start(8831, undefined, DRY_SETTINGS);
+    catalogPatch(st1, Object.assign({}, base, { notice: NOTICE }));
+    const n1 = await open(browser, st1.url, { uid: 802 });
+    await n1.page.waitForSelector('#notice:not([hidden])');
+    ok(/Ми щойно відкрили/.test(await text(n1.page, '#notice')) && await count(n1.page, '#notice .notice__link') === 1, 'полоска видна при заполненной настройке (UA)');
+    ok(await n1.page.locator('#notice .notice__link').getAttribute('href') === 'https://t.me/gladiroon', '@gladiroon — ссылка на t.me/gladiroon');
+    await n1.page.locator('#notice .notice__link').click();
+    ok(await n1.page.evaluate(() => window.__tg.calls.some(c => c[0] === 'openTelegramLink' && c[1] === 'https://t.me/gladiroon')), 'ссылка открывается через openTelegramLink');
+    const xb = await n1.page.locator('#notice .notice__x').boundingBox();
+    ok(xb.width >= 44 && xb.height >= 44 && !!(await n1.page.locator('#notice .notice__x').getAttribute('aria-label')), 'крестик ≥ 44×44 px и с aria-label', xb);
+    ok(await noOverflow(n1.page) && (await smallTargets(n1.page)).length === 0, 'с полоской: нет горизонтальной прокрутки, все цели ≥ 44 px', await smallTargets(n1.page));
+    await n1.page.screenshot({ path: OUT + '/90-notice-ua-light.png' });
+    await n1.page.locator('#notice .notice__x').click();
+    ok(await n1.page.locator('#notice').isHidden(), 'крестик сразу скрывает полоску');
+    ok(await n1.page.evaluate(() => !!window.__tg.cloud.notice) && await n1.page.evaluate(() => !!localStorage.getItem('pamir_notice_closed')), 'закрытие записано в CloudStorage и localStorage');
+    await n1.page.reload({ waitUntil: 'networkidle' });
+    await n1.page.waitForSelector('.card');
+    await n1.page.waitForTimeout(300);
+    ok(await n1.page.locator('#notice').isHidden(), 'после перезагрузки закрытая полоска не возвращается');
+    // другой текст в настройке — полоска появляется снова
+    st1.gas.get = (orig => q => { const r = orig(q); if (q.action === 'catalog' && r.shop) r.shop.notice = { ua: 'Нове повідомлення', ru: 'Новое сообщение' }; return r; })(st1.gas.get);
+    await n1.page.evaluate(() => localStorage.removeItem('pamir_catalog_v1'));
+    await n1.page.reload({ waitUntil: 'networkidle' });
+    await n1.page.waitForSelector('#notice:not([hidden])');
+    ok(/Нове повідомлення/.test(await text(n1.page, '#notice')), 'другой текст в настройке показывается снова');
+    ok(n1.errors.length === 0, 'в консоли браузера нет ошибок (полоска)', n1.errors);
+    await n1.page.context().close();
+    // RU, тёмная; хранилище недоступно — закрытие работает до перезагрузки
+    const n2 = await open(browser, st1.url, { uid: 803, lc: 'ru', theme: 'dark' });
+    await n2.page.waitForSelector('#notice:not([hidden])');
+    ok(/Нове повідомлення|Новое сообщение/.test(await text(n2.page, '#notice')), 'RU: текст полоски на русском');
+    await n2.page.screenshot({ path: OUT + '/91-notice-ru-dark.png' });
+    await n2.page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('quota'); }; });
+    await n2.page.locator('#notice .notice__x').click();
+    ok(await n2.page.locator('#notice').isHidden() && n2.errors.length === 0, 'хранилище недоступно: полоска всё равно скрывается, ошибок нет', n2.errors);
+    await n2.page.context().close(); st1.server.close();
+
+    // --- баночка, экранирование, «Наша курага», фото ---
+    const st = await start(8832, undefined, DRY_SETTINGS);
+    catalogPatch(st, Object.assign({}, base, { notice: NOTICE }));
+    const a = await open(browser, st.url, { uid: 804, query: '?cat=SPC' });
+    await a.page.waitForSelector('#grid .card');
+    ok(/Баночка\s60\sг/.test(await text(a.page, '#grid .card[data-id="SPC-004"]')) && / г/.test(await text(a.page, '#grid .card[data-id="SPC-004"]')), '«Баночка 60 г» на карточке с pw (неразрывные пробелы)');
+    ok(!/Баночка/.test(await text(a.page, '#grid .card[data-id="SPC-001"]')), 'без pw про вес баночки ничего');
+    await a.page.screenshot({ path: OUT + '/92-spices-ua-light.png', fullPage: true });
+    await a.page.locator('#grid .card[data-id="SPC-004"] .card__name').click();
+    await a.page.waitForSelector('.sheet__title');
+    ok(/Баночка\s60\sг/.test(await text(a.page, '.sheet .weights')), '«Баночка 60 г» на странице товара');
+    const sb = await a.page.locator('.sheet__img').boundingBox();
+    ok(Math.abs(sb.width - sb.height) <= 1 && sb.width <= 360, 'фото на странице товара квадратное, не шире экрана', sb);
+    await a.page.screenshot({ path: OUT + '/93-sheet-square.png' });
+    await a.page.click('.sheet__close');
+    await a.page.locator('#grid .card[data-id="SPC-004"] [data-quick="1"]').click();
+    await a.page.goto(st.url + '/?cat=TEA', { waitUntil: 'networkidle' });
+    await a.page.waitForSelector('#grid .card[data-id="TEA-004"]');
+    ok(await a.page.evaluate(() => window.__xss === undefined && !document.querySelector('.card[data-id="TEA-004"] .card__meta img')), 'тег <img onerror> в «Фасування» на карточке не исполняется');
+    ok(/<img\ssrc=x\sonerror=/.test(await a.page.locator('#grid .card[data-id="TEA-004"] .unit').textContent()), 'и показан на карточке как текст');
+    await a.page.locator('#grid .card[data-id="TEA-004"] [data-quick="1"]').click();
+    await a.page.click('.tabbar [data-go="cart"]');
+    await a.page.waitForSelector('.line');
+    const subs = await a.page.locator('.line__sub').allInnerTexts();
+    ok(subs.some(s => /Баночка\s60\sг/.test(s)) && subs.some(s => /<img\ssrc=x\sonerror=/.test(s)) && !subs.some(s => /&lt;|&amp;/.test(s)), 'корзина: «Баночка 60 г» при pw; тег показан текстом без двойного экранирования', subs);
+    ok(await a.page.evaluate(() => window.__xss === undefined && !document.querySelector('.line__sub img')), 'в корзине тег не исполнился');
+    // подарок: gift_from = 500, сумма не меняется
+    const sumBefore = await a.page.evaluate(() => [].map.call(document.querySelectorAll('.line__sum'), n => n.textContent).join('|'));
+    const prog = await text(a.page, '.prog');
+    const lineSum = (await a.page.locator('.line__sum').allInnerTexts()).map(x => parseInt(x.replace(/\D/g, ''), 10)).reduce((x, y) => x + y, 0);
+    ok(new RegExp('Ще ' + String(500 - lineSum).replace(/\B(?=(\d{3})+(?!\d))/g, '\\s') + '\\s₴ до подарунка: Баночка спецій батька в подарунок').test(prog) && lineSum > 0 && lineSum < 500, 'корзина: «Ще N ₴ до подарунка» при gift_from = 500', prog);
+    await a.page.screenshot({ path: OUT + '/94-cart-gift-ua-light.png', fullPage: true });
+    await a.page.evaluate(() => window.__tg.main.cb());
+    await a.page.waitForSelector('#f-phone');
+    await a.page.fill('#f-phone', '0501234567');
+    await a.page.evaluate(() => window.__tg.main.cb());
+    await a.page.waitForSelector('.done');
+    const donePage = await text(a.page, '.page');
+    ok(/Баночка\s60\sг/.test(donePage) && /<img\ssrc=x\sonerror=/.test(donePage) && !/&lt;|&amp;/.test(donePage) && await a.page.evaluate(() => window.__xss === undefined && !document.querySelector('.done img, .recap img')), '«Замовлення прийнято»: текст показан без исполнения и без двойного экранирования');
+    ok(st.log.some(x => x.action === 'order'), 'заказ ушёл на сервер');
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (баночка)', a.errors);
+    await a.page.context().close();
+
+    // «Наша курага»: три товара
+    const f3 = await open(browser, st.url, { uid: 805 });
+    await f3.page.waitForSelector('.feature');
+    ok(await count(f3.page, '.feature') === 3, '«Наша курага»: три товара из feature.ids', await count(f3.page, '.feature'));
+    ok(await noOverflow(f3.page) && (await smallTargets(f3.page)).length === 0, 'три товара: нет горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(f3.page));
+    const ph = await f3.page.evaluate(() => [].map.call(document.querySelectorAll('.feature .feature__img'), n => { const r = n.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
+    ok(ph.length === 3 && ph.every(x => Math.abs(x[0] - x[1]) <= 1), 'фото в блоке квадратные 1:1', ph);
+    ok(await f3.page.evaluate(() => [].map.call(document.querySelectorAll('.feature img'), i => i.getAttribute('loading')).join()) === 'eager,lazy,lazy', 'первое фото eager, остальные lazy');
+    ok(await f3.page.evaluate(() => [].every.call(document.querySelectorAll('.grid .card img, .rail img'), i => i.getAttribute('loading') === 'lazy' || i.closest('.card') && [].indexOf.call(document.querySelectorAll('.grid .card'), i.closest('.card')) < 4)), 'фото карточек и подборок loading="lazy" (кроме первых четырёх)');
+    await f3.page.locator('.feature[data-id="DRY-001"]').click();
+    await f3.page.waitForSelector('.sheet__title');
+    ok(await count(f3.page, '.sheet:not([hidden])') === 1, 'нажатие на товар в блоке открывает его страницу');
+    await f3.page.click('.sheet__close');
+    await f3.page.screenshot({ path: OUT + '/95-feature3-ua-light.png', fullPage: false });
+    await f3.page.context().close();
+    // RU, тёмная — несколько снимков
+    const rd = await open(browser, st.url, { uid: 806, lc: 'ru', theme: 'dark' });
+    await rd.page.waitForSelector('.feature');
+    ok(/Наша курага/.test(await text(rd.page, '.feature__title')) && await noOverflow(rd.page), 'RU, тёмная: блок на русском без горизонтальной прокрутки');
+    await rd.page.screenshot({ path: OUT + '/96-feature3-ru-dark.png' });
+    await rd.page.goto(st.url + '/?cat=SPC', { waitUntil: 'networkidle' });
+    await rd.page.waitForSelector('#grid .card');
+    await rd.page.screenshot({ path: OUT + '/97-spices-ru-dark.png', fullPage: true });
+    await rd.page.locator('#grid .card[data-id="SPC-004"] [data-quick="1"]').click();
+    await rd.page.click('.tabbar [data-go="cart"]');
+    await rd.page.waitForSelector('.prog');
+    ok(/Ще\s.*до подарунка|Ещё\s.*до подарка/.test(await text(rd.page, '.prog')) && /Баночка\s60\sг/.test(await text(rd.page, '.line__sub')), 'RU, тёмная: корзина с баночкой и строкой до подарка');
+    await rd.page.screenshot({ path: OUT + '/98-cart-gift-ru-dark.png', fullPage: true });
+    ok(rd.errors.length === 0, 'в консоли браузера нет ошибок (RU, тёмная)', rd.errors);
+    await rd.page.context().close(); st.server.close();
+
+    // один товар и граничные случаи
+    const st3 = await start(8833, undefined, DRY_SETTINGS);
+    catalogPatch(st3, { ids: ['DRY-039'] });
+    const f1 = await open(browser, st3.url, { uid: 807 });
+    await f1.page.waitForSelector('.feature');
+    ok(await count(f1.page, '.feature') === 1 && /Наша курага/.test(await text(f1.page, '.feature__title')) && await noOverflow(f1.page), '«Наша курага»: один товар — как раньше');
+    await f1.page.screenshot({ path: OUT + '/99-feature1.png' });
+    await f1.page.context().close(); st3.server.close();
+    const st4 = await start(8834, undefined, DRY_SETTINGS);
+    catalogPatch(st4, { ids: ['NOPE-1', 'DRY-005', 'DRY-001', 'DRY-001'] }); // нет в каталоге, нет в наличии, дубль
+    const f2 = await open(browser, st4.url, { uid: 808 });
+    await f2.page.waitForSelector('.card');
+    ok(await count(f2.page, '.feature') === 1 && await f2.page.locator('.feature').getAttribute('data-id') === 'DRY-001', 'отсутствующие, недоступные и повторные ID пропускаются');
+    await f2.page.context().close(); st4.server.close();
+    const st5 = await start(8835, undefined, DRY_SETTINGS);
+    catalogPatch(st5, { ids: ['NOPE-1', 'DRY-005'] });
+    const f0 = await open(browser, st5.url, { uid: 809 });
+    await f0.page.waitForSelector('.card');
+    ok(await count(f0.page, '.feature') === 0 && await count(f0.page, '.featuregroup') === 0 && f0.errors.length === 0, 'нет ни одного доступного товара — блока нет');
+    await f0.page.context().close(); st5.server.close();
+    // старый бэкенд: без pw, ids и notice — всё работает как раньше
+    const st6 = await start(8836, undefined, DRY_SETTINGS);
+    const o = await open(browser, st6.url, { uid: 810 });
+    await o.page.waitForSelector('.card');
+    ok(await count(o.page, '.feature') === 1 && await o.page.locator('#notice').isHidden() && !/Баночка\s\d/.test(await text(o.page, '#grid')) && o.errors.length === 0, 'без новых полей бэкенда витрина работает как раньше', o.errors);
+    await o.page.context().close(); st6.server.close();
+  }
+
+  console.log('Выпуск А7 · оплата на счёт ФОП и подсказки Новой почты');
+  {
+    const patchShop = (st, fn) => { const orig = st.gas.get; st.gas.get = q => { const r = orig(q); if (q.action === 'catalog' && r && r.shop) fn(r.shop); return r; }; };
+    const REF_KH = '11111111-1111-1111-1111-111111111111', REF_KH2 = '22222222-2222-2222-2222-222222222222', REF_KV = '33333333-3333-3333-3333-333333333333', REF_ME = '44444444-4444-4444-4444-444444444444';
+    // Город с 1200 отделениями и почтоматами: каждый пятый номер — почтомат.
+    const WH = [];
+    for (let i = 1; i <= 1200; i++) WH.push([i, i === 777 ? 'вул. Клочківська, 1' : i === 1195 ? 'вул. Гвардійців, 3' : 'вул. Сумська, ' + i, i % 5 === 0 ? 'p' : 'w']);
+    const CITIES = q => {
+      q = q.toLowerCase();
+      if (q.indexOf('харк') === 0 || q === 'харків') return [{ n: 'м. Харків, Харківська обл.', s: 'Харків', ref: REF_KH }, { n: 'с. Харківка, Київська обл.', s: 'Харківка', ref: REF_KH2 }, { n: 'с. Харківці, Полтавська обл.', s: 'Харківці', ref: REF_KH2 }].filter(x => q === 'харків' ? x.s.toLowerCase().indexOf('харків') === 0 : true);
+      if (q.indexOf('ки') === 0) return [{ n: 'м. Київ, Київська обл.', s: 'Київ', ref: REF_KV }];
+      if (q.indexOf('мер') === 0) return [{ n: 'м. Мерефа, Харківська обл.', s: 'Мерефа', ref: REF_ME }];
+      return [];
+    };
+    /** Заглушка API Нової пошти: считает запросы; режимы whall: ok | error | hang. */
+    async function stubNp(page, o) {
+      const calls = { city: [], whall: 0, wh: 0 };
+      await page.route(/\/api\?.*action=np\./, async route => {
+        const u = new URL(route.request().url()), action = u.searchParams.get('action');
+        const send = (body, delay) => setTimeout(() => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) }).catch(() => {}), delay || 0);
+        if (action === 'np.city') {
+          const q = u.searchParams.get('q'); calls.city.push(q);
+          if (o.cityHang) return send({ ok: true, list: CITIES(q) }, 6500);
+          return send({ ok: true, list: CITIES(q) }, q.toLowerCase().indexOf('харк') === 0 && o.slowKh ? 1500 : 0);
+        }
+        if (action === 'np.whall') {
+          calls.whall++;
+          if (o.whall === 'error') return send({ ok: false });
+          if (o.whall === 'hang') return send({ ok: true, list: WH }, 6500);
+          if (o.whall === 'slow') return send({ ok: true, list: WH }, 8000);
+          return send({ ok: true, list: WH });
+        }
+        if (action === 'np.wh') { calls.wh++; return send({ ok: true, list: [{ n: 'Відділення №12: вул. Стара, 1', num: '12' }] }); }
+        return send({ ok: false });
+      });
+      return calls;
+    }
+    async function toNpCheckout(st, uid, extra) {
+      const c = await open(browser, st.url, Object.assign({ uid }, extra || {}));
+      await c.page.waitForSelector('.card');
+      await toCard(c.page, 'NUT-007');
+      await c.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+      await c.page.click('.tabbar [data-go="cart"]');
+      await c.page.waitForSelector('.line');
+      await c.page.evaluate(() => window.__tg.main.cb());
+      await c.page.waitForSelector('#form');
+      return c;
+    }
+    const pickNp = (page, ru) => page.locator('.opt', { hasText: ru ? 'Новая почта' : 'Нова пошта' }).first().click();
+    const sugg = (page, id) => page.locator('#' + id + ' button').allInnerTexts();
+    const mk = async (port, fn) => { const st = await start(port, undefined, withPhotos); patchShop(st, s => { s.np = true; if (fn) fn(s); }); return st; };
+
+    // --- подсказки: основной путь, город с 1200 отделениями и почтоматами ---
+    const st = await mk(8840);
+    const a = await toNpCheckout(st, 901);
+    const calls = await stubNp(a.page, {});
+    await pickNp(a.page);
+    await a.page.locator('#f-city').click();
+    await a.page.type('#f-city', 'Харк', { delay: 60 });
+    await a.page.waitForSelector('#citySugg button');
+    ok(calls.city.length === 1, 'город: набор по буквам даёт один запрос (дебаунс 500 мс)', calls.city);
+    ok((await a.page.locator('#citySugg button').first().boundingBox()).height >= 44 && await noOverflow(a.page), 'строки подсказок ≥ 44 px, без горизонтальной прокрутки');
+    await a.page.fill('#f-city', 'Харк');
+    await a.page.fill('#f-city', 'Харк');
+    ok(calls.city.length === 1 || calls.city.length === 2, 'повторный ввод той же строки берётся из кэша (нет нового запроса)', calls.city);
+    const before = calls.city.length;
+    await a.page.locator('#citySugg button').first().click(); // настоящее нажатие мышью: фокус не должен потеряться раньше click
+    await a.page.waitForSelector('#whSugg button');
+    ok(await a.page.inputValue('#f-city') === 'Харків', 'нажатие на подсказку города срабатывает');
+    ok(calls.whall === 1 && (await sugg(a.page, 'whSugg')).length === 10 && /^№1,/.test((await sugg(a.page, 'whSugg'))[0]), 'после выбора города — один запрос отделений и сразу список из 10 без ввода', await sugg(a.page, 'whSugg'));
+    ok((await sugg(a.page, 'whSugg')).every(x => !/^№(5|10|15),/.test(x)), 'в режиме «Відділення» почтоматы в списке не показываются');
+    await a.page.screenshot({ path: OUT + '/100-np-suggest-ua-light.png', fullPage: true });
+    await a.page.fill('#f-branch', '12');
+    let l = await sugg(a.page, 'whSugg');
+    ok(/^№12,/.test(l[0]) && /^№121,/.test(l[1]) && /^№122,/.test(l[2]) && l.every(x => !/^№120,/.test(x)), '«12»: сначала №12, затем №121, №122… (№120 — почтомат, в режиме отделений его нет)', l.slice(0, 4));
+    await a.page.fill('#f-branch', 'Клочківська');
+    l = await sugg(a.page, 'whSugg');
+    ok(l.length === 1 && /^№777,/.test(l[0]), 'поиск по улице', l);
+    await a.page.locator('.opts--3 .opt', { hasText: 'Поштомат' }).click();
+    await a.page.fill('#f-branch', '1195');
+    l = await sugg(a.page, 'whSugg');
+    ok(l.length >= 1 && /^№1195,/.test(l[0]), 'почтомат находится по номеру (тип учитывается до обрезки списка)', l);
+    await a.page.fill('#f-branch', '');
+    l = await sugg(a.page, 'whSugg');
+    ok(/^№5,/.test(l[0]) && l.length === 10, 'режим «Поштомат»: первые 10 почтоматов', l);
+    ok(calls.whall === 1 && calls.wh === 0 && calls.city.length === before, 'после выбора города при вводе в поле отделения запросов к серверу нет', calls);
+    await a.page.locator('#whSugg button').nth(1).click();
+    ok(await a.page.inputValue('#f-branch') === '10' && await a.page.locator('#whSugg').isHidden(), 'нажатие на подсказку отделения подставляет номер');
+    ok((await smallTargets(a.page)).length === 0, 'оформление с подсказками: кнопки ≥ 44 px', await smallTargets(a.page));
+    ok(a.errors.length === 0, 'в консоли браузера нет ошибок (подсказки)', a.errors);
+    await a.page.context().close(); st.server.close();
+
+    // --- RU, тёмная ---
+    const stRu = await mk(8841);
+    const r = await toNpCheckout(stRu, 902, { lc: 'ru', theme: 'dark' });
+    await stubNp(r.page, {});
+    await pickNp(r.page, true);
+    await r.page.fill('#f-city', 'Харк');
+    await r.page.waitForSelector('#citySugg button');
+    await r.page.locator('#citySugg button').first().click();
+    await r.page.waitForSelector('#whSugg button');
+    await r.page.fill('#f-branch', '12');
+    await r.page.screenshot({ path: OUT + '/101-np-suggest-ru-dark.png', fullPage: true });
+    ok(await noOverflow(r.page), 'RU, тёмная: подсказки без горизонтальной прокрутки');
+    await r.page.context().close(); stRu.server.close();
+
+    // --- город набран руками ---
+    const st2 = await mk(8842);
+    const b = await toNpCheckout(st2, 903);
+    const c2 = await stubNp(b.page, {});
+    await pickNp(b.page);
+    await b.page.fill('#f-city', 'Мерефа');
+    await b.page.waitForSelector('#citySugg button');
+    await b.page.click('#f-phone'); // уходим с поля, подсказку не нажимали
+    await b.page.waitForSelector('#whSugg button');
+    ok(c2.whall === 1 && await b.page.inputValue('#f-city') === 'Мерефа', 'руками набран город с единственным вариантом — выбран сам, отделения загружены');
+    await b.page.fill('#f-city', 'Харк');
+    await b.page.waitForSelector('#citySugg button');
+    await b.page.click('#f-phone');
+    await b.page.waitForSelector('#cityPick:not([hidden])');
+    ok(/Оберіть місто зі списку/.test(await text(b.page, '#cityPick')) && c2.whall === 1, 'несколько вариантов — подсказка «Оберіть місто зі списку», сам не выбирает');
+    await b.page.fill('#f-branch', '15');
+    await b.page.fill('#f-phone', '0501234567');
+    await b.page.evaluate(() => window.__tg.main.cb());
+    await b.page.waitForSelector('.done');
+    ok(true, 'оформление при невыбранном городе не блокируется');
+    await b.page.context().close();
+    // чип «Харків» выбирает точное совпадение
+    const b2 = await toNpCheckout(st2, 904);
+    const c3 = await stubNp(b2.page, {});
+    await pickNp(b2.page);
+    await b2.page.locator('#cityChips .chip', { hasText: 'Харків' }).click();
+    await b2.page.waitForSelector('#whSugg button');
+    ok(c3.whall === 1 && c3.city.length === 1, 'чип «Харків»: город выбран по точному совпадению');
+    // устаревший ответ не перезаписывает свежий
+    await b2.page.fill('#f-city', 'Харк');
+    await b2.page.waitForTimeout(700);
+    await b2.page.fill('#f-city', 'Київ');
+    await b2.page.waitForTimeout(2300);
+    const lv = await sugg(b2.page, 'citySugg');
+    ok(lv.length === 1 && /Київ/.test(lv[0]), 'медленный старый ответ не затирает свежий', lv);
+    await b2.page.context().close(); st2.server.close();
+
+    // --- сбои: ошибка, зависший ответ, старый бэкенд ---
+    const st3 = await mk(8843);
+    const e1 = await toNpCheckout(st3, 905);
+    const c4 = await stubNp(e1.page, { whall: 'error' });
+    await pickNp(e1.page);
+    await e1.page.fill('#f-city', 'Харк');
+    await e1.page.waitForSelector('#citySugg button');
+    await e1.page.locator('#citySugg button').first().click();
+    await e1.page.waitForTimeout(300);
+    ok(await e1.page.locator('#whSugg').isHidden() && await e1.page.locator('#whBusy').isHidden(), 'np.whall вернул ошибку — тихо, без списка и без «Шукаю…»');
+    await e1.page.evaluate(() => { window.__NP_RETRY_MS = 300; });
+    await e1.page.waitForTimeout(400);
+    await e1.page.click('#f-phone');
+    await e1.page.click('#f-branch');
+    await e1.page.waitForTimeout(300);
+    ok(c4.whall === 2, '{ok:false}: при следующем фокусе поля отделения np.whall повторяется', c4.whall);
+    await e1.page.fill('#f-branch', '12');
+    await e1.page.waitForSelector('#whSugg button');
+    ok(c4.wh === 1 && /№?12/.test((await sugg(e1.page, 'whSugg'))[0]), 'бэкенд без np.whall: подсказки по-старому через np.wh');
+    await e1.page.locator('#whSugg button').first().click();
+    ok(await e1.page.inputValue('#f-branch') === '12', 'старый путь: нажатие на подсказку срабатывает');
+    await e1.page.fill('#f-phone', '0501234567');
+    await e1.page.evaluate(() => window.__tg.main.cb());
+    await e1.page.waitForSelector('.done');
+    ok(e1.errors.length === 0, 'ошибка API: заказ оформлен, ошибок в консоли нет', e1.errors);
+    await e1.page.context().close();
+
+    const e2 = await toNpCheckout(st3, 906);
+    await stubNp(e2.page, { whall: 'hang' });
+    await pickNp(e2.page);
+    await e2.page.locator('#cityChips .chip', { hasText: 'Київ' }).click();
+    await e2.page.waitForSelector('#whBusy:not([hidden])');
+    ok(/Шукаю…/.test(await text(e2.page, '#whBusy')), 'пока идёт запрос отделений — «Шукаю…» под полем');
+    await e2.page.fill('#f-branch', '15');
+    await e2.page.fill('#f-phone', '0501234567');
+    await e2.page.evaluate(() => window.__tg.main.cb());
+    await e2.page.waitForSelector('.done');
+    ok(true, 'ответ отделений висит — заказ всё равно оформляется');
+    await e2.page.context().close();
+
+    const e3 = await toNpCheckout(st3, 907);
+    await stubNp(e3.page, { cityHang: true });
+    await pickNp(e3.page);
+    await e3.page.fill('#f-city', 'Київ');
+    await e3.page.waitForSelector('#cityBusy:not([hidden])');
+    await e3.page.waitForTimeout(6000);
+    ok(await e3.page.locator('#cityBusy').isHidden() && await e3.page.locator('#citySugg').isHidden(), 'город: ответ дольше 5 с — «Шукаю…» исчезло, остаётся ручной ввод');
+    await e3.page.fill('#f-branch', '5');
+    await e3.page.fill('#f-phone', '0501234567');
+    await e3.page.evaluate(() => window.__tg.main.cb());
+    await e3.page.waitForSelector('.done');
+    ok(e3.errors.length === 0, 'зависший ответ: заказ оформлен без ошибок в консоли', e3.errors);
+    await e3.page.context().close(); st3.server.close();
+
+    // ответ np.whall приходит через 8 с: через 5 с доступен ручной ввод, после ответа работает новая схема
+    const stS = await mk(8846);
+    const sl = await toNpCheckout(stS, 911);
+    const cS = await stubNp(sl.page, { whall: 'slow' });
+    await pickNp(sl.page);
+    await sl.page.locator('#cityChips .chip', { hasText: 'Київ' }).click();
+    await sl.page.waitForSelector('#whBusy:not([hidden])');
+    await sl.page.waitForTimeout(5400);
+    ok(await sl.page.locator('#whBusy').isHidden(), 'np.whall отвечает долго: через 5 с «Шукаю…» исчезло, ввод доступен');
+    await sl.page.fill('#f-branch', '12');
+    await sl.page.waitForSelector('#whSugg button');
+    ok(cS.wh >= 1 && /Стара/.test((await sugg(sl.page, 'whSugg'))[0]), 'пока список грузится — подсказки по-старому через np.wh', await sugg(sl.page, 'whSugg'));
+    await sl.page.waitForFunction(() => /^№12,/.test((document.querySelector('#whSugg button') || {}).textContent || ''), null, { timeout: 6000 });
+    const whBefore = cS.wh;
+    await sl.page.fill('#f-branch', '777');
+    await sl.page.fill('#f-branch', '121');
+    const ls = await sugg(sl.page, 'whSugg');
+    ok(/^№121,/.test(ls[0]) && cS.wh === whBefore && cS.whall === 1, 'ответ пришёл позже 5 с: список из 1200 работает без новых запросов, открытый список обновился', { ls: ls.slice(0, 2), wh: cS.wh, whall: cS.whall });
+    ok(sl.errors.length === 0, 'долгий np.whall: ошибок в консоли нет', sl.errors);
+    await sl.page.context().close(); stS.server.close();
+
+    // чип города сразу после ввода в поле города
+    const stC = await mk(8847);
+    const ch = await toNpCheckout(stC, 912);
+    await stubNp(ch.page, {});
+    await pickNp(ch.page);
+    await ch.page.fill('#f-city', 'Хар');
+    await ch.page.locator('#cityChips .chip', { hasText: 'Харків' }).click();
+    await ch.page.waitForSelector('#whSugg button');
+    await ch.page.waitForTimeout(600);
+    ok(await ch.page.inputValue('#f-city') === 'Харків' && await ch.page.locator('#cityPick').isHidden() && await ch.page.locator('#whSugg button').count() === 10, 'чип сразу после ввода «Хар»: город выбран однозначно, отделения показаны, «Оберіть місто» нет');
+    await ch.page.context().close(); stC.server.close();
+
+    // --- оплата на счёт ФОП ---
+    const stF = await mk(8844, s => { s.fop = 1; s.pay = ['cash', 'card']; });
+    const f = await toNpCheckout(stF, 908);
+    ok(/Переказ на рахунок ФОП \(IBAN\)/.test(await text(f.page, '[data-opt="pay-card"]')) && !/на картку/.test(await text(f.page, '[data-opt="pay-card"]')), 'флаг fop: способ оплаты называется «Переказ на рахунок ФОП (IBAN)»');
+    await f.page.locator('[data-opt="pay-card"]').click();
+    ok(/Реквізити надішлемо в Telegram одразу після оформлення\./.test(await text(f.page, '#cardNote')), 'подсказка под способом: «одразу після оформлення»');
+    await f.page.locator('#cardNote').scrollIntoViewIfNeeded();
+    await f.page.screenshot({ path: OUT + '/102-pay-fop-ua-light.png' });
+    await f.page.fill('#f-phone', '0501234567');
+    await f.page.evaluate(() => window.__tg.main.cb());
+    await f.page.waitForSelector('.done');
+    ok(/Оплата: Переказ на рахунок ФОП \(IBAN\)/.test(await text(f.page, '.page')), 'итог заказа показывает название с ФОП', await text(f.page, '.page'));
+    await f.page.context().close();
+    const fr = await toNpCheckout(stF, 909, { lc: 'ru', theme: 'dark' });
+    await fr.page.locator('[data-opt="pay-card"]').click();
+    ok(/Перевод на счёт ФОП \(IBAN\)/.test(await text(fr.page, '[data-opt="pay-card"]')) && /Реквизиты пришлём в Telegram сразу после оформления\./.test(await text(fr.page, '#cardNote')), 'RU: название и подсказка для ФОП');
+    await fr.page.locator('#cardNote').scrollIntoViewIfNeeded();
+    await fr.page.screenshot({ path: OUT + '/103-pay-fop-ru-dark.png' });
+    await fr.page.context().close(); stF.server.close();
+    const stN = await mk(8845, s => { s.pay = ['cash', 'card']; });
+    const n = await toNpCheckout(stN, 910);
+    await n.page.locator('[data-opt="pay-card"]').click();
+    ok(/Переказ на картку/.test(await text(n.page, '[data-opt="pay-card"]')) && /після підтвердження замовлення/.test(await text(n.page, '#cardNote')) && !/ФОП/.test(await text(n.page, '#form')), 'без флага fop — прежнее название и подсказка');
+    await n.page.context().close(); stN.server.close();
+  }
+
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
   process.exit(fail ? 1 : 0);
