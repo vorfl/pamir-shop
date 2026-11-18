@@ -583,6 +583,38 @@ function errScrub_(v, max) {
   return s.replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+var ERR_TYPES = ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'EvalError', 'URIError', 'Error'];
+var ERR_FILES = ['app.js', 'config.js', 'index.html'];
+var ERR_NET_RE = /^net [\w.]{1,24}: (?:HTTP \d{3}|timeout|network)$/;
+var ERR_SCRIPT_RE = /^(TypeError|ReferenceError|SyntaxError|RangeError|EvalError|URIError|Error) @ (app\.js|config\.js|index\.html):\d{1,6}$/;
+
+/**
+ * Разбор ДО вырезания адресов: известный вид -> безопасная каноническая строка, иначе ''.
+ *  'net <действие>: HTTP <код>|timeout|network' (как шлёт app.js) -> без изменений;
+ *  '<текст с TypeError…> @ app.js:123' -> 'TypeError @ app.js:123' (текст ошибки отбрасывается);
+ *  'promise: …' -> 'Unhandled' (текст отбрасывается).
+ */
+function errSafe_(v) {
+  var s = clean_(v, 400).replace(/\s+/g, ' ');
+  if (ERR_NET_RE.test(s)) return s;
+  var loc = /@ ([\w.\-]{1,24}):(\d{1,6})$/.exec(s);
+  if (loc && ERR_FILES.indexOf(loc[1]) >= 0) {
+    var type = '';
+    ERR_TYPES.some(function (t) { if (new RegExp('(?:^|[^\\w])' + t + '(?![\\w])').test(s)) { type = t; return true; } return false; });
+    // более конкретный тип выигрывает у общего Error: проверяем в порядке списка (Error — последний)
+    if (type) return type + ' @ ' + loc[1] + ':' + loc[2];
+    return '';
+  }
+  if (/^promise:/.test(s)) return 'Unhandled';
+  return '';
+}
+
+/** Запись буфера пригодна для показа админу только в известном виде. */
+function errShowable_(m) {
+  m = String(m || '');
+  return ERR_NET_RE.test(m) || ERR_SCRIPT_RE.test(m) || m === 'Unhandled';
+}
+
 /** Добавляет одну запись в буфер ошибок: тот же текст — одна запись со счётчиком. */
 function errBufAdd_(buf, x) {
   var key = x.s + '\u0001' + x.v + '\u0001' + x.m;
@@ -617,7 +649,7 @@ function handleErr_(body) {
   var items = [];
   body.items.slice(0, ERR_PER_DID_HOUR).forEach(function (it) {
     if (used + items.length >= ERR_PER_DID_HOUR) return;
-    var m = errScrub_(it && it.m, ERR_TEXT_MAX);
+    var m = errSafe_(it && it.m) || errScrub_(it && it.m, ERR_TEXT_MAX);
     if (!m) return;
     var v = String((it && it.v) || '').replace(/[^0-9A-Za-z.\-]/g, '').slice(0, 12);
     if (!/^v?\d[\w.\-]*$/i.test(v)) v = ''; // версия похожа на версию, а не на адрес
@@ -625,7 +657,9 @@ function handleErr_(body) {
   });
   if (!items.length) return { ok: true };
   cache.put(dKey, String(used + items.length), 3600);
-  var lock = counterLock_(500, 300);
+  // Анонимный запрос не должен брать блокировку заказов: только DocumentLock, иначе запасные слоты.
+  var lock = null;
+  try { var dl = LockService.getDocumentLock(); if (dl && dl.tryLock(500)) lock = dl; } catch (errLock) { lock = null; }
   if (!lock) { slotPut_('fx_', JSON.stringify(items)); return { ok: true }; }
   try {
     var buf = errBufParse_(cache.get('er_buf'));
@@ -671,12 +705,16 @@ function errorsJob() {
   if (!token || !ids.length) return { sent: 0 };
   var all = Object.keys(buf.m || {}).map(function (k) { return { k: k, c: buf.m[k] }; })
     .sort(function (a, b) { return (b.c - a.c) || (a.k < b.k ? -1 : 1); });
-  var top = all.slice(0, ERR_SUMMARY_TOP);
+  var shown = all.filter(function (x) { return errShowable_(x.k.split('\u0001')[2]); });
+  var otherN = 0;
+  all.forEach(function (x) { if (shown.indexOf(x) < 0) otherN += x.c; });
+  var top = shown.slice(0, ERR_SUMMARY_TOP);
   var lines = top.map(function (x) {
     var p = x.k.split('\u0001');
     return '• ' + escHtml_(p[2]) + ' (екран: ' + escHtml_(p[0] || '—') + ', версія: ' + escHtml_(p[1] || '—') + ') × ' + x.c;
   });
-  if (all.length > top.length) lines.push('ще ' + (all.length - top.length) + ' інших / еще ' + (all.length - top.length) + ' других');
+  shown.slice(ERR_SUMMARY_TOP).forEach(function (x) { otherN += x.c; });
+  if (otherN) lines.push('інші: ' + otherN + ' / другие: ' + otherN);
   var text = 'Помилки у магазині: ' + buf.n + (lines.length ? '\n' + lines.join('\n') : '');
   ids.forEach(function (id) { tg_(token, 'sendMessage', { chat_id: id, text: text, parse_mode: 'HTML', disable_web_page_preview: true }); });
   return { sent: ids.length, n: buf.n };

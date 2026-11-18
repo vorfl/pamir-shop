@@ -857,6 +857,29 @@ function doPost(e) {
 
 /* ------------------------------ Приём заказа ------------------------------ */
 
+/** Отпечаток заказа для проверки повтора rid: HMAC от состава, суммы, доставки, оплаты, текстов, телефона и имени. ПДн в кэше нет. */
+function orderFingerprint_(token, ownerKey, body, o) {
+  var items = (Array.isArray(body.items) ? body.items : []).map(function (it) {
+    return [String((it && it.id) || ''), Number(it && it.g) || 0, Math.floor(Number(it && it.q)) || 0].join('|');
+  }).sort();
+  var raw = JSON.stringify([ownerKey, items, Number(body.total) || 0, o.delivery, o.npType, o.city, o.branch, String(body.point || ''),
+    o.pay, o.comment, clean_(body.giftNote, 120), o.phone, o.name]);
+  var sig = Utilities.computeHmacSha256Signature(Utilities.newBlob(raw).getBytes(), Utilities.newBlob(String(token)).getBytes());
+  return sig.map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('').slice(0, 32);
+}
+
+/** Ответ на повтор rid по записи кэша (null — записи нет). Старая запись — просто номер: ведём себя как раньше. */
+function ridDupAnswer_(prev, fp, ownerKey) {
+  if (!prev) return null;
+  var rec = null;
+  if (String(prev).charAt(0) === '{') { try { rec = JSON.parse(prev); } catch (err) { rec = null; } }
+  if (!rec || !rec.f) return { ok: true, number: rec && rec.n ? rec.n : prev };
+  if (rec.f === fp) return { ok: true, number: rec.n };
+  var res = { ok: false, error: 'dup_changed' };
+  if (rec.u && rec.u === ownerKey && rec.n) res.number = rec.n; // номер — только автору первого заказа
+  return res;
+}
+
 function handleOrder_(body) {
   var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
@@ -906,9 +929,11 @@ function handleOrder_(body) {
   // 3. Повтор того же запроса (клиент не дождался ответа и нажал ещё раз) — отдаём тот же номер.
   var cache = CacheService.getScriptCache();
   var rid = String(body.rid || '').replace(/[^\w-]/g, '').slice(0, 40);
+  var ownerKey = user ? String(user.id) : 't'; // автор запроса: id или признак тестового заказа
+  var fp = rid ? orderFingerprint_(token, ownerKey, body, o) : '';
   if (rid) {
-    var prev = cache.get('rid_' + rid);
-    if (prev) return { ok: true, number: prev };
+    var dupEarly = ridDupAnswer_(cache.get('rid_' + rid), fp, ownerKey);
+    if (dupEarly) return dupEarly;
   }
 
   // 4. Цены и наличие — только по таблице. Ценам от клиента не доверяем.
@@ -972,8 +997,8 @@ function handleOrder_(body) {
   try {
     // Повторная проверка под блокировкой: параллельный дубль мог записать заказ, пока мы ждали.
     if (rid) {
-      var prev2 = cache.get('rid_' + rid);
-      if (prev2) return { ok: true, number: prev2 };
+      var dupLate = ridDupAnswer_(cache.get('rid_' + rid), fp, ownerKey);
+      if (dupLate) return dupLate;
     }
     var rlKey = 'rl_' + (o.uid || 'test');
     var count = parseInt(cache.get(rlKey), 10) || 0;
@@ -1013,7 +1038,7 @@ function handleOrder_(body) {
     sheet.appendRow(row);
     rowIndex = sheet.getLastRow();
     SpreadsheetApp.flush();
-    if (rid) cache.put('rid_' + rid, o.num, 21600);
+    if (rid) cache.put('rid_' + rid, JSON.stringify({ n: o.num, f: fp, u: ownerKey }), 21600);
     if (o.uid) { try { clearCart_(o.uid); } catch (err) { console.warn('cart: ' + err); } }
     // Колонка «Залишок» (если она есть и заполнена) уменьшается сама. Сбой здесь заказ не отменяет.
     if (!isTest) {

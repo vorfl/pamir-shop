@@ -81,6 +81,37 @@ console.log('Заказ');
     ok(gr.sheets['Замовлення'].rows.length === rows0 + 1, 'гонка с тем же rid: в листе одна новая строка', gr.sheets['Замовлення'].rows.length - rows0);
     ok(adminOrderMsgs.length === 1, 'гонка с тем же rid: админу ушло одно сообщение о заказе', adminOrderMsgs.length);
   }
+  { // К1: тот же rid, другое содержимое — корзина не теряется молча
+    const gk = fresh();
+    const rows0 = gk.sheets['Замовлення'].rows.length;
+    const mk = (uid, over) => Object.assign({ action: 'order', initData: gk.initData(U(uid)), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'k1-rid' }, over || {});
+    const first = gk.post(mk(60));
+    const changed = gk.post(mk(60, { items: [{ id: 'NUT-007', g: 0, q: 1 }, { id: 'SWT-004', g: 0, q: 1 }], total: 150 }));
+    ok(first.ok && first.number === 'P-0008' && changed.ok === false && changed.error === 'dup_changed' && changed.number === 'P-0008', 'К1: тот же rid с другой корзиной — dup_changed и номер первого заказа', [first, changed]);
+    ok(gk.sheets['Замовлення'].rows.length === rows0 + 1 && gk.sheets['Замовлення'].rows.slice(-1)[0][13] === 85, 'К1: в таблице один заказ с первым составом (85 ₴)');
+    const same = gk.post(mk(60));
+    ok(same.ok === true && same.number === 'P-0008' && gk.sheets['Замовлення'].rows.length === rows0 + 1, 'К1: одинаковый повтор — ok и тот же номер, без второго заказа', same);
+    const two = mk(61, { rid: 'k1-two', items: [{ id: 'NUT-007', g: 0, q: 1 }, { id: 'DRY-039', g: 500, q: 1 }], total: 275 });
+    const twoRev = Object.assign({}, two, { items: two.items.slice().reverse() });
+    const t1 = gk.post(two), t2 = gk.post(twoRev);
+    ok(t1.ok && t2.ok && t1.number === t2.number, 'К1: порядок позиций в корзине не важен', [t1, t2]);
+    const other = gk.post(mk(62));
+    ok(other.ok === false && other.error === 'dup_changed' && !('number' in other) && !/P-\d/.test(JSON.stringify(other)), 'К1: другой пользователь с тем же rid — dup_changed без номера', other);
+    const otherChanged = gk.post(mk(62, { items: [{ id: 'NUT-007', g: 0, q: 2 }], total: 170 }));
+    ok(otherChanged.error === 'dup_changed' && !('number' in otherChanged), 'К1: чужой rid с другим составом — тоже без номера', otherChanged);
+    const cm = gk.post(mk(60, { comment: 'новий коментар' }));
+    ok(cm.error === 'dup_changed' && cm.number === 'P-0008', 'К1: изменён только комментарий — dup_changed', cm);
+    const gn = gk.post(mk(60, { giftNote: 'Для мами' }));
+    ok(gn.error === 'dup_changed', 'К1: изменена только подпись к подарку — dup_changed', gn);
+    const ph = gk.post(mk(60, { phone: '+380509999999' }));
+    ok(ph.error === 'dup_changed', 'К1: изменён только телефон — dup_changed', ph);
+    const rec = gk.cache['rid_k1-rid'] || '';
+    ok(rec && !/Олена|380501234567|NUT-007/.test(rec), 'К1: в кэше с rid нет имени, телефона и состава открытым текстом', rec);
+    gk.cache['rid_old-rid'] = 'P-0042';
+    const old = gk.post(mk(60, { rid: 'old-rid', total: 85 }));
+    ok(old.ok === true && old.number === 'P-0042', 'К1: старая запись без отпечатка — как раньше (ok и номер)', old);
+    ok(gk.sheets['Замовлення'].rows.length === rows0 + 2, 'К1: dup_changed ничего не записал (всего два новых заказа)', gk.sheets['Замовлення'].rows.length - rows0);
+  }
   let lastRes;
   for (let i = 0; i < 6; i++) lastRes = order(g, U(44), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
   ok(lastRes.error === 'rate_limit', 'не больше 5 заказов в час с одного аккаунта', lastRes);
@@ -2428,11 +2459,11 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     ok(JSON.parse(g3.cache.er_buf).n === 300, 'err: общий потолок 300 в час', JSON.parse(g3.cache.er_buf).n);
     // сводка
     const g4 = fresh();
-    g4.post({ action: 'err', did: 'devicedid010', items: [{ m: 'Boom <b>bold</b> & more', s: 'cart', v: '7' }, { m: 'Boom <b>bold</b> & more', s: 'cart', v: '7' }, { m: 'Other', s: 'home', v: '7' }] });
-    g4.post({ action: 'err', did: 'devicedid011', items: [{ m: 'Boom <b>bold</b> & more', s: 'cart', v: '7' }] });
+    g4.post({ action: 'err', did: 'devicedid010', items: [{ m: 'net poll: HTTP 500', s: 'cart', v: '7' }, { m: 'net poll: HTTP 500', s: 'cart', v: '7' }, { m: 'Other <b>bold</b> & more', s: 'home', v: '7' }] });
+    g4.post({ action: 'err', did: 'devicedid011', items: [{ m: 'net poll: HTTP 500', s: 'cart', v: '7' }] });
     g4.call('hourlyJob');
     const sums = g4.sent.filter(m => m.method === 'sendMessage' && /Помилки у магазині/.test(m.payload.text || ''));
-    ok(sums.length === 1 && String(sums[0].payload.chat_id) === '900' && /^Помилки у магазині: 4\n/.test(sums[0].payload.text) && /Boom b bold b more \(екран: cart, версія: 7\) × 3/.test(sums[0].payload.text) && !/[<>&]/.test(sums[0].payload.text) && sums[0].payload.parse_mode === 'HTML', 'сводка «Помилки у магазині: N» раз в час: частые тексты, без разметки из чужого текста, экран и версия', sums[0] && sums[0].payload.text);
+    ok(sums.length === 1 && String(sums[0].payload.chat_id) === '900' && /^Помилки у магазині: 4\n/.test(sums[0].payload.text) && /net poll: HTTP 500 \(екран: cart, версія: 7\) × 3/.test(sums[0].payload.text) && /інші: 1 \/ другие: 1/.test(sums[0].payload.text) && !/Other|bold/.test(sums[0].payload.text) && !/[<>&]/.test(sums[0].payload.text) && sums[0].payload.parse_mode === 'HTML', 'сводка «Помилки у магазині: N» раз в час: частые тексты, без разметки из чужого текста, экран и версия', sums[0] && sums[0].payload.text);
     ok(!g4.cache.er_buf, 'после сводки буфер очищен');
     g4.call('hourlyJob');
     ok(g4.sent.filter(m => /Помилки у магазині/.test(m.payload.text || '')).length === 1, 'ошибок не было — второй сводки нет');
@@ -2440,11 +2471,11 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     g5.call('hourlyJob');
     ok(!g5.sent.some(m => /Помилки/.test(m.payload.text || '')), 'пусто — сводки нет');
     const g6 = fresh();
-    g6.post({ action: 'err', did: 'devicedid020', items: Array.from({ length: 5 }, (_, i) => ({ m: 'e' + i, s: 'home', v: '1' })) });
-    g6.post({ action: 'err', did: 'devicedid021', items: Array.from({ length: 5 }, (_, i) => ({ m: 'f' + i, s: 'home', v: '1' })) });
+    g6.post({ action: 'err', did: 'devicedid020', items: Array.from({ length: 5 }, (_, i) => ({ m: 'net e' + i + ': network', s: 'home', v: '1' })) });
+    g6.post({ action: 'err', did: 'devicedid021', items: Array.from({ length: 5 }, (_, i) => ({ m: 'net f' + i + ': timeout', s: 'home', v: '1' })) });
     g6.call('errorsJob');
     const t6 = g6.sent.filter(m => /Помилки у магазині/.test(m.payload.text || ''))[0].payload.text;
-    ok(/магазині: 10\n/.test(t6) && t6.split('\n').length === 7 && /ще 5 інших/.test(t6) && /еще 5 других/.test(t6), 'в сводке не больше 5 строк с ошибками и строка «ще N інших» (UA и RU)', t6);
+    ok(/магазині: 10\n/.test(t6) && t6.split('\n').length === 7 && /інші: 5/.test(t6) && /другие: 5/.test(t6), 'в сводке не больше 5 строк с ошибками и строка «інші: N / другие: N» (UA и RU)', t6);
   }
 
   // --- б7.7+: чужая ссылка, засорение, дедупликация, запасные слоты
@@ -2472,22 +2503,35 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     ok(Object.keys(b3.m).length === 40 && g3.sandbox.ERR_DISTINCT_HOUR === 40, 'err: разных текстов в час не больше 40', Object.keys(b3.m).length);
     g3.call('errorsJob');
     const t3 = g3.sent.filter(m => /Помилки у магазині/.test(m.payload.text || ''))[0].payload.text;
-    ok(t3.split('\n').length === 7 && /ще 35 інших/.test(t3), 'сводка: 5 самых частых и «ще 35 інших»', t3);
+    ok(t3.split('\n').length === 2 && /інші: 40 \/ другие: 40/.test(t3) && !/текст номер/.test(t3), 'сводка: произвольный текст не показывается, только «інші: N»', t3);
     // нет блокировок: запасные слоты, сводка дочитывает
     const g4 = fresh();
     g4.setLockBusy(Infinity, Infinity);
-    g4.post({ action: 'err', did: 'slotdid00001', items: [{ m: 'Слот помилка', s: 'cart', v: '3' }] });
+    g4.post({ action: 'err', did: 'slotdid00001', items: [{ m: 'net slot: timeout', s: 'cart', v: '3' }] });
     g4.setLockBusy(0, 0);
     ok(!g4.cache.er_buf && Object.keys(g4.cache).some(k => /^fx_\d+_\d+$/.test(k)), 'err: ни одной блокировки — запись в запасной слот без блокировки');
     g4.call('errorsJob');
-    ok(g4.sent.some(m => /Слот помилка \(екран: cart, версія: 3\) × 1/.test(m.payload.text || '')), 'сводка дочитала запасные слоты');
+    ok(g4.sent.some(m => /net slot: timeout \(екран: cart, версія: 3\) × 1/.test(m.payload.text || '')), 'сводка дочитала запасные слоты');
     // DocumentLock = null
     const g5 = fresh();
     g5.setDocLockNull(true);
-    g5.post({ action: 'err', did: 'nulllockdid1', items: [{ m: 'Помилка при null', s: 'cart', v: '3' }] });
-    ok(g5.cache.er_buf && /Помилка при null/.test(g5.cache.er_buf), 'DocumentLock = null: ошибка витрины попала в буфер (через ScriptLock)');
+    const realLk = g5.sandbox.LockService; let scriptLocks = 0;
+    g5.sandbox.LockService = { getDocumentLock: realLk.getDocumentLock, getScriptLock: () => { scriptLocks++; return realLk.getScriptLock(); } };
+    g5.post({ action: 'err', did: 'nulllockdid1', items: [{ m: 'net lock: network', s: 'cart', v: '3' }] });
+    g5.sandbox.LockService = realLk;
+    ok(scriptLocks === 0 && !g5.cache.er_buf && Object.keys(g5.cache).some(k => /^fx_\d+_\d+$/.test(k)), 'DocumentLock = null: err не берёт ScriptLock заказа, пишет в запасной слот', scriptLocks);
     g5.call('errorsJob');
-    ok(g5.sent.some(m => /Помилка при null/.test(m.payload.text || '')), 'DocumentLock = null: сводка ушла');
+    ok(g5.sent.some(m => /net lock: network/.test(m.payload.text || '')), 'DocumentLock = null: сводка ушла');
+    // М1: разбор безопасных частей до вырезания адресов
+    const g7 = fresh();
+    g7.post({ action: 'err', did: 'safeparse0001', items: [
+      { m: 'Uncaught TypeError: Cannot read properties of null (reading buy now at evil.com) @ app.js:1234', s: 'cart', v: '1' },
+      { m: 'Pay 5000 to card 4444 now, write @scam_bot @ app.js:7', s: 'cart', v: '1' },
+      { m: 'Please visit our site @ evil.js:5', s: 'cart', v: '1' } ] });
+    g7.post({ action: 'err', did: 'safeparse0002', items: [{ m: 'promise: send money to https://evil.com', s: 'cart', v: '1' }, { m: 'net order: HTTP 502', s: 'cart', v: '1' }, { m: 'Sending money now', s: 'cart', v: '1' }] });
+    g7.call('errorsJob');
+    const t7 = g7.sent.filter(m => /Помилки у магазині/.test(m.payload.text || ''))[0].payload.text;
+    ok(/• TypeError @ app\.js:1234 \(екран: cart/.test(t7) && /• Unhandled \(/.test(t7) && /• net order: HTTP 502 \(/.test(t7) && /інші: 3 \/ другие: 3/.test(t7) && !/evil|scam|money|card|Cannot|buy|visit/.test(t7), 'сводка: только известные виды (файл:строка, тип, net), остальное — «інші: N»', t7);
   }
 
   // --- б7.2+: устойчивость к DocumentLock = null, лимит запросов, пустой flushJob
