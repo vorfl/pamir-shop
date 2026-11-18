@@ -901,6 +901,7 @@ console.log('Волна 2б · Б3: оплата');
   const my42 = g.post({ action: 'orders.my', initData: g.initData(U(42)) }), my43 = g.post({ action: 'orders.my', initData: g.initData(U(43)) });
   ok(my42.orders[0].paid === 'refund' && my43.orders[0].paid === 'paid', 'статус оплаты виден в «Мої замовлення»', [my42.orders[0].paid, my43.orders[0].paid]);
   const ao = adm(g, 900, 'admin.orders').orders;
+  ok(ao.find(o => o.num === num2).lang === 'ru' && ao.find(o => o.num === 'P-0001').lang === 'ua', 'admin.orders: у заказа поле lang (ua/ru)');
   ok(ao.find(o => o.num === num2).paid === 'paid' && ao.find(o => o.num === 'P-0001').paid === 'unpaid', 'в панели у заказа есть статус оплаты; пусто = не оплачено');
   row('P-0001')[pc] = 'ОПЛАЧЕНО';
   ok(adm(g, 900, 'admin.orders').orders.find(o => o.num === 'P-0001').paid === 'paid', 'статус, вписанный в таблицу руками, читается без учёта регистра');

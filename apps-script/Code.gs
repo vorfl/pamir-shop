@@ -2042,7 +2042,8 @@ function listOrders_() {
         phone: cell_(row, col.phone), delivery: cell_(row, col.delivery), city: cell_(row, col.city),
         branch: cell_(row, col.branch), pay: cell_(row, col.pay), comment: cell_(row, col.comment),
         items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(cell_(row, col.svc)),
-        paid: paidCode_(cell_(row, col.paid)), wh: orderIsWh_({ svc: cell_(row, col.svc) }) ? 1 : 0
+        paid: paidCode_(cell_(row, col.paid)), wh: orderIsWh_({ svc: cell_(row, col.svc) }) ? 1 : 0,
+        lang: cell_(row, col.lang).toLowerCase() === 'ru' ? 'ru' : 'ua'
       });
     }
   }
