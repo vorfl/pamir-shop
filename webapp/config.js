@@ -7,5 +7,10 @@ window.PAMIR_CONFIG = {
   BOT: 'pamir_spices_bot',
   // Короткое имя Mini App из BotFather (/newapp), например 'shop'. Пока пусто, ссылки на товар
   // идут через чат бота (t.me/бот?start=ID); с именем — открывают товар сразу (t.me/бот/shop?startapp=ID).
-  APP: 'shop'
+  APP: 'shop',
+  // Необязательно: адрес каталога через Cloudflare Worker — адрес Worker + /catalog, например
+  // 'https://pamir-bot.ИМЯ.workers.dev/catalog'. Пусто — каталог берётся из Apps Script, как раньше.
+  // Если Worker не ответил за 6 секунд или ответил не так, витрина сама идёт в Apps Script.
+  // Заказы, цены и всё остальное в любом случае идут только в Apps Script.
+  CATALOG_URL: ''
 };

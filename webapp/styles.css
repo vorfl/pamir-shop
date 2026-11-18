@@ -32,7 +32,7 @@
   --space-5: 20px; --space-6: 24px; --space-8: 32px;
   --radius-sm: 6px; --radius-md: 12px; --radius-lg: 16px; --radius-xl: 24px; --radius-pill: 999px;
   --tap: 44px;
-  --section-gap: var(--space-4); /* одинаковый отступ между разделами главной */
+  --section-gap: var(--space-3); /* одинаковый отступ между разделами главной */
 }
 
 :root[data-theme="dark"] {
@@ -509,10 +509,8 @@ select.input { -webkit-appearance: menulist; appearance: auto; }
 .total .price-old { font-size: 15px; }
 .sheet__badges { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
-.feature__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
 .feature__title { margin: 0; font-family: var(--font-display); font-size: 16px; line-height: 22px; font-weight: 600; overflow-wrap: anywhere; }
 .feature__text { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.feature__foot { margin-top: auto; padding-top: var(--space-2); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
 
 /* ---------- Этап 6: мои заказы ---------- */
 .my { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); list-style: none; }
@@ -548,8 +546,8 @@ textarea, select { font: inherit; color: inherit; }
   transition: transform .12s var(--ease), background-color .15s, border-color .15s, color .15s, box-shadow .15s;
 }
 .btn:active:not(:disabled), .chip:active, .toolbtn:active, .weights button:active:not(:disabled), .mini__add:active { transform: scale(.96); }
-.mini, .feature { transition: transform .15s var(--ease); }
-.mini:active, .feature:active { transform: scale(.98); }
+.mini { transition: transform .15s var(--ease); }
+.mini:active { transform: scale(.98); }
 .card__img img, .sheet__img img, .line__img img { animation: fade .3s ease-out; }
 
 /* ---------- Поиск и фильтры ---------- */
@@ -620,16 +618,6 @@ textarea, select { font: inherit; color: inherit; }
 @keyframes pop { 0% { transform: scale(1); } 40% { transform: scale(1.35); } 100% { transform: scale(1); } }
 .badge--low { background: var(--apricot-soft); color: var(--on-apricot-soft); }
 .promo--set { background: var(--pistachio); color: var(--surface-raised); }
-
-/* ---------- Блок наверху каталога ---------- */
-.feature {
-  display: flex; align-items: stretch; gap: var(--space-3); padding: var(--space-3); margin-bottom: var(--section-gap);
-  border: 1px solid var(--line); border-radius: 20px; cursor: pointer;
-  background: linear-gradient(135deg, var(--apricot-soft), var(--surface-raised) 72%);
-}
-.feature__img { flex: 0 0 116px; width: 116px; border-radius: 14px; }
-.feature__title { font-size: 17px; line-height: 24px; }
-.feature .btn { margin-top: 0; padding: 0 var(--space-4); }
 
 /* ---------- Скелет загрузки ---------- */
 .skel { display: flex; flex-direction: column; gap: var(--space-2); padding: 10px; border-radius: 18px; background: var(--surface-raised); border: 1px solid var(--card-border); box-shadow: var(--shadow-card); }
@@ -788,10 +776,6 @@ body[data-season="navruz"] { --orn: var(--pistachio); }
 .top { position: relative; }
 .top > :not(.orn) { position: relative; }
 .top .orn { -webkit-mask-image: linear-gradient(90deg, transparent 30%, #000 75%); mask-image: linear-gradient(90deg, transparent 30%, #000 75%); }
-.feature { position: relative; overflow: hidden; }
-.feature > :not(.orn) { position: relative; }
-.feature .orn { -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 55%); mask-image: linear-gradient(200deg, #000 0%, transparent 55%); }
-.feature__story { align-self: flex-start; min-height: var(--tap); padding: 0; border: 0; background: none; font: inherit; font-size: 13px; font-weight: 700; color: var(--apricot-text); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .done { position: relative; overflow: hidden; padding: var(--space-6) var(--space-4); border-radius: var(--radius-lg); }
 .done > :not(.orn) { position: relative; }
 .done .orn { -webkit-mask-image: radial-gradient(circle at 50% 0, #000 0, transparent 70%); mask-image: radial-gradient(circle at 50% 0, #000 0, transparent 70%); }
@@ -966,17 +950,6 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .pay__acts .btn { padding: 0 var(--space-2); font-size: 13px; line-height: 16px; }
 
 /* ---------- Б4. Подборка «Спеції від батька» и состав ---------- */
-.father {
-  position: relative; overflow: hidden; display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-3) 0 var(--space-3); margin-bottom: var(--section-gap);
-  border: 1px solid var(--line); border-radius: 20px;
-  background: linear-gradient(135deg, var(--pistachio-soft), var(--surface-raised) 72%);
-}
-.father > :not(.orn) { position: relative; }
-.father .orn { -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 55%); mask-image: linear-gradient(200deg, #000 0%, transparent 55%); }
-.father__head { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-3); }
-.father .feature__text { -webkit-line-clamp: 4; }
-.father .rail__list { margin: 0; padding: 0 var(--space-3); }
 .sheet__comp { margin: 0; font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
 
 /* ---------- Б2. Опт ---------- */
@@ -1022,14 +995,6 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .quiz__opts { display: flex; flex-direction: column; gap: var(--space-2); }
 .quiz__opt { min-height: 52px; font-size: 16px; }
 
-/* ---------- Выпуск А: «Наша курага» из нескольких товаров ---------- */
-.featuregroup { margin-bottom: var(--section-gap); display: flex; flex-direction: column; gap: var(--space-2); }
-.featuregroup__title { font-size: 17px; line-height: 24px; }
-.featuregroup__text { -webkit-line-clamp: unset; display: block; }
-.feature--item { margin-bottom: 0; }
-.feature--item .feature__img { flex-basis: 96px; width: 96px; align-self: flex-start; }
-.feature__title--item { font-size: 15px; line-height: 20px; }
-
 /* ---------- Нова пошта: статус поиска и подсказки ---------- */
 .np-busy, .np-hint { margin: var(--space-1) 0 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
 .sugg button { overflow-wrap: anywhere; }
@@ -1039,7 +1004,7 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .plus { display: flex; gap: var(--space-2); margin: 0 calc(var(--space-4) * -1) var(--section-gap); padding: 2px var(--space-4); overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 .plus::-webkit-scrollbar { display: none; }
 .plus__item {
-  flex: none; display: flex; align-items: center; gap: var(--space-2); width: 156px; height: 56px; padding: 0 var(--space-3);
+  flex: none; display: flex; align-items: center; gap: var(--space-2); width: 156px; height: 48px; padding: 0 var(--space-3);
   border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--ink);
   font: inherit; font-size: 13px; line-height: 16px; font-weight: 700; text-align: left; cursor: pointer;
 }
@@ -1145,3 +1110,56 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .msg__tpl { justify-content: flex-start; text-align: left; font-weight: 600; font-size: 14px; line-height: 20px; }
 .ord__body a.btn { text-decoration: none; }
 .ord--new .ord__body { background: var(--surface-raised); border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+
+/* ================= Этап 9, выпуск Б, Б1, блок 3: компактные ленты «Наша курага» и «Спеції від батька» ================= */
+/* Одна горизонтальная лента небольших карточек и одна строка текста; полный текст — в шторке по нажатию */
+.lane {
+  position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 2px; padding: 2px 0 4px; margin-bottom: var(--section-gap);
+  border: 1px solid var(--line); border-radius: 20px;
+}
+.feature.lane { background: linear-gradient(135deg, var(--apricot-soft), var(--surface-raised) 72%); }
+.father.lane { background: linear-gradient(135deg, var(--pistachio-soft), var(--surface-raised) 72%); }
+.lane > :not(.orn) { position: relative; }
+.lane .orn { -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 55%); mask-image: linear-gradient(200deg, #000 0%, transparent 55%); }
+.lane__hd { margin: 0; font: inherit; }
+.lane__btn {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; width: 100%; min-height: var(--tap); padding: 2px var(--space-3); border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.lane__hd > .feature__title { display: block; padding: 4px var(--space-3); }
+.lane .feature__title { font-size: 16px; line-height: 22px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane .feature__text { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; -webkit-line-clamp: unset; }
+.lane .rail__list { margin: 0; padding: 2px var(--space-3) 2px; gap: var(--space-2); }
+.mini--row {
+  flex: 0 0 184px; width: 184px; height: 72px; flex-direction: row; align-items: center; gap: var(--space-2); padding: 6px;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--surface-raised);
+}
+.mini--row .mini__img { flex: none; width: 58px; height: 58px; aspect-ratio: auto; box-shadow: none; border-radius: 10px; }
+.mini__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mini--row .mini__name { min-height: 0; font-size: 13px; line-height: 16px; }
+.mini--row .card__meta { min-height: 0; column-gap: 4px; }
+.mini--row .price { font-size: 14px; line-height: 18px; }
+.mini--row .unit, .mini--row .price-old { font-size: 11px; line-height: 14px; }
+
+/* ================= Блок 3: Новый год (б11), источники, повтор заказа ================= */
+/* Гирлянда из ступенчатых ромбов под шапкой (не занимает места); приглушена в тёмной теме */
+.top > .garland { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; z-index: 1; pointer-events: none; }
+.top > .garland[hidden] { display: none; }
+.ny-strip { display: block; width: 100%; height: 9px; }
+:root[data-theme="dark"] .top > .garland, :root[data-theme="dark"] .ny-strip--lane { opacity: .55; }
+/* Праздничная обложка «Нашей кураги»: гирлянда по верхней кайме и рамка цвета лазурита */
+.ny-strip--lane { position: absolute !important; top: 0; left: 0; }
+body[data-season="newyear"] .feature.lane { padding-top: 9px; border-color: var(--lapis); }
+body[data-season="newyear"] .rail__sub { color: var(--lapis); }
+/* Снег: 18 ромбиков, только transform, нажатия проходят насквозь; при prefers-reduced-motion скрыт */
+.snow { position: fixed; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; contain: strict; }
+.snow i {
+  position: absolute; top: -12px; width: var(--s); height: var(--s); background: var(--lapis-soft); box-shadow: 0 0 0 1px var(--lapis); opacity: .55;
+  transform: translate3d(0, -12px, 0) rotate(45deg); animation: snowfall var(--d) linear var(--w) infinite; will-change: transform;
+}
+:root[data-theme="dark"] .snow i { background: var(--ink); box-shadow: none; opacity: .4; }
+@keyframes snowfall { to { transform: translate3d(var(--dx), 105vh, 0) rotate(225deg); } }
+@media (prefers-reduced-motion: reduce) { .snow { display: none; } }
+.ny-until { margin-bottom: var(--space-3); }
+.gncount { margin: var(--space-1) 0 0; text-align: right; font-variant-numeric: tabular-nums; }
+.form__retry { margin-top: var(--space-2); }

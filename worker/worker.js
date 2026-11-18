@@ -21,7 +21,16 @@ const KV_CATALOG = 'catalog';
 const KV_STATE = 'monitor-state';
 
 // Память изолята: первый слой кэша
-const mem = { catalog: null, kvWrittenAt: 0, inflight: null };
+const PAUSE_MS = 30 * 1000;            // после сбоя Apps Script 30 с не ходим за каталогом
+const PURGE_GAP_MS = 5 * 1000;         // purge чаще раза в 5 с нового чтения не запускает
+const CACHE_KEY_PAUSE = 'https://pamir-cache.invalid/catalog-pause';
+const mem = { catalog: null, kvWrittenAt: 0, inflight: null, pauseUntil: 0, purgeAt: 0 };
+
+// Каталог без поля updated (время сборки): по нему понимаем, изменился ли каталог на самом деле.
+// Без JSON.parse: вырезаем значение первого "updated" обычной заменой в строке.
+function normalizeCatalog(body) {
+  return body.replace(/"updated"\s*:\s*("(?:[^"\\]|\\.)*"|-?[0-9.eE+-]+|null)/, '"updated":0');
+}
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -44,7 +53,7 @@ export default {
     }
 
     if (request.method === 'POST' && path === '/purge') {
-      return handlePurge(request, env);
+      return handlePurge(request, env, ctx);
     }
 
     // Открытие адреса в браузере — просто проверка, что Worker жив
@@ -142,13 +151,18 @@ async function handleCatalog(env, ctx) {
 function refreshCatalog(env, force) {
   if (mem.inflight) return mem.inflight;
   const p = (async () => {
+    if (!force && (await isPaused(env))) return null; // недавний сбой: в Apps Script не ходим
     const body = await fetchGood(env, 'catalog', isGoodCatalog);
-    if (!body) return null;
-    const item = { body, ts: Date.now() };
-    const prev = mem.catalog;
-    const changed = !prev || prev.body !== body;
+    if (!body) {
+      await markPause(env);
+      return null;
+    }
+    mem.pauseUntil = 0;
+    const item = { body, ts: Date.now(), norm: normalizeCatalog(body) };
+    const prev = mem.catalog || (await loadCatalogShared(env));
+    const changed = !prev || prev.norm !== item.norm;
     mem.catalog = item;
-    await saveCatalogShared(env, item, force || changed);
+    await saveCatalogShared(env, item, changed);
     return item;
   })();
   mem.inflight = p;
@@ -184,16 +198,48 @@ async function fetchGood(env, action, check) {
   }
 }
 
-async function handlePurge(request, env) {
+async function isPaused(env) {
+  const now = Date.now();
+  if (mem.pauseUntil > now) return true;
+  try {
+    if (typeof caches !== 'undefined' && caches.default) {
+      const r = await caches.default.match(new Request(CACHE_KEY_PAUSE));
+      if (r) {
+        const until = Number(await r.text());
+        if (until > now) { mem.pauseUntil = until; return true; }
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return false;
+}
+
+// Отметка паузы: память изолята и Cache API. В KV не пишем: во время долгого сбоя это съело бы лимит записей.
+async function markPause(env) {
+  const until = Date.now() + PAUSE_MS;
+  mem.pauseUntil = until;
+  try {
+    if (typeof caches !== 'undefined' && caches.default) {
+      await caches.default.put(new Request(CACHE_KEY_PAUSE), new Response(String(until), {
+        headers: { 'Cache-Control': 'max-age=60' },
+      }));
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function handlePurge(request, env, ctx) {
   const key = request.headers.get('X-Pamir-Key') || '';
   if (!env.WEBHOOK_SECRET || !(await safeEqual(key, env.WEBHOOK_SECRET))) {
     return new Response('forbidden', { status: 403 });
   }
-  // сразу перечитываем; если Apps Script ответил плохо — старый кэш остаётся
-  const item = await refreshCatalogForce(env);
-  const ok = !!item;
-  return new Response(JSON.stringify({ ok }), {
-    status: ok ? 200 : 502,
+  // отвечаем сразу, перечитываем в фоне; чаще раза в 5 с новое чтение не запускаем.
+  // Если Apps Script ответит плохо — старый кэш остаётся.
+  const now = Date.now();
+  if (now - mem.purgeAt >= PURGE_GAP_MS) {
+    mem.purgeAt = now;
+    ctx.waitUntil(refreshCatalogForce(env).catch(() => {}));
+  }
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
   });
 }
@@ -227,7 +273,8 @@ async function loadCatalogShared(env) {
     try {
       const r = await env.PAMIR_KV.getWithMetadata(KV_CATALOG, 'text');
       if (r && typeof r.value === 'string' && r.metadata && typeof r.metadata.ts === 'number') {
-        return { body: r.value, ts: r.metadata.ts };
+        mem.kvWrittenAt = Math.max(mem.kvWrittenAt, r.metadata.ts); // время последней записи в KV известно
+        return { body: r.value, ts: r.metadata.ts, norm: normalizeCatalog(r.value) };
       }
     } catch (e) { /* идём дальше */ }
   }
@@ -236,7 +283,7 @@ async function loadCatalogShared(env) {
       const r = await caches.default.match(new Request(CACHE_KEY_CATALOG));
       if (r) {
         const ts = Number(r.headers.get('X-Pamir-Ts'));
-        if (ts) return { body: await r.text(), ts };
+        if (ts) { const body = await r.text(); return { body, ts, norm: normalizeCatalog(body) }; }
       }
     }
   } catch (e) { /* ignore */ }

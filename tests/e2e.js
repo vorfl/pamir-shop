@@ -32,6 +32,8 @@ async function toCard(page, id) {
   }
   return false;
 }
+/** Группы настроек по умолчанию свёрнуты (раскрыта только «Магазин»): для проверок полей раскрываем все. */
+const openGroups = page => page.evaluate(() => document.querySelectorAll('details.sgroup').forEach(d => { d.open = true; }));
 const noOverflow = page => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
 /** Кнопки и поля на экране, у которых зона нажатия меньше 44 px (учитываем ::before, расширяющий зону). */
 const smallTargets = page => page.evaluate(() => {
@@ -314,6 +316,7 @@ const smallTargets = page => page.evaluate(() => {
     const head = st.gas.sheets['Товари'].rows[0], r = st.gas.sheets['Товари'].rows.find(x => x[0] === 'NUT-002');
     ok(r[head.indexOf('Залишок')] === 1.5 && r[head.indexOf('Акція до')] === '01.03.2099' && r[head.indexOf('Стара ціна')] === 700, 'остаток, срок акции и старая цена из панели попадают в таблицу', [r[head.indexOf('Залишок')], r[head.indexOf('Акція до')]]);
     await page.locator('[data-tab="settings"]').click();
+    await page.waitForSelector('.sgroup'); await openGroups(page);
     await page.waitForSelector('#a-gift_from');
     await page.fill('#a-gift_from', '700'); await page.fill('#a-gift_text_ua', 'жменя родзинок');
     await page.click('[data-action="adm-save"]');
@@ -449,7 +452,11 @@ const smallTargets = page => page.evaluate(() => {
     const extra = await text(page, '.card[data-id="DRY-039"] .card__extra');
     ok(/4,7 · 3 відгуки/.test(extra) && extra.includes('Свіжа поставка ' + st.fresh), 'карточка: «4,7 · 3 відгуки» и «Свіжа поставка»', extra);
     ok(await count(page, '.card[data-id="NUT-003"] .card__extra') === 0, 'неодобренный отзыв на карточке не виден');
-    ok(await count(page, '.feature [data-view="story"]') === 1, 'на блоке «Наша курага» ссылка «Від саду до столу»');
+    ok(await count(page, '.feature [data-view="story"]') === 0 && await count(page, '.feature .lane__btn') === 1, 'на блоке «Наша курага» текст в одну строку, ссылка «Від саду до столу» спрятана в шторку');
+    await page.click('.feature .lane__btn');
+    await page.waitForSelector('#sheet .plus__text');
+    ok(/Наша курага/.test(await text(page, '#sheet .sheet__title')) && await count(page, '#sheet [data-view="story"]') === 1 && /Від саду до столу/.test(await text(page, '#sheet [data-view="story"]')), 'нажатие на текст открывает шторку: заголовок, полный текст, ссылка «Від саду до столу»', await text(page, '#sheet'));
+    await page.click('#sheet .sheet__close');
 
     // 1.6 «Ваше звичне» и шкала до подарка
     await page.waitForSelector('.usual');
@@ -1256,6 +1263,7 @@ const smallTargets = page => page.evaluate(() => {
     const a = await open(browser, st.url, { uid: 900, query: '?admin=1' });
     await a.page.waitForSelector('.ord');
     await a.page.locator('[data-tab="settings"]').click();
+    await a.page.waitForSelector('.sgroup'); await openGroups(a.page);
     await a.page.waitForSelector('#a-father_ids');
     ok(await a.page.inputValue('#a-father_ids') === 'SPC-001, SPC-004, SPC-005, NOPE-1' && await a.page.inputValue('#a-father_title_ua') === 'Спеції від батька', 'подборка редактируется в панели → Налаштування');
     await a.page.fill('#a-father_ids', '');
@@ -1814,13 +1822,13 @@ const smallTargets = page => page.evaluate(() => {
     // «Наша курага»: три товара
     const f3 = await open(browser, st.url, { uid: 805 });
     await f3.page.waitForSelector('.feature');
-    ok(await count(f3.page, '.feature') === 3, '«Наша курага»: три товара из feature.ids', await count(f3.page, '.feature'));
+    ok(await count(f3.page, '.feature') === 1 && await count(f3.page, '.feature .mini') === 3 && await count(f3.page, '.feature .rail__list') === 1, '«Наша курага»: три товара из feature.ids — одна лента карточек', await count(f3.page, '.feature .mini'));
     ok(await noOverflow(f3.page) && (await smallTargets(f3.page)).length === 0, 'три товара: нет горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(f3.page));
-    const ph = await f3.page.evaluate(() => [].map.call(document.querySelectorAll('.feature .feature__img'), n => { const r = n.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
+    const ph = await f3.page.evaluate(() => [].map.call(document.querySelectorAll('.feature .mini__img'), n => { const r = n.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
     ok(ph.length === 3 && ph.every(x => Math.abs(x[0] - x[1]) <= 1), 'фото в блоке квадратные 1:1', ph);
     ok(await f3.page.evaluate(() => [].map.call(document.querySelectorAll('.feature img'), i => i.getAttribute('loading')).join()) === 'eager,lazy,lazy', 'первое фото eager, остальные lazy');
     ok(await f3.page.evaluate(() => [].every.call(document.querySelectorAll('.grid .card img, .rail img'), i => i.getAttribute('loading') === 'lazy' || i.closest('.card') && [].indexOf.call(document.querySelectorAll('.grid .card'), i.closest('.card')) < 4)), 'фото карточек и подборок loading="lazy" (кроме первых четырёх)');
-    await f3.page.locator('.feature[data-id="DRY-001"]').click();
+    await f3.page.locator('.feature .mini[data-id="DRY-001"]').click();
     await f3.page.waitForSelector('.sheet__title');
     ok(await count(f3.page, '.sheet:not([hidden])') === 1, 'нажатие на товар в блоке открывает его страницу');
     await f3.page.click('.sheet__close');
@@ -1854,7 +1862,7 @@ const smallTargets = page => page.evaluate(() => {
     catalogPatch(st4, { ids: ['NOPE-1', 'DRY-005', 'DRY-001', 'DRY-001'] }); // нет в каталоге, нет в наличии, дубль
     const f2 = await open(browser, st4.url, { uid: 808 });
     await f2.page.waitForSelector('.card');
-    ok(await count(f2.page, '.feature') === 1 && await f2.page.locator('.feature').getAttribute('data-id') === 'DRY-001', 'отсутствующие, недоступные и повторные ID пропускаются');
+    ok(await count(f2.page, '.feature .mini') === 1 && await f2.page.locator('.feature .mini').getAttribute('data-id') === 'DRY-001', 'отсутствующие, недоступные и повторные ID пропускаются');
     await f2.page.context().close(); st4.server.close();
     const st5 = await start(8835, undefined, DRY_SETTINGS);
     catalogPatch(st5, { ids: ['NOPE-1', 'DRY-005'] });
@@ -2154,7 +2162,9 @@ const smallTargets = page => page.evaluate(() => {
     const metrics = page => page.evaluate(() => {
       const top = n => Math.round(n.getBoundingClientRect().top + window.scrollY), hgt = n => Math.round(n.getBoundingClientRect().height);
       const q = sel => document.querySelector(sel), rails = [].slice.call(document.querySelectorAll('.main > .rail:not(.recs)'));
-      return { above: top(document.getElementById('gridHead')), firstRail: rails.length ? top(rails[0]) : -1, rails: rails.length,
+      const lane = q('.feature'), card = q('.feature .mini'), tab = q('.tabbar'), cr = card ? card.getBoundingClientRect() : null;
+      const seeH = cr ? Math.max(0, Math.min(cr.bottom, tab ? tab.getBoundingClientRect().top : innerHeight) - Math.max(cr.top, 0)) : 0;
+      return { laneTop: lane ? top(lane) : -1, cardSeen: cr ? seeH / cr.height : 0, laneRows: [].map.call(document.querySelectorAll('.lane'), n => n.querySelectorAll('.rail__list').length), above: top(document.getElementById('gridHead')), firstRail: rails.length ? top(rails[0]) : -1, rails: rails.length,
         titles: rails.map(r => r.querySelector('.rail__title').textContent), railH: rails.length ? hgt(rails[0]) : 0,
         plusH: q('.plus') ? hgt(q('.plus')) : 0, recsH: q('.recs') ? hgt(q('.recs')) : 0, chips: [].map.call(document.querySelectorAll('.morerails .chip'), c => c.textContent) };
     });
@@ -2164,8 +2174,11 @@ const smallTargets = page => page.evaluate(() => {
     await pg.waitForSelector('#grid .card');
     const m = await metrics(pg);
     const n0 = m.rails + m.chips.length; // всего непустых лент в этом стенде
-    ok(m.above < 2232, 'высота всего над «Усі товари» меньше прежних 2232 px (было 2232 → стало ' + m.above + ')', m.above);
-    ok(m.firstRail > 0 && m.firstRail <= 960, 'первая лента товаров начинается в пределах 1,5 экрана (≤ 960 px): ' + m.firstRail, m.firstRail);
+    ok(m.above < 1872, 'высота всего над «Усі товари» меньше 1872 px (было 1902 → стало ' + m.above + ')', m.above);
+    ok(m.laneTop > 0 && m.laneTop <= 560, 'начало первой ленты товаров («Наша курага») не ниже 560 px: ' + m.laneTop, m.laneTop);
+    ok(m.cardSeen >= 0.6, 'первая карточка товара на первом экране 360 × 640 видна не меньше чем на 60 % (с учётом нижней панели): ' + Math.round(m.cardSeen * 100) + ' %', m.cardSeen);
+    ok(m.laneRows.length === 2 && m.laneRows.every(n => n === 1), '«Наша курага» и «Спеції від батька» — по одной горизонтальной ленте', m.laneRows);
+    ok(m.firstRail > 0 && m.firstRail <= 560, 'первая «обычная» лента (homeRails) тоже начинается не ниже 560 px: ' + m.firstRail, m.firstRail);
     ok(m.plusH > 0 && m.plusH <= 72, 'высота строки «плюсов» не больше 72 px: ' + m.plusH, m.plusH);
     ok(m.rails === 3 && n0 > 3 && m.chips.length === n0 - 3, 'лент на главной ровно 3 (по умолчанию, без railsMax), остальные непустые — в строке «Ще»: ' + m.titles.join(', ') + ' / ' + m.chips.join(', '), m);
     ok(m.titles[0] === 'Популярне' && m.titles[1] === 'Набори', 'приоритет лент: «Популярне», затем «Набори»', m.titles);
@@ -2243,7 +2256,7 @@ const smallTargets = page => page.evaluate(() => {
     const R = await open(browser, st.url, { uid: 501, w: 360, h: 640, theme: 'dark', lc: 'ru', before: withMax(undefined) });
     await R.page.waitForSelector('#grid .card');
     const mr = await metrics(R.page);
-    ok(mr.above < 2232 && mr.firstRail <= 960 && mr.plusH <= 72 && mr.rails === 3, 'RU, тёмная тема: те же высоты (над «Все товары» ' + mr.above + ', первая лента ' + mr.firstRail + ', плюсы ' + mr.plusH + ')', mr);
+    ok(mr.above < 1872 && mr.laneTop <= 560 && mr.cardSeen >= 0.6 && mr.firstRail <= 560 && mr.plusH <= 72 && mr.rails === 3, 'RU, тёмная тема: те же высоты (над «Все товары» ' + mr.above + ', первая лента ' + mr.laneTop + ', плюсы ' + mr.plusH + ')', mr);
     ok(/^Ещё:/.test(await text(R.page, '.morerails')) && /Подарок от 500\s₴/.test(await text(R.page, '#homeGift')) && /Оптовые цены/.test(await text(R.page, '.plus__item[data-k="biz"]')) && /Все рецепты/.test(await text(R.page, '.recs__all')), 'RU: «Ещё:», «Подарок от 500 ₴», «Оптовые цены», «Все рецепты»', await text(R.page, '.morerails'));
     ok(await noOverflow(R.page) && (await smallTargets(R.page)).length === 0, 'RU, тёмная тема: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(R.page));
     await R.page.screenshot({ path: OUT + '/109-b1-home-dark-ru.png' });
@@ -2343,7 +2356,7 @@ const smallTargets = page => page.evaluate(() => {
     });
     const g = st.gas, n = a => st.log.filter(x => x.action === a).length;
     const own = g.initData({ id: 900, first_name: 'Власник' });
-    const mkOrder = (uid, pay) => g.post({ action: 'order', initData: g.initData({ id: uid, first_name: 'Покупець' }), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'np', city: 'Київ', branch: '12', pay: pay || 'cod', lang: 'ua', rid: 'b10-' + uid }).number;
+    const mkOrder = (uid, pay, lang) => g.post({ action: 'order', initData: g.initData({ id: uid, first_name: 'Покупець' }), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Олена', phone: '+380501234567', delivery: 'np', city: 'Київ', branch: '12', pay: pay || 'cod', lang: lang || 'ua', rid: 'b10-' + uid }).number;
     const n1 = mkOrder(801), n2 = mkOrder(802), n3 = mkOrder(803, 'card');
     const rowOf = num => g.sheets['Замовлення'].rows.find(r => r[0] === num);
     const A = await open(browser, st.url, { uid: 900, query: '?admin=1' });
@@ -2592,6 +2605,9 @@ const smallTargets = page => page.evaluate(() => {
     });
     await page.click('[data-tab="settings"]');
     await page.waitForSelector('.sgroup');
+    const openNow = await page.locator('.sgroup').evaluateAll(l => l.map(d => d.getAttribute('data-sg') + ':' + d.open).join());
+    ok(openNow === 'shop:true,gifts:false,pay:false,texts:false,season:false,other:false', 'группы настроек по умолчанию свёрнуты, раскрыта только первая («Магазин»)', openNow);
+    await openGroups(page);
     const groupNames = await page.locator('.sgroup__sum > span:first-child').allInnerTexts();
     ok(groupNames.join() === 'Магазин,Подарунки,Оплата й доставка,Тексти,Сезон,Інше', 'группы настроек: Магазин, Подарунки, Оплата й доставка, Тексти, Сезон, Інше', groupNames);
     const inGroup = k => page.locator('.sgroup:has(#a-' + k + ') .sgroup__sum > span:first-child').innerText();
@@ -2631,7 +2647,7 @@ const smallTargets = page => page.evaluate(() => {
     await A.ctx.close();
 
     // тёмная тема и русский язык
-    const n4 = mkOrder(804);
+    const n4 = mkOrder(804, undefined, 'ru');
     const R = await open(browser, st.url, { uid: 900, query: '?admin=1', theme: 'dark', lc: 'ru' });
     const rp = R.page;
     await rp.waitForSelector('.tcard');
@@ -2657,7 +2673,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(/Скрытые/.test(await text(rp, '[data-pflt="hidden"]')) && /Ждут цену/.test(await text(rp, '[data-pflt="noprice"]')) && /^Нет/.test(await text(rp, '[data-pflt="out"]')) && /Сохранить/.test(await text(rp, '[data-qsave]')), 'RU: чипы и кнопка быстрой цены');
     await rp.screenshot({ path: OUT + '/123-b2-products-dark-ru.png' });
     await rp.click('[data-tab="settings"]');
-    await rp.waitForSelector('.sgroup');
+    await rp.waitForSelector('.sgroup'); await openGroups(rp);
     const ruGroups = await rp.locator('.sgroup__sum > span:first-child').allInnerTexts();
     ok(ruGroups.join() === 'Магазин,Подарки,Оплата и доставка,Тексты,Сезон,Прочее' && /С какой суммы заказа клиент получает подарок/.test(await text(rp, '.field:has(#a-gift_from) .field__hint')) && /Пример: 500/.test(await text(rp, '.field:has(#a-gift_from) .field__ex')), 'RU: группы и пояснения настроек', ruGroups);
     await rp.fill('#a-gift_text_ru', '100 г кураги');
@@ -2746,10 +2762,397 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForSelector('.prod');
     ok(await count(page, '[data-qprice]') > 0 && await count(page, '[data-pflt]') === 4, 'товары: быстрая цена и чипы работают и без нового бэкенда');
     await page.click('[data-tab="settings"]');
-    await page.waitForSelector('.sgroup');
+    await page.waitForSelector('.sgroup'); await openGroups(page);
     ok(await count(page, '.sgroup') >= 5 && await count(page, '[data-setsw]') >= 3 && /Від якої суми замовлення/.test(await text(page, '.field:has(#a-gift_from) .field__hint')), 'настройки: группы, переключатели и пояснения работают на старом наборе ключей');
     ok(errors.length === 0, 'в консоли браузера нет ошибок (старый бэкенд)', errors);
     await ctx.close(); st.server.close();
+  }
+
+  /* ---------------- 13. Выпуск Б, блок 3: Новый год, источники, надёжность ---------------- */
+  console.log('Выпуск Б · блок 3: Новый год (б11)');
+  {
+    const settings = extra => s => {
+      withPhotos(s);
+      const base = { feature_id: 'DRY-039', father_ids: 'SPC-001, SPC-002', father_text_ua: 'Мелемо самі', theme: 'newyear', ny_snow: '1', ny_ids: 'SWT-001, DRY-001',
+        ny_order_until_ua: 'Замовлення до 26.12 відправимо до свята', ny_order_until_ru: 'Заказы до 26.12 отправим к празднику', gift_note: '1', gift_from: '500', gift_text_ua: '100 г кураги' };
+      const all = Object.assign(base, extra || {});
+      s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис']].concat(Object.keys(all).filter(k => all[k] !== null).map(k => [k, all[k], '']));
+    };
+    // подмена ответа каталога: поля нового бэкенда можно убрать (старый бэкенд) или поменять
+    const patchCat = fn => async page => {
+      await page.route(/\/api\?.*action=catalog/, async route => {
+        const res = await route.fetch(); const j = await res.json(); fn(j.shop);
+        await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(j) });
+      });
+    };
+    const info = page => page.evaluate(() => {
+      const top = n => Math.round(n.getBoundingClientRect().top + scrollY);
+      const rails = [].slice.call(document.querySelectorAll('.main > .rail:not(.recs)'));
+      const g = document.getElementById('garland');
+      return { garland: !!g && !g.hidden && !!g.querySelector('svg'), strips: document.querySelectorAll('.ny-strip').length, lane: document.querySelectorAll('.feature .ny-strip--lane').length,
+        snow: document.querySelectorAll('.snow i').length, titles: rails.map(r => r.querySelector('.rail__title').textContent), firstTop: rails.length ? top(rails[0]) : -1,
+        giftIds: rails.length && /Подарунки до свят|Подарки к праздникам/.test(rails[0].querySelector('.rail__title').textContent) ? [].map.call(rails[0].querySelectorAll('.mini'), m => m.getAttribute('data-id')) : [],
+        giftSub: rails.length && rails[0].querySelector('.rail__sub') ? rails[0].querySelector('.rail__sub').textContent : '', until: [].map.call(document.querySelectorAll('.ny-until'), n => n.textContent) };
+    });
+    const toForm = async page => {
+      await toCard(page, 'NUT-007');
+      await page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+      await page.click('.tabbar [data-go="cart"]');
+      await page.waitForSelector('.line');
+    };
+
+    const st = await start(8860, undefined, settings());
+    const A = await open(browser, st.url, { uid: 601, w: 360, h: 640, before: patchCat(s => { s.ny.ids = (s.ny.ids || []).concat(['NOPE-9']); }) });
+    await A.page.waitForSelector('#grid .card');
+    await A.page.waitForTimeout(500);
+    const a = await info(A.page);
+    ok(a.garland && a.strips >= 2 && a.lane === 1, 'тема newyear: гирлянда из ступенчатых ромбов под шапкой и праздничная кайма «Нашей кураги»', a);
+    ok(await A.page.evaluate(() => { const c = [].map.call(document.querySelectorAll('#garland use'), u => u.getAttribute('style')).join(); return /apricot/.test(c) && /lapis/.test(c) && /pistachio/.test(c); }), 'гирлянда в цветах apricot, lapis, pistachio');
+    ok(await A.page.evaluate(() => { const g = document.getElementById('garland').getBoundingClientRect(), t = document.querySelector('.tools').getBoundingClientRect(); return g.height <= 10 && g.bottom <= t.top + 1; }), 'гирлянда тонкая (≤ 10 px) и не занимает место на экране');
+    ok(a.titles[0] === 'Подарунки до свят' && a.giftIds.join() === 'SWT-001,DRY-001', 'лента «Подарунки до свят» первая; товара, которого нет в каталоге, нет в ленте', a);
+    ok(a.titles.filter(x => x !== 'Подарунки до свят').length === 3 && a.titles.length === 4, 'праздничная лента не занимает слот railsMax: кроме неё остаются три обычные ленты', a.titles);
+    ok(a.giftSub === 'Замовлення до 26.12 відправимо до свята', 'строка о сроке рядом с праздничной лентой (UA)', a.giftSub);
+    ok(a.snow >= 1 && a.snow <= 20, 'снег при ny.snow = 1: снежинок не больше 20 (' + a.snow + ')', a.snow);
+    const snowChk = await A.page.evaluate(() => {
+      const box = document.getElementById('snow'), cs = getComputedStyle(box), bad = [];
+      [].forEach.call(box.querySelectorAll('i'), i => { const r = i.getBoundingClientRect(); const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+        if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return; const e = document.elementFromPoint(x, y); if (e && e.closest('.snow')) bad.push([x, y]); });
+      return { pe: cs.pointerEvents, pos: cs.position, bad: bad.length, anim: cs.display !== 'none' && getComputedStyle(box.querySelector('i')).animationName };
+    });
+    ok(snowChk.pe === 'none' && snowChk.pos === 'fixed' && snowChk.bad === 0 && snowChk.anim === 'snowfall', 'снег: pointer-events none, нажатия проходят сквозь снежинки, чистая CSS-анимация', snowChk);
+    await A.page.click('.plus__item[data-k="gift"]');
+    ok(await A.page.evaluate(() => !document.getElementById('sheet').hidden), 'кнопки под снегом нажимаются (плашка подарка открывает шторку)');
+    await A.page.click('#sheet .sheet__close');
+    ok(await noOverflow(A.page) && (await smallTargets(A.page)).length === 0, 'новогодняя главная: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(A.page));
+    await A.page.screenshot({ path: OUT + '/129-b3-ny-home-light-uk.png' });
+    // корзина и оформление
+    await toForm(A.page);
+    ok(await text(A.page, '.page .ny-until') === 'Замовлення до 26.12 відправимо до свята', 'строка о сроке в корзине');
+    await A.page.screenshot({ path: OUT + '/130-b3-ny-cart-light-uk.png' });
+    await A.page.evaluate(() => window.__tg.main.cb());
+    await A.page.waitForSelector('#form');
+    ok(await text(A.page, '.page .ny-until') === 'Замовлення до 26.12 відправимо до свята' && await count(A.page, '#f-giftNote') === 1, 'строка о сроке и поле «Підпис до подарунка» в оформлении');
+    ok(/Підпис до подарунка/.test(await text(A.page, 'label[for="f-giftNote"]')) && await A.page.getAttribute('#f-giftNote', 'maxlength') === '120' && /^0 \/ 120$/.test(await text(A.page, '#gnCount')), 'поле подписи: до 120 знаков, счётчик «0 / 120»');
+    await A.page.fill('#f-giftNote', 'Мамі від Олени');
+    ok(/^14 \/ 120$/.test(await text(A.page, '#gnCount')), 'счётчик растёт при вводе', await text(A.page, '#gnCount'));
+    await A.page.fill('#f-phone', '0501234567');
+    ok(await noOverflow(A.page) && (await smallTargets(A.page)).length === 0, 'оформление с подписью: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(A.page));
+    await A.page.screenshot({ path: OUT + '/131-b3-ny-checkout-light-uk.png', fullPage: true });
+
+    // --- сбой заказа: корзина, форма и ключ на месте, повтор с тем же ключом ---
+    let mode = 'abort';
+    const seen = [];
+    await A.page.route(/\/api$/, async route => {
+      const rq = route.request();
+      let b = null; try { b = rq.method() === 'POST' ? JSON.parse(rq.postData()) : null; } catch (e) { b = null; }
+      if (b && b.action === 'order' && mode !== 'pass') {
+        seen.push(b);
+        if (mode === 'abort') return route.abort();
+        if (mode === '500') return route.fulfill({ status: 500, contentType: 'text/plain', body: 'oops' });
+        if (mode === 'changed') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'changed' }) });
+      }
+      return route.continue();
+    });
+    const cartLS = () => A.page.evaluate(() => localStorage.getItem('pamir_cart_v1'));
+    const ridLS = () => A.page.evaluate(() => { try { return (JSON.parse(localStorage.getItem('pamir_rid_v1') || 'null') || {}).r || ''; } catch (e) { return ''; } });
+    const cart0 = await cartLS();
+    await A.page.evaluate(() => window.__tg.main.cb());
+    await A.page.waitForSelector('#formErr:not([hidden]) [data-action="retry-order"]');
+    const failText = await text(A.page, '#formErr');
+    ok(/Не вдалося надіслати — спробуйте ще раз/.test(failText) && await count(A.page, '[data-action="retry-order"]') === 1, 'сеть упала: «Не вдалося надіслати — спробуйте ще раз» и кнопка повтора', failText);
+    ok(await cartLS() === cart0 && JSON.parse(cart0).i.length === 1 && await A.page.inputValue('#f-giftNote') === 'Мамі від Олени' && await A.page.inputValue('#f-phone') === '+380 50 123 45 67', 'корзина и форма (в том числе подпись) на месте');
+    const rid1 = seen[0].rid;
+    ok(/^[\w-]{8,40}$/.test(rid1) && await ridLS() === rid1, 'ключ попытки сохранён в хранилище устройства', [rid1, await ridLS()]);
+    ok((await smallTargets(A.page)).length === 0 && await noOverflow(A.page), 'сообщение о сбое и кнопка повтора: ≥ 44 px, без горизонтальной прокрутки', await smallTargets(A.page));
+    await A.page.screenshot({ path: OUT + '/132-b3-ny-order-fail-light-uk.png', fullPage: true });
+    mode = '500';
+    await A.page.click('[data-action="retry-order"]');
+    await A.page.waitForSelector('#formErr:not([hidden]) [data-action="retry-order"]');
+    ok(seen.length === 2 && seen[1].rid === rid1, 'ошибка HTTP 500: тоже сообщение и повтор; ключ тот же', seen.map(x => x.rid));
+    // перезагрузка страницы: корзина, форма и ключ живы
+    mode = 'abort';
+    await A.page.reload({ waitUntil: 'networkidle' });
+    await A.page.waitForSelector('.card');
+    ok(await cartLS() === cart0 && await ridLS() === rid1, 'после перезагрузки страницы корзина и ключ на месте');
+    await A.page.click('.tabbar [data-go="cart"]');
+    await A.page.waitForSelector('.line');
+    await A.page.evaluate(() => window.__tg.main.cb());
+    await A.page.waitForSelector('#form');
+    ok(await A.page.inputValue('#f-giftNote') === 'Мамі від Олени' && await A.page.inputValue('#f-phone') === '+380 50 123 45 67', 'после перезагрузки форма (подпись, телефон) заполнена');
+    await A.page.evaluate(() => window.__tg.main.cb());
+    await A.page.waitForSelector('#formErr:not([hidden]) [data-action="retry-order"]');
+    ok(seen.length === 3 && seen[2].rid === rid1, 'повтор после перезагрузки уходит с тем же ключом (второй заказ не создаётся)', seen.map(x => x.rid));
+    // «changed» сбрасывает ключ
+    mode = 'changed';
+    await A.page.click('[data-action="retry-order"]');
+    await A.page.waitForFunction(() => document.body.getAttribute('data-view') === 'cart');
+    ok(await ridLS() === '', 'ответ «changed»: ключ сброшен');
+    await A.page.evaluate(() => window.__tg.main.cb());
+    await A.page.waitForSelector('#form');
+    // успех: подпись уходит в заказ, ключ и подпись очищаются
+    mode = 'pass';
+    const ordersBefore = st.gas.sheets['Замовлення'].rows.length;
+    await A.page.evaluate(() => window.__tg.main.cb());
+    await A.page.waitForSelector('.done');
+    const sent = st.log.filter(x => x.action === 'order').slice(-1)[0];
+    ok(sent.giftNote === 'Мамі від Олени' && st.gas.sheets['Замовлення'].rows.length === ordersBefore + 1, 'успех: подпись к подарунку ушла в заказ, строка в таблице одна', [sent.giftNote, st.gas.sheets['Замовлення'].rows.length - ordersBefore]);
+    ok(/Підпис до подарунка: Мамі від Олени/.test(st.gas.sheets['Замовлення'].rows.slice(-1)[0].join(' | ')), 'в таблице подпись видна администратору (в «Коментар»)');
+    ok(await ridLS() === '', 'после успешного заказа ключ очищен');
+    ok(await A.page.evaluate(() => { try { const f = JSON.parse(localStorage.getItem('pamir_form_v1')); return !f.giftNote && !f.comment; } catch (e) { return false; } }), 'после успешного заказа подпись и комментарий в форме очищены');
+    ok(A.errors.length === 0, 'в консоли браузера нет ошибок (Новый год, UA, светлая)', A.errors);
+    await A.ctx.close();
+
+    // RU, тёмная: те же экраны
+    const R = await open(browser, st.url, { uid: 602, w: 360, h: 640, theme: 'dark', lc: 'ru' });
+    await R.page.waitForSelector('#grid .card');
+    await R.page.waitForTimeout(500);
+    const r = await info(R.page);
+    ok(r.garland && r.titles[0] === 'Подарки к праздникам' && r.giftSub === 'Заказы до 26.12 отправим к празднику' && r.snow >= 1, 'RU, тёмная: гирлянда, «Подарки к праздникам» первой, строка о сроке по-русски', r);
+    ok(await R.page.evaluate(() => Number(getComputedStyle(document.getElementById('garland')).opacity) < 0.7), 'в тёмной теме гирлянда приглушена');
+    await R.page.screenshot({ path: OUT + '/133-b3-ny-home-dark-ru.png' });
+    await toForm(R.page);
+    ok(await text(R.page, '.page .ny-until') === 'Заказы до 26.12 отправим к празднику', 'RU: строка о сроке в корзине');
+    await R.page.screenshot({ path: OUT + '/134-b3-ny-cart-dark-ru.png' });
+    await R.page.evaluate(() => window.__tg.main.cb());
+    await R.page.waitForSelector('#form');
+    ok(/Подпись к подарку/.test(await text(R.page, 'label[for="f-giftNote"]')) && await noOverflow(R.page) && (await smallTargets(R.page)).length === 0, 'RU: поле «Подпись к подарку»; без горизонтальной прокрутки, кнопки ≥ 44 px');
+    await R.page.screenshot({ path: OUT + '/135-b3-ny-checkout-dark-ru.png', fullPage: true });
+    await R.ctx.close();
+    // UA, тёмная и RU, светлая — ещё два снимка первого экрана
+    const D = await open(browser, st.url, { uid: 603, w: 360, h: 640, theme: 'dark' });
+    await D.page.waitForSelector('#grid .card'); await D.page.waitForTimeout(400);
+    await D.page.screenshot({ path: OUT + '/136-b3-ny-home-dark-uk.png' });
+    await D.ctx.close();
+    const L = await open(browser, st.url, { uid: 604, w: 360, h: 640, lc: 'ru' });
+    await L.page.waitForSelector('#grid .card'); await L.page.waitForTimeout(400);
+    await L.page.screenshot({ path: OUT + '/137-b3-ny-home-light-ru.png' });
+    await L.ctx.close();
+    st.server.close();
+
+    // --- условия показа ---
+    const tests = [
+      ['без темы: ни гирлянды, ни снега, ни ленты', { theme: null }],
+      ['тема newyear, но ny_snow = 0: гирлянда есть, снега нет', { ny_snow: '0' }],
+      ['theme_until в прошлом: сервер тему не отдаёт — оформления нет', { theme_until: '01.01.2020' }]
+    ];
+    let port = 8861;
+    for (const [name, extra] of tests) {
+      const s2 = await start(port++, undefined, settings(extra));
+      const c = await open(browser, s2.url, { uid: 610, w: 360, h: 640 });
+      await c.page.waitForSelector('#grid .card'); await c.page.waitForTimeout(300);
+      const x = await info(c.page);
+      const themed = /ny_snow = 0/.test(name);
+      ok(x.garland === themed && x.snow === 0 && (themed || (x.strips === 0 && x.giftIds.length === 0 && x.until.length === 0)), name, x);
+      await c.ctx.close(); s2.server.close();
+    }
+    // снег выключен при prefers-reduced-motion
+    const sR = await start(port++, undefined, settings());
+    const cR = await open(browser, sR.url, { uid: 611, w: 360, h: 640, before: p => p.emulateMedia({ reducedMotion: 'reduce' }) });
+    await cR.page.waitForSelector('#grid .card'); await cR.page.waitForTimeout(300);
+    const xr = await info(cR.page);
+    ok(xr.snow === 0 && await count(cR.page, '.snow') === 0 && xr.garland, 'prefers-reduced-motion: снега нет, гирлянда остаётся', xr);
+    await cR.ctx.close(); sR.server.close();
+    // пустые ny.ids — ленты нет; строки о сроке нет — строки нет
+    const sE = await start(port++, undefined, settings({ ny_ids: '', ny_order_until_ua: '', ny_order_until_ru: null }));
+    const cE = await open(browser, sE.url, { uid: 612, w: 360, h: 640 });
+    await cE.page.waitForSelector('#grid .card');
+    const xe = await info(cE.page);
+    ok(xe.giftIds.length === 0 && !xe.titles.includes('Подарунки до свят') && xe.until.length === 0 && xe.garland, 'ny.ids пусто — праздничной ленты нет; срока нет — строки нет', xe);
+    await cE.ctx.close(); sE.server.close();
+    const sL = await start(port++, undefined, settings({ ny_order_until_ru: '' }));
+    const cL = await open(browser, sL.url, { uid: 613, w: 360, h: 640, lc: 'ru' });
+    await cL.page.waitForSelector('#grid .card');
+    const xl = await info(cL.page);
+    ok(xl.giftSub === 'Замовлення до 26.12 відправимо до свята', 'нет строки на языке интерфейса — показывается строка другого языка', xl.giftSub);
+    await cL.ctx.close(); sL.server.close();
+    // gift_note выключен — поля нет, заказ уходит с пустой подписью
+    const sG = await start(port++, undefined, settings({ gift_note: '0' }));
+    const cG = await open(browser, sG.url, { uid: 614, w: 360, h: 640 });
+    await cG.page.waitForSelector('#grid .card');
+    await toForm(cG.page);
+    await cG.page.evaluate(() => window.__tg.main.cb()); await cG.page.waitForSelector('#form');
+    await cG.page.fill('#f-phone', '0501234567');
+    ok(await count(cG.page, '#f-giftNote') === 0, 'gift_note выключен: поля «Підпис до подарунка» нет');
+    await cG.page.evaluate(() => window.__tg.main.cb()); await cG.page.waitForSelector('.done');
+    ok(!sG.log.filter(x => x.action === 'order').slice(-1)[0].giftNote, 'и в заказе подписи нет');
+    await cG.ctx.close(); sG.server.close();
+    // старый бэкенд: нет ny, giftNote, railsMax
+    const sO = await start(port++, undefined, settings());
+    const cO = await open(browser, sO.url, { uid: 615, w: 360, h: 640, before: patchCat(s => { delete s.ny; delete s.giftNote; delete s.railsMax; }) });
+    await cO.page.waitForSelector('#grid .card');
+    const xo = await info(cO.page);
+    ok(xo.giftIds.length === 0 && xo.snow === 0 && xo.until.length === 0 && xo.titles.length <= 3 && cO.errors.length === 0 && await count(cO.page, '.feature .mini') === 1, 'старый бэкенд без shop.ny / giftNote / railsMax: витрина работает как раньше', xo);
+    await cO.ctx.close(); sO.server.close();
+  }
+
+  console.log('Выпуск Б · блок 3: источники (б4)');
+  {
+    const st = await start(8870, undefined, s => {
+      withPhotos(s);
+      const o = s.sheets['Замовлення']; o[0].push('Джерело клієнта'); o.slice(1).forEach(r => r.push('')); // необязательная колонка источника заказа
+    });
+    // подменяет start_param у Telegram на странице (route из open() — один на всё время жизни страницы)
+    const setStart = async (page, start) => {
+      await page.unroute('https://telegram.org/js/telegram-web-app.js');
+      await page.route('https://telegram.org/js/telegram-web-app.js', async r => r.fulfill({ status: 200, contentType: 'application/javascript', body: await (await fetch(st.url + '/tg.js?uid=701&theme=light&lc=uk&start=' + start)).text() }));
+    };
+    const evs = () => st.log.filter(x => x.action === 'ev').reduce((a, x) => a.concat(x.events || []), []);
+    const flush = page => page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    const orderTo = async page => {
+      await page.waitForSelector('#grid .card');
+      await toCard(page, 'NUT-007');
+      await page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+      await page.click('.tabbar [data-go="cart"]'); await page.waitForSelector('.line');
+      await page.evaluate(() => window.__tg.main.cb()); await page.waitForSelector('#form');
+      await page.fill('#f-phone', '0501234567');
+      await page.evaluate(() => window.__tg.main.cb()); await page.waitForSelector('.done');
+    };
+    const A = await open(browser, st.url, { uid: 701, start: 'qr1' });
+    await A.page.waitForSelector('#grid .card');
+    await flush(A.page); await A.page.waitForTimeout(500);
+    const srcEv = evs().filter(e => e.e === 'src');
+    ok(srcEv.length === 1 && srcEv[0].v === 'qr1', 'метка qr1: событие src отправлено один раз', srcEv);
+    ok(await A.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_src_v1')).s) === 'qr1', 'метка запомнена на устройстве');
+    await orderTo(A.page);
+    ok(st.log.filter(x => x.action === 'order').slice(-1)[0].src === 'qr1', 'заказ уходит с полем src = qr1');
+    const ord = st.gas.sheets['Замовлення'].rows.slice(-1)[0];
+    ok(ord.indexOf('qr1') >= 0, 'в таблице у заказа источник qr1 (колонка «Джерело клієнта»)', ord);
+    // вторая метка не перезаписывает первую
+    await setStart(A.page, 'qr2');
+    await A.page.goto(st.url + '/', { waitUntil: 'networkidle' });
+    await A.page.waitForSelector('#grid .card');
+    await flush(A.page); await A.page.waitForTimeout(400);
+    ok(await A.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_src_v1')).s) === 'qr1' && evs().some(e => e.e === 'src' && e.v === 'qr2'), 'первая метка не перезаписывается второй (событие открытия с qr2 всё же уходит)');
+    // срок 30 дней: старая запись заменяется
+    await A.page.evaluate(() => localStorage.setItem('pamir_src_v1', JSON.stringify({ s: 'old', t: Date.now() - 31 * 86400000 })));
+    await setStart(A.page, 'insert');
+    await A.page.goto(st.url + '/', { waitUntil: 'networkidle' });
+    await A.page.waitForSelector('#grid .card');
+    ok(await A.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_src_v1')).s) === 'insert', 'метка старше 30 дней заменяется новой');
+    await A.ctx.close();
+    // ID товара — не метка, товар открывается как раньше
+    await flush(A.page).catch(() => {});
+    const nSrc = evs().filter(e => e.e === 'src').length;
+    const P = await open(browser, st.url, { uid: 702, start: 'DRY-039' });
+    await P.page.waitForSelector('.sheet__title');
+    await flush(P.page); await P.page.waitForTimeout(300);
+    ok(/Курага/.test(await text(P.page, '.sheet__title')) && await P.page.evaluate(() => localStorage.getItem('pamir_src_v1')) === null, '?startapp=DRY-039 открывает товар и меткой не считается');
+    await P.ctx.close();
+    ok(evs().filter(e => e.e === 'src').length === nSrc, 'ID товара событие src не создаёт', evs().filter(e => e.e === 'src'));
+    // ref_ работает как раньше
+    const F = await open(browser, st.url, { uid: 703, start: 'ref_555000111' });
+    await F.page.waitForSelector('#grid .card');
+    ok(await F.page.evaluate(() => localStorage.getItem('pamir_ref')) === '555000111' && await F.page.evaluate(() => localStorage.getItem('pamir_src_v1')) === null, 'ref_… запоминается как приглашение и меткой не считается');
+    await F.ctx.close();
+    // рецепт ?rec=
+    const Rr = await open(browser, st.url, { uid: 704, query: '?rec=REC-1' });
+    await Rr.page.waitForSelector('#grid .card');
+    ok(await Rr.page.evaluate(() => localStorage.getItem('pamir_src_v1')) === null, 'ссылка рецепта меткой не считается');
+    await Rr.ctx.close();
+    for (const bad of ['adm_5', 'rec_1', 'bad label!', 'x'.repeat(25)]) {
+      const B = await open(browser, st.url, { uid: 705, start: bad });
+      await B.page.waitForSelector('#grid .card');
+      ok(await B.page.evaluate(() => localStorage.getItem('pamir_src_v1')) === null, 'не метка: «' + bad.slice(0, 12) + '»');
+      await B.ctx.close();
+    }
+    st.server.close();
+  }
+
+  console.log('Выпуск Б · блок 3: каталог через Worker (CATALOG_URL)');
+  {
+    const st = await start(8871, undefined, s => { withPhotos(s); });
+    const cat = () => { const j = JSON.parse(JSON.stringify(st.gas.get({ action: 'catalog' }))); j.shop.notice = { ua: 'З воркера', ru: 'С воркера' }; return j; };
+    const run = async (name, handler, wantWorker) => {
+      st.log.length = 0;
+      const reqs = [];
+      const c = await open(browser, st.url, { uid: 720, w: 360, h: 640, before: async page => {
+        await page.route('**/config.js*', r => r.fulfill({ contentType: 'application/javascript', body: "window.PAMIR_CONFIG = { API_URL: location.origin + '/api', BOT: 'pamir_test_bot', APP: 'shop', CATALOG_URL: location.origin + '/cat' };" }));
+        await page.route('**/cat', handler);
+        page.on('request', r => { if (/\/cat$/.test(r.url())) reqs.push(r.url()); });
+      } });
+      await c.page.waitForSelector('#grid .card', { timeout: 15000 });
+      await c.page.waitForTimeout(400);
+      const apiGets = st.log.filter(x => x.action === 'GET catalog').length;
+      const notice = (await c.page.locator('#notice').isVisible()) ? await text(c.page, '#notice') : '';
+      ok(reqs.length === 1 && (wantWorker ? apiGets === 0 && /З воркера/.test(notice) : apiGets === 1 && !/воркера/.test(notice)), name, { reqs: reqs.length, apiGets, notice });
+      await c.ctx.close();
+    };
+    const json = body => route => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: typeof body === 'function' ? JSON.stringify(body()) : body });
+    await run('CATALOG_URL отвечает: каталог берётся из Worker, Apps Script за каталогом не ходит', json(cat), true);
+    await run('Worker недоступен (сетевая ошибка): тот же запрос в Apps Script', route => route.abort(), false);
+    await run('Worker ответил HTTP 500: Apps Script', route => route.fulfill({ status: 500, body: 'x' }), false);
+    await run('Worker ответил не JSON: Apps Script', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<html>не json</html>' }), false);
+    await run('Worker ответил JSON без ok/products: Apps Script', json('{"ok":true}'), false);
+    await run('Worker молчит дольше 6 секунд: Apps Script', () => { /* не отвечаем */ }, false);
+    // без CATALOG_URL (config.js стенда и боевой) — поведение прежнее
+    st.log.length = 0;
+    const c0 = await open(browser, st.url, { uid: 721 });
+    await c0.page.waitForSelector('#grid .card');
+    ok(st.log.filter(x => x.action === 'GET catalog').length === 1 && /CATALOG_URL:\s*''/.test(fs.readFileSync(path.join(__dirname, '..', 'webapp', 'config.js'), 'utf8')), 'CATALOG_URL по умолчанию пустой: каталог из Apps Script, как раньше');
+    await c0.ctx.close(); st.server.close();
+  }
+
+  console.log('Выпуск Б · блок 3: ошибки витрины (б7)');
+  {
+    const st = await start(8872, undefined, s => { withPhotos(s); });
+    const errReqs = [];
+    const c = await open(browser, st.url, { uid: 730, w: 360, h: 640, before: async page => {
+      page.on('request', r => { if (r.method() === 'POST' && /\/api$/.test(r.url())) { try { const b = JSON.parse(r.postData()); if (b.action === 'err') errReqs.push(b); } catch (e) { /* не JSON */ } } });
+    } });
+    await c.page.waitForSelector('#grid .card');
+    const items = () => errReqs.reduce((a, b) => a.concat(b.items || []), []);
+    const boom = msg => c.page.evaluate(m => { setTimeout(() => { throw new Error(m); }, 0); }, msg);
+    await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');
+    await c.page.waitForTimeout(3300);
+    const e1 = items();
+    ok(e1.length === 1 && /boom1/.test(e1[0].m) && !/123 45 67|\+380 50/.test(e1[0].m) && e1[0].m.length <= 200, 'ошибка скрипта уходит записью err; телефон из текста вычищен', e1);
+    const body1 = JSON.stringify(errReqs[0]);
+    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '22' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (22); без initData и данных покупателя', body1);
+    ok(await c.page.evaluate(() => /^[a-z0-9]{8,32}$/.test(localStorage.getItem('pamir_did'))), 'did — случайная строка в хранилище устройства');
+    // одинаковые подряд не дублируются
+    await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');
+    await c.page.waitForTimeout(3300);
+    ok(items().filter(x => /boom1/.test(x.m)).length === 1, 'одинаковая ошибка подряд не дублируется', items().length);
+    await c.page.evaluate(() => window.dispatchEvent(new ErrorEvent('error', { message: 'file-test', filename: 'https://x.test/app.js?v=22&q=секрет', lineno: 5 })));
+    await c.page.waitForTimeout(3300);
+    const fileItem = items().find(x => /file-test/.test(x.m));
+    ok(Object.keys(e1[0]).sort().join() === 'm,s,v' && fileItem && fileItem.m === 'file-test @ app.js:5', 'запись: только m, s, v; файл:строка без query-строки', fileItem);
+    // необработанный отказ промиса
+    await c.page.evaluate(() => { Promise.reject(new Error('rej-test')); });
+    await c.page.waitForTimeout(3300);
+    ok(items().some(x => /promise: rej-test/.test(x.m)), 'unhandledrejection тоже уходит');
+    // неудачный запрос к API
+    await c.page.route(/\/api$/, route => { try { const b = JSON.parse(route.request().postData() || '{}'); if (b.action === 'orders.my') return route.abort(); } catch (e) { /* пусто */ } return route.continue(); });
+    await c.page.click('.tabbar [data-go="orders"]').catch(() => {});
+    await c.page.waitForTimeout(3300);
+    ok(items().some(x => /^net orders\.my: network$/.test(x.m)), 'неудачный запрос к API (сеть) уходит записью без данных запроса', items().map(x => x.m));
+    // лимит: не больше 5 записей в час
+    for (let i = 0; i < 8; i++) { await boom('лимит-' + i); await c.page.waitForTimeout(150); }
+    await c.page.waitForTimeout(3300);
+    ok(items().length === 5 && await c.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_err_v1')).n) === 5, 'с устройства не больше 5 записей в час', items().length);
+    await c.ctx.close();
+    // сбой отправки самой ошибки новых записей не порождает
+    const attempts = [];
+    const c2 = await open(browser, st.url, { uid: 731, w: 360, h: 640, before: async page => {
+      await page.route(/\/api$/, route => { try { const b = JSON.parse(route.request().postData() || '{}'); if (b.action === 'err') { attempts.push(b); return route.abort(); } } catch (e) { /* пусто */ } return route.continue(); });
+    } });
+    await c2.page.waitForSelector('#grid .card');
+    await c2.page.evaluate(() => { setTimeout(() => { throw new Error('c2-boom'); }, 0); });
+    await c2.page.waitForTimeout(3300);
+    await c2.page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    await c2.page.waitForTimeout(1200);
+    ok(attempts.length === 1 && await c2.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_err_v1')).n) === 1, 'сбой отправки ошибки новых записей не порождает (одна попытка, счётчик 1)', attempts.length);
+    await c2.ctx.close();
+    // старый бэкенд: ответ на err — ошибка, витрина молчит
+    const oldCode = path.join(require('os').tmpdir(), 'Code.old.gs');
+    fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+    const so = await start(8873, oldCode, s => { withPhotos(s); });
+    const co = await open(browser, so.url, { uid: 732, w: 360, h: 640 });
+    await co.page.waitForSelector('#grid .card');
+    await co.page.evaluate(() => { setTimeout(() => { throw new Error('old-boom'); }, 0); });
+    await co.page.waitForTimeout(3300);
+    ok(so.log.filter(x => x.action === 'err').length === 1 && co.errors.every(e => /old-boom/.test(e)) && await count(co.page, '#grid .card') === 20, 'старый бэкенд: запись err отправлена, ответ-ошибка молча игнорируется, витрина работает', co.errors);
+    await co.ctx.close(); so.server.close(); st.server.close();
   }
 
   await browser.close();

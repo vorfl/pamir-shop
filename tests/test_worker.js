@@ -47,7 +47,7 @@ function makeEnv(extra) {
       gasCalls.push(url);
       let kind = url.includes('action=catalog') ? 'catalog' : url.includes('action=ping') ? 'ping' : 'other';
       if (kind === 'other') return new Response('ok', { status: 200 });
-      const r = world.gas[kind]();
+      const r = await world.gas[kind]();
       if (r === 'throw') throw new Error('network');
       return new Response(r.body, { status: r.status });
     }
@@ -228,16 +228,120 @@ async function main() {
     ok(r.status === 403, 'ключ длиннее -> 403');
     ok(w.gasCalls.length === 1, 'при 403 GAS не вызывался');
     w.gas.catalog = () => ({ status: 200, body: w.goodCatalog(7) });
+    w.now += 6000;
+    const callsBefore = w.gasCalls.length;
+    let release; const gate = new Promise((res) => { release = res; });
+    w.gas.catalog = async () => { await gate; return { status: 200, body: w.goodCatalog(7) }; };
     r = await worker.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w.env, w.ctx);
     const j = await r.json();
-    ok(r.status === 200 && j.ok === true, 'с ключом -> {ok:true}');
+    ok(r.status === 200 && j.ok === true, 'с ключом -> {ok:true} сразу, пока Apps Script ещё не ответил');
+    release();
+    await w.flush();
+    ok(w.gasCalls.length === callsBefore + 1, 'в фоне каталог перечитан');
     r = await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
     ok((await r.text()) === w.goodCatalog(7), 'после purge каталог новый сразу (без ожидания 60 с)');
+
+    // повторные purge чаще раза в 5 с не запускают чтение
+    const c2 = w.gasCalls.length;
+    w.now += 1000;
+    for (let i = 0; i < 5; i++) await worker.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w.env, w.ctx);
+    await w.flush();
+    ok(w.gasCalls.length === c2, '5 purge подряд в пределах 5 с: новых чтений нет');
+    w.now += 6000;
+    const r2 = await worker.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w.env, w.ctx);
+    await w.flush();
+    ok((await r2.json()).ok === true && w.gasCalls.length === c2 + 1, 'через 5 с purge снова читает');
+
+    // плохой ответ в фоне: клиенту всё равно {ok:true}, старый кэш цел
     w.gas.catalog = () => ({ status: 200, body: 'bad' });
+    w.now += 6000;
     r = await worker.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w.env, w.ctx);
-    ok(r.status === 502, 'purge при плохом ответе GAS -> 502, кэш цел');
+    await w.flush();
+    ok(r.status === 200, 'purge при плохом GAS отвечает {ok:true}');
     r = await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
     ok((await r.text()) === w.goodCatalog(7), 'старый хороший каталог остался');
+  });
+
+  await run('пауза 30 с после сбоя Apps Script', async (worker) => {
+    const w = makeEnv();
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+    const good = w.goodCatalog(1);
+    w.gas.catalog = () => ({ status: 500, body: 'err' });
+    w.now += 61000;
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx); // STALE -> фон -> сбой
+    await w.flush();
+    const base = w.gasCalls.length;
+    for (let i = 0; i < 50; i++) {
+      w.now += 200; // 10 с суммарно
+      const r = await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      await w.flush();
+      if ((await r.text()) !== good) { ok(false, 'отдан не прошлый хороший'); break; }
+    }
+    ok(w.gasCalls.length === base, '50 запросов при сбое — 0 новых запросов в Apps Script');
+    w.now += 31000;
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+    await w.flush();
+    ok(w.gasCalls.length === base + 1, 'после 30 с пробуем снова');
+
+    // нет хорошего ответа вообще: 502 без нового запроса
+    const w2 = makeEnv();
+    const worker2 = await loadWorker();
+    w2.gas.catalog = () => ({ status: 200, body: 'oops' });
+    let r = await worker2.fetch(req('GET', '/catalog'), w2.env, w2.ctx);
+    ok(r.status === 502 && w2.gasCalls.length === 1, 'первый сбой -> 502');
+    for (let i = 0; i < 20; i++) { w2.now += 100; r = await worker2.fetch(req('GET', '/catalog'), w2.env, w2.ctx); }
+    ok(r.status === 502 && w2.gasCalls.length === 1, 'в паузу 502 без нового запроса к Apps Script');
+
+    // пауза общая через Cache API: другой изолят тоже не ходит
+    const w3 = makeEnv();
+    const wa = await loadWorker(), wb = await loadWorker();
+    w3.gas.catalog = () => ({ status: 200, body: 'oops' });
+    await wa.fetch(req('GET', '/catalog'), w3.env, w3.ctx);
+    await wb.fetch(req('GET', '/catalog'), w3.env, w3.ctx);
+    ok(w3.gasCalls.length === 1, 'второй изолят видит паузу в Cache API');
+
+    // purge игнорирует паузу и снимает её
+    const w4 = makeEnv();
+    const w4w = await loadWorker();
+    w4.gas.catalog = () => ({ status: 500, body: '' });
+    await w4w.fetch(req('GET', '/catalog'), w4.env, w4.ctx);
+    w4.gas.catalog = () => ({ status: 200, body: w4.goodCatalog(3) });
+    w4.now += 1000;
+    await w4w.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w4.env, w4.ctx);
+    await w4.flush();
+    r = await w4w.fetch(req('GET', '/catalog'), w4.env, w4.ctx);
+    ok(r.status === 200 && (await r.text()) === w4.goodCatalog(3), 'purge работает и во время паузы');
+  });
+
+  await run('KV: поле updated не считается изменением', async (worker) => {
+    const kv = makeKV();
+    const w = makeEnv({ PAMIR_KV: kv });
+    let n = 0;
+    const cat = (upd, id) => JSON.stringify({ ok: true, updated: upd, shop: {}, categories: [], products: [{ id }] });
+    w.gas.catalog = () => ({ status: 200, body: cat('2026-01-01T10:00:' + String(++n % 60).padStart(2, '0'), 'a') });
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+    ok(kv.puts.length === 1, 'первая запись каталога в KV');
+    for (let i = 0; i < 30; i++) {
+      w.now += 61000; // каждый раз устарел -> обновление, меняется только updated
+      await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      await w.flush();
+    }
+    // 30 обновлений * 61 с ~ 30 мин: максимум одна перезапись по таймеру
+    ok(kv.puts.length <= 2, 'при смене одного updated KV не пишется на каждое обновление (записей: ' + kv.puts.length + ')');
+    w.gas.catalog = () => ({ status: 200, body: cat('2026-01-01T11:00:00', 'b') });
+    const before = kv.puts.length;
+    w.now += 61000;
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+    await w.flush();
+    ok(kv.puts.length === before + 1, 'реальное изменение товаров — запись в KV');
+    // холодный изолят с тем же каталогом не пишет
+    const worker2 = await loadWorker();
+    w.gas.catalog = () => ({ status: 200, body: cat('2026-01-01T12:00:00', 'b') });
+    w.now += 61000;
+    const b2 = kv.puts.length;
+    await worker2.fetch(req('GET', '/catalog'), w.env, w.ctx);
+    await w.flush();
+    ok(kv.puts.length === b2, 'холодный изолят: каталог не изменился (кроме updated) — без записи');
   });
 
   await run('scheduled: слежение', async (worker) => {
