@@ -1163,3 +1163,10 @@ body[data-season="newyear"] .rail__sub { color: var(--lapis); }
 .ny-until { margin-bottom: var(--space-3); }
 .gncount { margin: var(--space-1) 0 0; text-align: right; font-variant-numeric: tabular-nums; }
 .form__retry { margin-top: var(--space-2); }
+
+/* Статистика: источники (QR) — компактная таблица, без горизонтальной прокрутки на 360 px */
+.srct { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--fs-sm, 14px); }
+.srct th, .srct td { padding: var(--space-2) var(--space-1); text-align: right; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.srct th:first-child, .srct td:first-child { text-align: left; width: 34%; }
+.srct th { color: var(--ink-muted); font-weight: 600; }
+.srct td { color: var(--ink); font-variant-numeric: tabular-nums; }

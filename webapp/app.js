@@ -2596,7 +2596,7 @@
     if (!cfg.API_URL || !inTelegram || adminHave(kind) || admFlight[kind]) return;
     fetchAdmin(kind).then(function () {
       if (state.view === 'admin' && adminKind() === kind && !adm.loading) renderPage();
-    }).catch(function () { /* не получилось заранее — загрузится при открытии вкладки */ });
+    }).catch(function () { /* не получилось заранее — загрузится при открытии вкладиші */ });
   }
   /** Список уже на экране, но получен давно: показываем его сразу и тихо обновляем. Форму настроек не трогаем — в ней могут печатать. */
   function refreshAdminQuietly(kind) {
@@ -2689,7 +2689,7 @@
     }
     html += '<div class="stats"><div><span>' + esc(t('admStats30')) + '</span><b>' + s.m30.n + ' · ' + money(s.m30.sum) + '</b></div>' +
       '<div><span>' + esc(t('admStatsAll')) + '</span><b>' + s.all.n + ' · ' + money(s.all.sum) + '</b></div></div>';
-    html += behaviorHtml(s);
+    html += behaviorHtml(s) + sourcesHtml(s);
     if (!s.all.n) return html + '<p class="state__text adm__msg">' + esc(t('admStatsEmpty')) + '</p>';
     if (s.products.length) {
       html += '<p class="label">' + esc(t('admStatsTop')) + '</p><ul class="rows">' + s.products.map(function (p) {
@@ -2702,6 +2702,22 @@
     }).join('') + '</ul>';
     return html + '<p class="info info__muted">' + esc(t('admStatsSheet')) + '</p>' +
       '<button type="button" class="btn btn--block" data-action="adm-sales">' + esc(t('admRefresh')) + (adm.salesLoading ? '…' : '') + '</button>';
+  }
+
+  /** Источники (QR) и напоминания о корзине: только если сервер прислал поля (старый бэкенд и менеджер без права stats их не получают). */
+  function sourcesHtml(s) {
+    var html = '';
+    if (Array.isArray(s.sources) && s.sources.length) {
+      html += '<p class="label">' + esc(t('admSources')) + '</p><table class="srct" id="srcTable"><thead><tr><th scope="col">' + esc(t('admSrcTag')) + '</th><th scope="col">' + esc(t('admSrcOpen')) + '</th><th scope="col">' + esc(t('admSrcOrd')) + '</th></tr></thead><tbody>' +
+        s.sources.map(function (r) {
+          return '<tr><td>' + esc(r.src) + '</td><td>' + (Number(r.open7) || 0) + ' / ' + (Number(r.open14) || 0) + '</td><td>' + (Number(r.ord7) || 0) + ' / ' + (Number(r.ord14) || 0) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    if (s.cartRemind && typeof s.cartRemind === 'object') {
+      html += '<ul class="rows" id="cartRemind"><li><span class="rows__name">' + esc(t('admCartSent')) + '</span><span class="rows__sub"></span><b>' + (Number(s.cartRemind.sent30) || 0) + '</b></li>' +
+        '<li><span class="rows__name">' + esc(t('admCartMuted')) + '</span><span class="rows__sub"></span><b>' + (Number(s.cartRemind.muted30) || 0) + '</b></li></ul>';
+    }
+    return html;
   }
 
   /** Средний чек, повторные покупки и воронка: что люди делают в магазине до заказа. */
@@ -3272,10 +3288,10 @@
   /* ---- Настройки магазина ---- */
   /** Группы настроек. Ключ, которого нет ни в одной группе (новый на сервере), попадает в «Інше» — без пояснения. */
   var SET_GROUPS = [
-    ['shop', 'setGShop', /^(notice_|contact$|feature_|father_|home_rails_max$|low_stock$|fresh_days$)/],
+    ['shop', 'setGShop', /^(notice_|contact$|feature_|father_|home_rails_max$|low_stock$|fresh_days$|src_list$)/],
     ['gifts', 'setGGifts', /^(gift_|loyal_|referral_)/],
     ['pay', 'setGPay', /^(pay_|min_order$|address_|hours_)/],
-    ['texts', 'setGTexts', /^(bot_|greeting|welcome_|biz_soon_|confirm_|remind_text_|story_|reply_)/],
+    ['texts', 'setGTexts', /^(bot_|greeting|welcome_|biz_soon_|confirm_|remind_text_|story_|reply_|cart_mute_days$)/],
     ['season', 'setGSeason', /^(theme|ny_)/]
   ];
   var SET_SWITCH = /^(pay_|ny_snow$|gift_note$|referral_on$)/; // включено/выключено — переключателем
@@ -3331,7 +3347,7 @@
         setHintsHtml(f.k) + '</div>';
     }
     var inner;
-    if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+    if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days' || f.k === 'cart_mute_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
     else if (/^(gift|loyal)_text_/.test(f.k)) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
     else if (f.k === 'referral_min_order' || f.k === 'mail_every_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
     else if (f.k.indexOf('referral_gift') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
@@ -6263,7 +6279,7 @@
       msgHint: 'Клієнт отримає це від бота PAMIR у чаті з ботом. Можна виправити шаблон перед надсиланням.',
       msgEmpty: 'Напишіть текст повідомлення.', msgBad: 'Повідомлення порожнє або довше за 500 знаків.', msgNotFound: 'Замовлення не знайдено. Закрийте вікно й натисніть «Оновити».',
       msgTest: 'Це тестове замовлення — клієнту нічого не надсилається.', msgNoChat: 'У цього клієнта немає чату з ботом. Зателефонуйте йому або напишіть у Telegram самі.',
-      msgRate: 'Забагато повідомлень за годину. Спробуйте пізніше або зателефонуйте клієнту.', msgFail: 'Не вдалося надіслати. Спробуйте ще раз.',
+      msgRate: 'Забагато повідомлень за годину — спробуйте пізніше', msgFail: 'Не вдалося надіслати. Спробуйте ще раз.',
       msgNotTold: 'Повідомлення не доставлено: клієнт, схоже, заблокував бота. Зателефонуйте йому або напишіть у Telegram.',
       qpSave: 'Зберегти', qpBad: 'Введіть число більше нуля.', qpFail: 'Не вдалося зберегти ціну — повернули попередню.',
       admFltPrice: 'Чекають ціну', admFltOut: 'Немає', admVisOnly: 'Приховані товари тут не показано — так само їх рахує картка «Сьогодні».',
@@ -6319,7 +6335,7 @@
       msgHint: 'Клиент получит это от бота PAMIR в чате с ботом. Шаблон можно поправить перед отправкой.',
       msgEmpty: 'Напишите текст сообщения.', msgBad: 'Сообщение пустое или длиннее 500 знаков.', msgNotFound: 'Заказ не найден. Закройте окно и нажмите «Обновить».',
       msgTest: 'Это тестовый заказ — клиенту ничего не отправляется.', msgNoChat: 'У этого клиента нет чата с ботом. Позвоните ему или напишите в Telegram сами.',
-      msgRate: 'Слишком много сообщений за час. Попробуйте позже или позвоните клиенту.', msgFail: 'Не удалось отправить. Попробуйте ещё раз.',
+      msgRate: 'Слишком много сообщений за час — попробуйте позже', msgFail: 'Не удалось отправить. Попробуйте ещё раз.',
       msgNotTold: 'Сообщение не доставлено: клиент, похоже, заблокировал бота. Позвоните ему или напишите в Telegram.',
       qpSave: 'Сохранить', qpBad: 'Введите число больше нуля.', qpFail: 'Не удалось сохранить цену — вернули прежнюю.',
       admFltPrice: 'Ждут цену', admFltOut: 'Нет', admVisOnly: 'Скрытые товары здесь не показаны — так же их считает карточка «Сегодня».',
@@ -6386,6 +6402,26 @@
   };
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_B3[lang]).forEach(function (k) { I18N[lang][k] = I18N_B3[lang][k]; });
+  });
+
+  /* Выпуск Б1: источники, напоминания о корзине, новые настройки. */
+  var I18N_B4 = {
+    ua: {
+      admSources: 'Джерела (QR)', admSrcTag: 'Мітка', admSrcOpen: 'Відкр. 7 / 14 дн.', admSrcOrd: 'Зам. 7 / 14 дн.',
+      admCartSent: 'Нагадувань про кошик надіслано за 30 днів', admCartMuted: 'Вимкнули нагадування про кошик за 30 днів',
+      sh_src_list: 'Дозволені мітки джерел через кому (QR-коди, вкладиші). Мітки не з цього списку не враховуються. Порожньо — qr1, qr2, insert.',
+      sh_cart_mute_days: 'На скільки днів кнопка «Не нагадувати» ставить нагадування про кошик на паузу. Порожньо — 30.',
+      sx_src_list: 'qr1, qr2, insert', sx_cart_mute_days: '30'
+    },
+    ru: {
+      admSources: 'Источники (QR)', admSrcTag: 'Метка', admSrcOpen: 'Откр. 7 / 14 дн.', admSrcOrd: 'Зак. 7 / 14 дн.',
+      admCartSent: 'Напоминаний о корзине отправлено за 30 дней', admCartMuted: 'Отключили напоминания о корзине за 30 дней',
+      sh_src_list: 'Разрешённые метки источников через запятую (QR-коды, вкладыши). Метки не из этого списка не учитываются. Пусто — qr1, qr2, insert.',
+      sh_cart_mute_days: 'На сколько дней кнопка «Не напоминать» ставит напоминания о корзине на паузу. Пусто — 30.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B4[lang]).forEach(function (k) { I18N[lang][k] = I18N_B4[lang][k]; });
   });
 
   // Шторка «Написати»: счётчик знаков и нажатия внутри шторки.

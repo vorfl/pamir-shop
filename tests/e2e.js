@@ -364,7 +364,7 @@ const smallTargets = page => page.evaluate(() => {
     await m.page.waitForSelector('.ord');
     const tabs = await m.page.locator('.tabs button').evaluateAll(list => list.map(b => b.getAttribute('data-tab')));
     ok(tabs.join() === 'orders,products', 'менеджеру видны только вкладки заказов и товаров', tabs);
-    ok(await count(m.page, '[data-action="adm-sales"]') === 0, 'итогов продаж и статистики нет');
+    ok(await count(m.page, '[data-action="adm-sales"]') === 0 && await count(m.page, '#srcTable') === 0 && await count(m.page, '#cartRemind') === 0, 'итогов продаж и статистики нет, блоков источников и напоминаний тоже');
     await m.page.locator('.ord__head').first().click();
     ok(await count(m.page, '.ord__acts [data-st]') === 1, 'есть одна большая кнопка следующего шага — право выдано');
     await m.page.locator('[data-more]').first().click();
@@ -3055,6 +3055,45 @@ const smallTargets = page => page.evaluate(() => {
       ok(await B.page.evaluate(() => localStorage.getItem('pamir_src_v1')) === null, 'не метка: «' + bad.slice(0, 12) + '»');
       await B.ctx.close();
     }
+    // --- статистика: блок «Источники (QR)» и строки о напоминаниях ---
+    for (const [lc, theme, tag] of [['uk', 'light', 'ua'], ['ru', 'dark', 'ru']]) {
+      const S = await open(browser, st.url, { uid: 900, query: '?admin=1', w: 360, h: 740, lc, theme });
+      await S.page.waitForSelector('.ord');
+      await S.page.click('[data-action="adm-sales"]');
+      await S.page.waitForSelector('#srcTable');
+      const hdr = await text(S.page, '#srcTable thead');
+      ok(/qr1/.test(await text(S.page, '#srcTable')) && (tag === 'ua' ? /Мітка/.test(hdr) : /Метка/.test(hdr)) && /(Джерела|Источники) \(QR\)/.test(await text(S.page, '.page')), 'статистика (' + tag + '): блок источников с меткой qr1');
+      const row = await S.page.locator('#srcTable tbody tr', { hasText: 'qr1' }).first().innerText();
+      ok(/[1-9]\d* \/ [1-9]\d*/.test(row) && row.replace(/\s+/g, ' ').split(' / ').length === 3, 'в строке qr1: открытия и заказы за 7 / 14 дней', row);
+      const cr = await text(S.page, '#cartRemind');
+      ok(tag === 'ua' ? /Нагадувань про кошик надіслано за 30 днів\s*0/.test(cr) && /Вимкнули нагадування про кошик за 30 днів\s*0/.test(cr) : /Напоминаний о корзине отправлено за 30 дней\s*0/.test(cr) && /Отключили напоминания о корзине за 30 дней\s*0/.test(cr), 'строки о напоминаниях о корзине (' + tag + '), нули показаны как 0', cr);
+      ok(await noOverflow(S.page), 'статистика с источниками на 360 px без горизонтальной прокрутки (' + tag + ')');
+      ok(await S.page.locator('#srcTable').evaluate(el => el.getBoundingClientRect().right <= window.innerWidth), 'таблица источников внутри экрана (' + tag + ')');
+      if (tag === 'ru') await S.page.screenshot({ path: OUT + '/138-b1-admin-stats-sources-dark-ru.png', fullPage: true });
+      else await S.page.screenshot({ path: OUT + '/139-b1-admin-stats-sources-light-uk.png', fullPage: true });
+      await S.ctx.close();
+    }
+    // метка из события экранируется
+    st.gas.post({ action: 'ev', initData: st.gas.initData({ id: 72 }), sid: 'z', events: [{ e: 'src', v: 'qr2', t: Date.now() }] });
+    // старый бэкенд: статистика открывается, блоков нет
+    const oldCodeS = path.join(require('os').tmpdir(), 'Code.old.src.gs');
+    fs.writeFileSync(oldCodeS, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+    const soS = await start(8874, oldCodeS, s => { withPhotos(s); });
+    const Os = await open(browser, soS.url, { uid: 900, query: '?admin=1', w: 360, h: 740 });
+    await Os.page.waitForSelector('.ord');
+    await Os.page.click('[data-action="adm-sales"]');
+    await Os.page.waitForSelector('.stats');
+    ok(await count(Os.page, '#srcTable') === 0 && await count(Os.page, '#cartRemind') === 0 && await noOverflow(Os.page), 'старый бэкенд: статистика без блоков источников и напоминаний');
+    await Os.ctx.close(); soS.server.close();
+    // подсказки новых настроек и текст лимита сообщений
+    const Cs = await open(browser, st.url, { uid: 900, query: '?admin=1', w: 360, h: 740, lc: 'ru' });
+    await Cs.page.waitForSelector('.ord');
+    await Cs.page.locator('[data-tab="settings"]').click();
+    await Cs.page.waitForSelector('#a-src_list');
+    const hs = await Cs.page.evaluate(() => document.querySelector('.page').textContent);
+    ok(/Разрешённые метки источников/.test(hs) && /На сколько дней кнопка/.test(hs), 'настройки: пояснения для src_list и cart_mute_days');
+    ok(await Cs.page.locator('#a-src_list').evaluate(el => !!el.closest('details[data-sg="shop"]')) && await Cs.page.locator('#a-cart_mute_days').evaluate(el => !!el.closest('details[data-sg="texts"]')), 'src_list — в группе «Магазин», cart_mute_days — в «Тексты»');
+    await Cs.ctx.close();
     st.server.close();
   }
 
