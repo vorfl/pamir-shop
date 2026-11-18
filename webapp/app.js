@@ -371,6 +371,19 @@
     Object.keys(I18N_8[lang]).forEach(function (k) { I18N[lang][k] = I18N_8[lang][k]; });
   });
 
+  /* Тексты выпуска А (стадия 9): полоска-уведомление, баночка, «Наша курага». Пробелы неразрывные. */
+  var I18N_A = {
+    ua: { noticeClose: 'Закрити повідомлення', jar: 'Баночка {n} г', featureAll: 'Наша курага',
+      payCardFop: 'Переказ на рахунок ФОП (IBAN)', payCardNoteFop: 'Реквізити надішлемо в Telegram одразу після оформлення.',
+      npSearching: 'Шукаю…', npPickCity: 'Оберіть місто зі списку' },
+    ru: { noticeClose: 'Закрыть уведомление', jar: 'Баночка {n} г', featureAll: 'Наша курага',
+      payCardFop: 'Перевод на счёт ФОП (IBAN)', payCardNoteFop: 'Реквизиты пришлём в Telegram сразу после оформления.',
+      npSearching: 'Ищу…', npPickCity: 'Выберите город из списка' }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_A[lang]).forEach(function (k) { I18N[lang][k] = I18N_A[lang][k]; });
+  });
+
   var ICONS_MORE = {
     heart: '<path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>',
     home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
@@ -485,7 +498,19 @@
       return { price: Math.round(p.k * 100 / 1000), old: p.o > p.k ? Math.round(p.o * 100 / 1000) : 0, unit: t('per') + ' ' + weight(100) };
     }
     if (!(p.p > 0)) return null;
-    return { price: p.p, old: p.o > p.p ? Math.round(p.o) : 0, unit: p.t === 'p' && p.pk ? t('per') + ' ' + p.pk.replace(/ /g, NBSP) : t('perPiece') };
+    return { price: p.p, old: p.o > p.p ? Math.round(p.o) : 0, unit: jarText(p) || (p.t === 'p' && p.pk ? t('per') + ' ' + p.pk.replace(/ /g, NBSP) : t('perPiece')) };
+  }
+
+  /** Название способа оплаты. Флаг fop (сервер знает реквизиты ФОП; сами они на витрину не приходят) меняет название «card». */
+  function payName(k) {
+    if (k === 'card' && shopInfo().fop) return t('payCardFop');
+    return t({ cash: 'payCash', card: 'payCard', cod: 'payCod' }[k]);
+  }
+
+  /** «Баночка 60 г» — только у упаковки с известным весом (pw). Нет веса — пустая строка. */
+  function jarText(p) {
+    var w = p && p.t === 'p' ? Number(p.pw) : 0;
+    return w > 0 && w === Math.floor(w) ? tf('jar', { n: w }) : '';
   }
 
   /* ------------------------------ Тема, язык ------------------------------ */
@@ -781,8 +806,59 @@
     // Объявление магазина из настроек («Сьогодні не працюємо»).
     var notice = shopInfo().notice;
     var text = notice ? (state.lang === 'ru' ? notice.ru : notice.ua) || '' : '';
-    el.notice.textContent = text;
-    el.notice.hidden = !text;
+    if (text && noticeClosed(notice)) text = '';
+    if (!text) { el.notice.hidden = true; el.notice.innerHTML = ''; return; }
+    // Текст сначала экранируется, потом @имя становится ссылкой на t.me.
+    var html = esc(text).replace(/(^|[^A-Za-z0-9_@])@([A-Za-z0-9_]{5,32})(?![A-Za-z0-9_])/g, function (m, pre, nick) {
+      return pre + '<a class="notice__link" href="https://t.me/' + nick + '" data-url="https://t.me/' + nick + '">@' + nick + '</a>';
+    });
+    el.notice.innerHTML = '<span class="notice__text">' + html + '</span>' +
+      '<button type="button" class="notice__x" aria-label="' + esc(t('noticeClose')) + '">' + icon('x') + '</button>';
+    el.notice.hidden = false;
+  }
+
+  /* Полоска закрывается навсегда: запоминаем отпечаток текста (другой текст в настройке покажется снова). */
+  var NOTICE_KEY = 'pamir_notice_closed';
+  var noticeSeen = { local: store.get(NOTICE_KEY) || '', cloud: '', cloudReady: false, session: '' };
+
+  function noticePrint(notice) {
+    var s = String(notice.ua || '') + '|' + String(notice.ru || ''), h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return 'n' + h.toString(36) + s.length;
+  }
+
+  /** Закрыта ли полоска. Пока облако Telegram не ответило, не показываем: так полоска не «прыгает». */
+  function noticeClosed(notice) {
+    var fp = noticePrint(notice);
+    if (fp === noticeSeen.local || fp === noticeSeen.session || fp === noticeSeen.cloud) return true;
+    return !noticeSeen.cloudReady;
+  }
+
+  function loadNoticeFlag() {
+    function done(value) {
+      if (noticeSeen.cloudReady) return;
+      noticeSeen.cloud = typeof value === 'string' ? value : '';
+      noticeSeen.cloudReady = true;
+      renderBanner();
+    }
+    if (noticeSeen.local || !cloudOk()) { noticeSeen.cloudReady = true; return; }
+    try {
+      tg.CloudStorage.getItem('notice', function (err, value) { done(err ? '' : value); });
+      setTimeout(function () { done(''); }, 1500); // облако не ответило — просто показываем
+    } catch (e) { noticeSeen.cloudReady = true; }
+  }
+
+  function closeNotice() {
+    var notice = shopInfo().notice;
+    if (!notice) return;
+    var fp = noticePrint(notice);
+    noticeSeen.session = fp; // даже если память недоступна — до перезагрузки полоска скрыта
+    store.set(NOTICE_KEY, fp);
+    if (cloudOk()) {
+      try { tg.CloudStorage.setItem('notice', fp, function () {}); } catch (e) { /* облако недоступно */ }
+    }
+    hapticSelect();
+    renderBanner();
   }
 
   function shopInfo() { return (state.catalog && state.catalog.shop) || {}; }
@@ -876,18 +952,37 @@
   function featureHtml() {
     var f = shopInfo().feature;
     if (!f) return '';
-    var p = state.catalog.byId[f.id];
-    if (!p || !p.a) return '';
+    // Старый бэкенд даёт один id; новый — список ids. Скрытых и пропавших из каталога пропускаем.
+    var ids = Array.isArray(f.ids) && f.ids.length ? f.ids : [f.id], seenIds = {}, list = [];
+    ids.forEach(function (id) {
+      var q = state.catalog.byId[id];
+      if (q && q.a && !seenIds[id]) { seenIds[id] = 1; list.push(q); }
+    });
+    if (!list.length) return '';
     var ru = state.lang === 'ru';
-    var title = (ru ? f.title.ru : f.title.ua) || name(p);
-    var text = (ru ? f.text.ru : f.text.ua) || '';
-    var cp = cardPrice(p);
-    return '<article class="feature" data-id="' + esc(p.id) + '">' + ORN + '<div class="feature__img card__img">' + photoHtml(p, true) + '</div>' +
-      '<div class="feature__body"><h2 class="feature__title">' + esc(title) + '</h2>' +
-      (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') +
-      (shopInfo().story ? '<button type="button" class="feature__story" data-w1="go" data-view="story">' + esc(t('storyBtn')) + '</button>' : '') +
-      '<div class="feature__foot"><div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
-      '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
+    var ft = f.title || {}, fx = f.text || {};
+    var gTitle = (ru ? ft.ru : ft.ua) || '';
+    var text = (ru ? fx.ru : fx.ua) || '';
+    var story = shopInfo().story ? '<button type="button" class="feature__story" data-w1="go" data-view="story">' + esc(t('storyBtn')) + '</button>' : '';
+    if (list.length === 1) {
+      var p = list[0], cp = cardPrice(p);
+      return '<article class="feature" data-id="' + esc(p.id) + '">' + ORN + '<div class="feature__img card__img">' + photoHtml(p, true) + '</div>' +
+        '<div class="feature__body"><h2 class="feature__title">' + esc(gTitle || name(p)) + '</h2>' +
+        (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') + story +
+        '<div class="feature__foot"><div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
+        '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
+    }
+    // Несколько товаров: общий заголовок и вертикальный список, у каждого своё фото 1:1.
+    var html = '<section class="featuregroup"><h2 class="feature__title featuregroup__title">' + esc(gTitle || t('featureAll')) + '</h2>' +
+      (text ? '<p class="feature__text featuregroup__text">' + esc(text) + '</p>' : '') + story;
+    list.forEach(function (q, i) {
+      var c = cardPrice(q);
+      html += '<article class="feature feature--item" data-id="' + esc(q.id) + '"><div class="feature__img card__img">' + photoHtml(q, i === 0) + '</div>' +
+        '<div class="feature__body"><h3 class="feature__title feature__title--item">' + esc(name(q)) + '</h3>' +
+        '<div class="feature__foot"><div class="card__meta">' + (c ? priceHtml(c) : '') + '</div>' +
+        '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
+    });
+    return html + '</section>';
   }
 
   /** Подарок от суммы и подарок постоянным клиентам — если они заданы в настройках магазина. */
@@ -1189,9 +1284,9 @@
           body += '<button type="button" data-vi="' + i + '" aria-pressed="' + (i === s.vi) + '"' + (maxQty(p, v[0]) < 1 ? ' disabled' : '') + '><b>' + weight(v[0]) + '</b><span>' + money(v[1]) + '</span></button>';
         });
         body += '</div></div>';
-      } else if (p.pk) {
+      } else if (jarText(p) || p.pk) {
         body += '<div><p class="label">' + esc(t('packing')) + '</p><div class="weights"><button type="button" aria-pressed="true" tabindex="-1"><b>' +
-          esc(p.pk.replace(/ /g, NBSP)) + '</b></button></div></div>';
+          esc(jarText(p) || p.pk.replace(/ /g, NBSP)) + '</b></button></div></div>';
       }
       body += sheetHintsHtml(p);
       body += '<div class="buy"><div class="step" role="group" aria-label="' + esc(t('qty')) + '">' +
@@ -1629,9 +1724,11 @@
   }
 
   /* ------------------------------ Экран корзины ------------------------------ */
+  /** Возвращает обычный текст (не HTML): при выводе в разметку вызывающий код сам делает esc(). */
   function lineLabel(l, info) {
     var p = info.p || product(l.id);
     if (l.g) return weight(l.g);
+    if (jarText(p)) return jarText(p);
     if (p && p.t === 'p' && p.pk) return p.pk.replace(/ /g, NBSP);
     return '1' + NBSP + t('pcs');
   }
@@ -1704,7 +1801,7 @@
       html += '<li class="line' + (info.ok ? '' : ' line--out') + '">' +
         '<div class="line__img">' + (p ? photoHtml(p) : MARK) + '</div>' +
         '<div class="line__text"><p class="line__name">' + esc(p ? name(p) : l.id) + '</p>' +
-        '<p class="line__sub">' + lineLabel(l, info) + (info.ok ? ' · ' + money(info.price) : '') + (info.wh ? ' <span class="badge badge--opt">' + esc(t('whTag')) + '</span>' : '') + '</p>' + note + '</div>' +
+        '<p class="line__sub">' + esc(lineLabel(l, info)) +(info.ok ? ' · ' + money(info.price) : '') + (info.wh ? ' <span class="badge badge--opt">' + esc(t('whTag')) + '</span>' : '') + '</p>' + note + '</div>' +
         '<button type="button" class="iconbtn iconbtn--plain" data-line-del="' + i + '" aria-label="' + esc(t('remove')) + '">' + icon('trash-2') + '</button>';
       if (info.ok) {
         html += '<div class="line__ctl"><div class="step step--sm" role="group" aria-label="' + esc(t('qty')) + '">' +
@@ -1806,8 +1903,8 @@
       '<div id="npFields" class="stack">' + npFieldsHtml() + '</div></fieldset>' +
 
       '<fieldset class="group"><legend class="label">' + esc(t('payment')) + '</legend><div class="opts opts--col">' +
-      payMethods().map(function (k) { return option('pay', k, '', t({ cash: 'payCash', card: 'payCard', cod: 'payCod' }[k])); }).join('') + '</div>' +
-      '<p class="info info__muted" id="cardNote">' + esc(t('payCardNote')) + '</p></fieldset>' +
+      payMethods().map(function (k) { return option('pay', k, '', payName(k)); }).join('') + '</div>' +
+      '<p class="info info__muted" id="cardNote">' + esc(t(shopInfo().fop ? 'payCardNoteFop' : 'payCardNote')) + '</p></fieldset>' +
 
       '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
       '<textarea class="input input--area" id="f-comment" name="comment" rows="3" maxlength="300" placeholder="' + esc(t('commentPh')) + '">' + esc(f.comment) + '</textarea></div>' +
@@ -2023,10 +2120,10 @@
     else if (d.test) html += '<p class="note note--opt">' + esc(t('doneTest')) + '</p>';
     html += '<div class="recap"><p class="label">' + esc(t('order')) + '</p><ul class="recap__list">';
     d.lines.forEach(function (l) {
-      html += '<li><span>' + esc(l.name) + ', ' + l.label + ' × ' + l.q + '</span><span class="recap__sum">' + money(l.sum) + '</span></li>';
+      html += '<li><span>' + esc(l.name) + ', ' + esc(l.label) + ' × ' + l.q + '</span><span class="recap__sum">' + money(l.sum) + '</span></li>';
     });
     html += '</ul><p class="recap__meta">' + esc(t('delivery')) + ': ' + esc(deliveryText(d)) + '<br>' +
-      esc(t('payment')) + ': ' + esc(t({ cash: 'payCash', card: 'payCard', cod: 'payCod' }[d.pay])) + '</p>' +
+      esc(t('payment')) + ': ' + esc(payName(d.pay)) + '</p>' +
       '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(d.total) + '</span></div></div>' +
       '<button type="button" class="btn btn--primary btn--block" data-nav="catalog">' + esc(t('doneBack')) + '</button>' +
       (inTelegram && !d.stub ? '<button type="button" class="btn btn--block" data-go="orders">' + esc(t('myOrders')) + '</button>' : '');
@@ -3580,17 +3677,19 @@
 
   /* ---- 1.7 Нова пошта: тип доставки, города, подсказки (если на сервере задан NP_API_KEY) ---- */
   var NP_CITIES = [['Харків', 'Харьков'], ['Київ', 'Киев'], ['Дніпро', 'Днепр'], ['Львів', 'Львов'], ['Одеса', 'Одесса'], ['Запоріжжя', 'Запорожье'], ['Вінниця', 'Винница'], ['Полтава', 'Полтава']];
-  var np = { ref: '', timer: null, seq: 0 };
+  var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0 };
+  var NP_TIMEOUT = 5000;
   function npFieldsHtml() {
     var f = state.form;
     if (!{ branch: 1, locker: 1, courier: 1 }[f.npType]) f.npType = 'branch';
     return '<div class="opts opts--3">' + option('npType', 'branch', '', t('npBranch')) + option('npType', 'locker', '', t('npLocker')) + option('npType', 'courier', '', t('npCourier')) + '</div>' +
       field('city', esc(t('fCity')), 'type="text" autocomplete="address-level2" maxlength="60" enterkeyhint="next"', f.city,
-        '<div class="sugg" id="citySugg" hidden></div><div class="chips chips--flush" id="cityChips">' + NP_CITIES.map(function (c) {
+        '<div class="sugg" id="citySugg" hidden></div><p class="np-busy" id="cityBusy" role="status" hidden>' + esc(t('npSearching')) + '</p>' +
+        '<p class="np-hint" id="cityPick" hidden>' + esc(t('npPickCity')) + '</p><div class="chips chips--flush" id="cityChips">' + NP_CITIES.map(function (c) {
           return '<button type="button" class="chip chip--sm" data-w1="city" data-city="' + esc(c[0]) + '">' + esc(state.lang === 'ru' ? c[1] : c[0]) + '</button>';
         }).join('') + '</div>') +
       field('branch', esc(t('fBranch_' + f.npType)), 'type="text" autocomplete="off" maxlength="' + (f.npType === 'courier' ? 120 : 30) + '" enterkeyhint="next"', f.branch,
-        '<div class="sugg" id="whSugg" hidden></div>');
+        '<div class="sugg" id="whSugg" hidden></div><p class="np-busy" id="whBusy" role="status" hidden>' + esc(t('npSearching')) + '</p>');
   }
   function syncNp() {
     var input = document.getElementById('f-branch');
@@ -3599,6 +3698,24 @@
     var type = state.form.npType || 'branch';
     label.textContent = t('fBranch_' + type);
     input.maxLength = type === 'courier' ? 120 : 30;
+    npShowWh();
+  }
+  /** GET к серверу с обрывом через 5 с: долгий ответ не мешает оформлению, остаётся ручной ввод. */
+  function apiGetTimed(query) {
+    return new Promise(function (resolve, reject) {
+      var done = false, ctl = null;
+      try { ctl = window.AbortController ? new AbortController() : null; } catch (e) { ctl = null; }
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        try { if (ctl) ctl.abort(); } catch (e) { /* уже закончено */ }
+        reject(new Error('timeout'));
+      }, NP_TIMEOUT);
+      fetch(cfg.API_URL + (cfg.API_URL.indexOf('?') < 0 ? '?' : '&') + query, ctl ? { signal: ctl.signal } : undefined)
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (v) { if (done) return; done = true; clearTimeout(timer); resolve(v); },
+          function (e) { if (done) return; done = true; clearTimeout(timer); reject(e); });
+    });
   }
   function apiGet(query) {
     return fetch(cfg.API_URL + (cfg.API_URL.indexOf('?') < 0 ? '?' : '&') + query).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
@@ -3611,21 +3728,149 @@
       return '<button type="button" data-w1="' + kind + '" data-ref="' + esc(x.ref || '') + '" data-val="' + esc(kind === 'np-city' ? x.s : (x.num || x.n)) + '">' + esc(x.n) + '</button>';
     }).join('');
   }
-  function npSuggest(input) {
-    if (!shopInfo().np || !cfg.API_URL) return;
+  function npBusy(id, on) { var b = document.getElementById(id); if (b) b.hidden = !on; }
+  function npOn() { return !!(shopInfo().np && cfg.API_URL && state.view === 'checkout'); }
+
+  /* --- города: дебаунс 500 мс, кэш по строке запроса, не короче 2 букв --- */
+  function npCityTyped(input) {
     clearTimeout(np.timer);
-    var isCity = input.name === 'city';
-    if (isCity) np.ref = '';
-    if (!isCity && (!np.ref || state.form.npType === 'courier')) { suggShow('whSugg', [], ''); return; }
-    var q = input.value.trim(), seq = ++np.seq;
-    if (isCity && q.length < 2) { suggShow('citySugg', [], ''); return; }
-    np.timer = setTimeout(function () {
-      apiGet(isCity ? 'action=np.city&q=' + encodeURIComponent(q)
-        : 'action=np.wh&city=' + encodeURIComponent(np.ref) + '&q=' + encodeURIComponent(q) + '&t=' + (state.form.npType === 'locker' ? 'locker' : ''))
-        .then(function (res) { if (seq === np.seq) suggShow(isCity ? 'citySugg' : 'whSugg', (res && res.ok && res.list) || [], isCity ? 'np-city' : 'np-wh'); })
-        .catch(function () { /* без подсказок остаётся ручной ввод */ });
+    np.ref = ''; np.seq++;
+    npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], '');
+    var q = input.value.trim(), key = q.toLowerCase(), seq = np.seq;
+    if (q.length < 2) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
+    if (np.cities[key]) { npBusy('cityBusy', false); suggShow('citySugg', np.cities[key], 'np-city'); return; }
+    npBusy('cityBusy', true);
+    np.timer = setTimeout(function () { npCityFetch(q, seq, false, false); }, 500);
+  }
+  function npCityFetch(q, seq, pick, chip) {
+    var key = q.toLowerCase();
+    apiGetTimed('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
+      var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
+      if (list) np.cities[key] = list;
+      if (seq !== np.seq) return; // пришёл устаревший ответ — не затираем свежий
+      npBusy('cityBusy', false);
+      if (list) npCityShow(list, pick, q, chip); else suggShow('citySugg', [], '');
+    }).catch(function () { if (seq === np.seq) { npBusy('cityBusy', false); suggShow('citySugg', [], ''); } });
+  }
+  function npCityShow(list, pick, q, chip) {
+    suggShow('citySugg', list, 'np-city');
+    if (!pick) return;
+    var one = list.length === 1 ? list[0] : null;
+    if (!one && chip) {
+      var same = list.filter(function (x) { return String(x.s).toLowerCase() === q.toLowerCase(); });
+      if (same.length === 1) one = same[0];
+    }
+    if (one) npChooseCity(one, true); else npBusy('cityPick', true);
+  }
+  /** Город набран руками (или взят из чипа) без нажатия на подсказку: один вариант выбираем сами, иначе просим выбрать. */
+  function npCityResolve(q, chip) {
+    clearTimeout(np.timer);
+    q = String(q || '').trim();
+    if (!npOn() || np.ref || q.length < 2) return;
+    var seq = ++np.seq, key = q.toLowerCase();
+    if (np.cities[key]) { npBusy('cityBusy', false); npCityShow(np.cities[key], true, q, chip); return; }
+    npBusy('cityBusy', true);
+    npCityFetch(q, seq, true, chip);
+  }
+  function npChooseCity(x, auto) {
+    var city = document.getElementById('f-city');
+    if (!city) return;
+    city.value = String(x.s).slice(0, 60);
+    np.ref = String(x.ref || ''); np.seq++;
+    npBusy('cityPick', false); npBusy('cityBusy', false);
+    setError('city', ''); suggShow('citySugg', [], ''); readForm();
+    if (!auto) hapticSelect();
+    npLoadWh();
+    var br = document.getElementById('f-branch');
+    if (!auto && br && !br.value) br.focus();
+  }
+
+  /* --- отделения: один запрос на город (np.whall), дальше фильтр на витрине без запросов --- */
+  function npLoadWh() {
+    var ref = np.ref;
+    if (!npOn() || !ref) return;
+    if (np.wh[ref] === undefined) {
+      np.wh[ref] = 'loading';
+      npBusy('whBusy', state.form.npType !== 'courier');
+      apiGetTimed('action=np.whall&city=' + encodeURIComponent(ref)).then(function (res) {
+        var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
+          .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
+        np.wh[ref] = list || 'old'; // нет ответа или бэкенд не знает np.whall — подсказки по-старому, через np.wh
+        if (np.ref === ref) { npBusy('whBusy', false); npShowWh(); }
+      }).catch(function () { np.wh[ref] = 'old'; if (np.ref === ref) npBusy('whBusy', false); });
+      return;
+    }
+    npShowWh();
+  }
+  /** Номер — точное совпадение первым («12» → №12, потом №120…), затем по улице. Тип — до обрезки списка. */
+  function npFilterWh(list, q, type) {
+    var want = type === 'locker' ? 'p' : 'w';
+    var items = list.filter(function (x) { return x[2] === want; });
+    q = String(q || '').replace(/^[№#\s]+/, '').trim();
+    if (!q) return items.slice(0, 10);
+    var digits = /^\d+$/.test(q), low = q.toLowerCase(), exact = [], pref = [], street = [];
+    items.forEach(function (x) {
+      var n = String(x[0]);
+      if (digits && n === q) exact.push(x);
+      else if (digits && n.indexOf(q) === 0) pref.push(x);
+      else if (String(x[1]).toLowerCase().indexOf(low) >= 0) street.push(x);
+    });
+    return exact.concat(pref, street).slice(0, 10);
+  }
+  function npShowWh() {
+    var input = document.getElementById('f-branch');
+    if (!input) return;
+    if (!npOn() || !np.ref || state.form.npType === 'courier' || state.form.delivery !== 'np') { suggShow('whSugg', [], ''); return; }
+    var entry = np.wh[np.ref];
+    if (!Array.isArray(entry)) return; // загружается, либо работает старый путь
+    npBusy('whBusy', false);
+    var items = npFilterWh(entry, input.value, state.form.npType).map(function (x) { return { n: '№' + x[0] + ', ' + x[1], num: String(x[0]) }; });
+    suggShow('whSugg', items, 'np-wh');
+  }
+  function npBranchTyped(input) {
+    if (!npOn()) return;
+    if (!np.ref || state.form.npType === 'courier') { suggShow('whSugg', [], ''); return; }
+    if (Array.isArray(np.wh[np.ref])) { npShowWh(); return; }
+    if (np.wh[np.ref] !== 'old') return;
+    // Старый бэкенд: запрос на ввод, с задержкой, устаревшие ответы отбрасываются.
+    clearTimeout(np.whTimer);
+    var q = input.value.trim(), seq = ++np.whSeq;
+    np.whTimer = setTimeout(function () {
+      npBusy('whBusy', true);
+      apiGetTimed('action=np.wh&city=' + encodeURIComponent(np.ref) + '&q=' + encodeURIComponent(q) + '&t=' + (state.form.npType === 'locker' ? 'locker' : ''))
+        .then(function (res) { if (seq === np.whSeq) { npBusy('whBusy', false); suggShow('whSugg', (res && res.ok && res.list) || [], 'np-wh'); } })
+        .catch(function () { if (seq === np.whSeq) npBusy('whBusy', false); });
     }, 350);
   }
+  function npSuggest(input) {
+    if (!npOn()) return;
+    if (input.name === 'city') npCityTyped(input); else npBranchTyped(input);
+  }
+  // Нажатие на подсказку не должно теряться из-за blur поля, который на телефоне срабатывает раньше click.
+  ['pointerdown', 'touchstart', 'mousedown'].forEach(function (ev) {
+    el.page.addEventListener(ev, function (e) {
+      if (!e.target.closest || !e.target.closest('.sugg')) return;
+      np.tap = Date.now() + 700;
+      if (ev !== 'touchstart' && e.cancelable) e.preventDefault(); // поле не теряет фокус, список не перерисовывается до click
+    }, { passive: false });
+  });
+  el.page.addEventListener('focusin', function (e) {
+    if (!npOn() || e.target.name !== 'branch') return;
+    var city = document.getElementById('f-city');
+    if (!np.ref && city && city.value.trim().length >= 2) npCityResolve(city.value, false);
+    else if (np.ref) npLoadWh();
+  });
+  el.page.addEventListener('focusout', function (e) {
+    var name = e.target && e.target.name;
+    if (name !== 'city' && name !== 'branch') return;
+    setTimeout(function () {
+      if (Date.now() < np.tap || !npOn()) return;
+      var inp = document.getElementById('f-' + name);
+      if (!inp || document.activeElement === inp) return;
+      if (name === 'city') npCityResolve(inp.value, false);
+      else suggShow('whSugg', [], '');
+    }, 200);
+  });
 
   /* ---- 1.4 «Від саду до столу» и паспорт товара ---- */
   function storyHtml() {
@@ -3864,12 +4109,12 @@
       addUsual();
     } else if (kind === 'city' || kind === 'np-city') {
       var city = document.getElementById('f-city');
-      if (city) {
-        city.value = b.getAttribute(kind === 'city' ? 'data-city' : 'data-val');
-        np.ref = kind === 'np-city' ? b.getAttribute('data-ref') : '';
-        setError('city', ''); suggShow('citySugg', [], ''); readForm(); hapticSelect();
-        var br = document.getElementById('f-branch');
-        if (br && !br.value) br.focus();
+      if (city && kind === 'np-city') npChooseCity({ s: b.getAttribute('data-val'), ref: b.getAttribute('data-ref') }, false);
+      else if (city) { // чип с крупным городом: ref неизвестен — спрашиваем сервер и выбираем точное совпадение
+        city.value = b.getAttribute('data-city');
+        np.ref = ''; np.seq++; suggShow('citySugg', [], ''); npBusy('cityPick', false); suggShow('whSugg', [], '');
+        setError('city', ''); readForm(); hapticSelect();
+        npCityResolve(city.value, true);
       }
     } else if (kind === 'np-wh') {
       var wh = document.getElementById('f-branch');
@@ -5227,6 +5472,12 @@
   loadForm();
   loadCart();
   loadLists();
+  loadNoticeFlag();
+  el.notice.addEventListener('click', function (e) {
+    var link = e.target.closest('a[data-url]');
+    if (link) { e.preventDefault(); openUrl(link.getAttribute('data-url')); return; }
+    if (e.target.closest('.notice__x')) closeNotice();
+  });
   bind();
   el.adminBtn.hidden = !adminHint;
   track('open', deepId ? deepId.toUpperCase() : '', params.get('view') || '');
