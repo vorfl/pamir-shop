@@ -95,8 +95,8 @@ function stage9Apply() {
   try {
     res = stage9Run_();
   } catch (err) {
-    console.error('stage9: ' + (err && err.stack || err));
-    res = { ok: false, error: 'fail', message: 'Помилка: ' + (err && err.message || err) + '. Частину змін могло бути внесено; повторний запуск безпечний.' };
+    console.error('stage9: ' + safeErr_(err, true));
+    res = { ok: false, error: 'fail', message: 'Помилка: ' + safeErr_(err) + '. Частину змін могло бути внесено; повторний запуск безпечний.' };
   } finally {
     lock.releaseLock();
   }

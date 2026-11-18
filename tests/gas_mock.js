@@ -95,7 +95,7 @@ function createGas(codePath, seed) {
   let failTelegram = false;
   // Выпуск 9Б: «блокировка занята N мс» (script/doc), журнал обращений к блокировкам, не-Telegram запросы (Worker), Drive.
   // Стенд НЕ воспроизводит настоящую конкуренцию Google: busy — условное время, которое запрос ждал бы; реального ожидания нет.
-  const lockCfg = { script: 0, doc: 0 };
+  const lockCfg = { script: 0, doc: 0, docNull: false }; // docNull: LockService.getDocumentLock() возвращает null (так бывает в веб-приложении)
   const lockLog = [];
   const lockWaited = { script: 0, doc: 0 };
   const fetched = []; // запросы не к Telegram: { url, method, headers, payload }
@@ -145,7 +145,7 @@ function createGas(codePath, seed) {
       getProperties: () => { op('prop'); return Object.assign({}, props); },
       setProperty: (k, v) => { op('prop'); props[k] = String(v); }
     }) },
-    LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => mkLock('doc') },
+    LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => (lockCfg.docNull ? null : mkLock('doc')) },
     Utilities: {
       newBlob: (data) => ({ getBytes: () => (typeof data === 'string' ? Array.from(Buffer.from(data, 'utf8')) : data) }),
       computeHmacSha256Signature: (value, key) => {
@@ -160,7 +160,7 @@ function createGas(codePath, seed) {
     },
     UrlFetchApp: { fetchAll: reqs => { op('tgBatch'); return reqs.map(r => sandbox.UrlFetchApp.fetch(r.url, r, true)); }, fetch: (url, opts, batched) => {
       if (!/api.telegram.org|novaposhta/.test(url)) { // Worker и прочее: запоминаем, Telegram не трогаем
-        fetched.push({ lockHeld: held.script + held.doc, url, method: opts && opts.method, headers: (opts && opts.headers) || {}, payload: opts && opts.payload });
+        fetched.push({ lockHeld: held.script + held.doc, followRedirects: opts && opts.followRedirects, url, method: opts && opts.method, headers: (opts && opts.headers) || {}, payload: opts && opts.payload });
         if (fetchCfg.fail) throw new Error('fetch failed: ' + url + ' ' + JSON.stringify((opts && opts.headers) || {}));
         return { getResponseCode: () => fetchCfg.code, getContentText: () => '' };
       }
@@ -189,6 +189,8 @@ function createGas(codePath, seed) {
     }
   };
   vm.createContext(sandbox);
+  sandbox.__shift = 0;
+  vm.runInContext('(function () { var o = Date.now; Date.now = function () { return o() + __shift; }; })()', sandbox);
   vm.runInContext(fs.readFileSync(codePath, 'utf8'), sandbox, { filename: 'Code.gs' });
   // В Apps Script все файлы проекта живут в одном пространстве имён: подгружаем остальные .gs из той же папки.
   // seed.skipFiles — какие файлы не брать; seed.extraCode — код, который подставляется вместо них (например тестовые оптовые цены).
@@ -202,6 +204,9 @@ function createGas(codePath, seed) {
   return {
     sandbox, sheets, props, cache, sent, triggers, ops, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
     setLockBusy(scriptMs, docMs) { lockCfg.script = scriptMs || 0; lockCfg.doc = docMs || 0; },
+    setDocLockNull(v) { lockCfg.docNull = !!v; },
+    /** Сдвиг часов внутри Code.gs (Date.now) вперёд на ms: «прошла минута». */
+    advance(ms) { sandbox.__shift = (sandbox.__shift || 0) + ms; },
     setFetch(fail, code) { fetchCfg.fail = !!fail; fetchCfg.code = code || 200; },
     resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); },
     setTelegramFail(v) { failTelegram = v; },

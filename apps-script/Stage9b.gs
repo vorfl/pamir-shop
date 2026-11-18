@@ -39,9 +39,9 @@ function stage9bSetup() {
     }
     SpreadsheetApp.flush();
   } catch (err) {
-    console.error('stage9b: ' + (err && err.stack || err));
+    console.error('stage9b: ' + safeErr_(err, true));
     lock.releaseLock();
-    var fail = 'Помилка: ' + (err && err.message || err) + '. Повторний запуск безпечний.';
+    var fail = 'Помилка: ' + safeErr_(err) + '. Повторний запуск безпечний.';
     s9Alert_(fail);
     return { ok: false, error: 'fail', message: fail, done: done };
   }
@@ -76,29 +76,46 @@ function purgeWorkerIfPending_() {
     var props = scriptProps_();
     var base = String(props.getProperty('WORKER_URL') || '').trim().replace(/\/+$/, '');
     var secret = props.getProperty('WEBHOOK_SECRET');
-    if (!secret || !/^https:\/\/[^\s?#]+$/.test(base)) return;
-    var res = UrlFetchApp.fetch(base + '/purge', { method: 'post', headers: { 'X-Pamir-Key': secret }, payload: '', muteHttpExceptions: true });
+    if (!secret || !base) return;
+    // Секрет уходит только на https-адрес вида *.workers.dev; иное — не слать и один раз написать в журнал (без адреса и секрета).
+    var hm = /^https:\/\/([a-z0-9.-]+)(?::\d+)?(?:\/[^\s?#@]*)?$/i.exec(base);
+    var host = hm ? hm[1].toLowerCase() : '';
+    if (!host || host.length < 13 || host.slice(-12) !== '.workers.dev' || /\.\.|^\./.test(host)) {
+      console.warn('purge: WORKER_URL не підходить (потрібен https і адреса *.workers.dev), сповіщення Worker пропущено');
+      return;
+    }
+    var res = UrlFetchApp.fetch(base + '/purge', { method: 'post', headers: { 'X-Pamir-Key': secret }, payload: '', muteHttpExceptions: true, followRedirects: false });
     var code = res && typeof res.getResponseCode === 'function' ? res.getResponseCode() : 0;
     if (code >= 300) console.warn('purge: код ' + code);
   } catch (err) {
-    console.warn('purge: не вдалося');
+    console.warn('purge: не вдалося'); // текст ошибки не пишем: в нём может быть адрес Worker
   }
 }
 
 /* ------------------------- б7.2: буфер событий и отметок клиентов ------------------------- */
 /*
  * Устройство. CacheService не умеет дописывать, поэтому каждая пачка (события + отметка клиента одного запроса) — свой ключ fb_<n>.
- * Счётчики fb_n (последняя занятая пачка) и fb_t (последняя записанная в лист) защищены НЕ блокировкой скрипта, а блокировкой
- * документа с очень коротким tryLock: заказы её не используют, поэтому не ждут аналитику. Пачка кладётся в кэш раньше,
- * чем растёт fb_n, поэтому flushJob никогда не увидит номер без данных. flushJob (раз в минуту) берёт блокировку скрипта
- * через tryLock; занята — откладывает до следующего запуска, ничего не теряя (fb_t сдвигается только после записи в лист).
+ * Счётчики fb_n (последняя занятая пачка) и fb_t (последняя записанная в лист) меняются под короткой блокировкой (counterLock_):
+ * сначала DocumentLock (заказы его не используют), а если он недоступен (в веб-приложении getDocumentLock() может вернуть null) —
+ * ScriptLock с tryLock(300). Под блокировкой только счётчик; сами данные кладутся в кэш уже после неё. flushJob, увидев номер без
+ * данных (запрос ещё не успел положить), ждёт один цикл, потом считает пачку потерянной.
+ * Нет ни одной блокировки — «запасные слоты» без блокировки: ключ fs_<минута>_<случайный номер из FB_SLOTS>; flushJob читает слоты
+ * прошедших минут. Столкновение слотов — редкая допустимая потеря (считается в fb_lost).
+ * flushJob (раз в минуту) берёт блокировку скрипта через tryLock; занята — откладывает до следующего запуска, ничего не теряя
+ * (fb_t сдвигается только после записи в лист). Буфер пуст — выход сразу, без обращения к таблице и блокировке.
  * Режим включён, только если FAST_MODE = 1 И flushJob недавно работал (метка fb_hb в кэше, 15 минут): если триггер пропал,
  * витрина сама возвращается к прямой записи.
+ * Ёмкость: честная витрина — до 1500 пачек в минуту с запасом; очередь держит FB_MAX_PENDING пачек (~2,5 минуты потока на случай,
+ * когда flushJob отложен), за проход пишется FB_FLUSH_BATCHES пачек, за запуск — до FB_FLUSH_ROUNDS проходов.
  */
 var FB_TTL = 21600;           // срок жизни в кэше, максимум CacheService — 6 часов
-var FB_MAX_PENDING = 400;     // сколько пачек ждёт записи; больше — новые отбрасываются (счётчик потерь fb_lost)
+var FB_MAX_PENDING = 4000;    // сколько пачек ждёт записи; больше — новые отбрасываются (счётчик потерь fb_lost)
 var FB_MAX_BYTES = 90000;     // предел значения кэша — 100 КБ
-var FB_FLUSH_BATCHES = 150;   // пачек за один проход flushJob (блокировка скрипта держится недолго)
+var FB_FLUSH_BATCHES = 600;   // пачек за один проход flushJob (блокировка скрипта держится недолго)
+var FB_FLUSH_ROUNDS = 8;      // проходов за один запуск flushJob (до 4800 пачек; между проходами блокировка свободна)
+var FB_SLOTS = 200;           // запасных слотов на минуту (запись без блокировки)
+var FB_SLOT_LOOKBACK = 30;    // сколько прошедших минут flushJob ещё смотрит в слотах
+var FB_GET_CHUNK = 100;       // ключей за один cache.getAll
 var FB_HEARTBEAT_SEC = 900;
 
 function fastMode_() {
@@ -117,29 +134,103 @@ function fbLost_(n) {
   } catch (err) { /* счётчик не важнее ответа */ }
 }
 
-/** Кладёт пачку { e: [строки событий], c: отметка клиента } в буфер. true — принято; false — отброшено (потери посчитаны). */
-function bufferPush_(batch) {
-  var lock = null, got = false;
+/**
+ * Короткая блокировка для счётчиков (события, отметки, ошибки, лимиты). DocumentLock → если он null, занят или бросил исключение —
+ * ScriptLock с коротким tryLock. Возвращает взятую блокировку или null (тогда вызывающий пишет в запасные слоты или отказывает).
+ */
+function counterLock_(docMs, scriptMs) {
+  var lock = null;
+  try { lock = LockService.getDocumentLock(); } catch (err) { lock = null; }
+  if (lock) {
+    try { if (lock.tryLock(docMs || 500)) return lock; } catch (err2) { /* пробуем блокировку скрипта */ }
+  }
   try {
-    var json = JSON.stringify(batch);
-    if (json.length > FB_MAX_BYTES) { fbLost_(1); return false; }
+    var sl = LockService.getScriptLock();
+    if (sl && sl.tryLock(scriptMs || 300)) return sl;
+  } catch (err3) { /* блокировок нет */ }
+  return null;
+}
+
+function unlock_(lock) {
+  if (lock) { try { lock.releaseLock(); } catch (err) { /* уже снята */ } }
+}
+
+/** cache.getAll порциями по FB_GET_CHUNK ключей. */
+function cacheGetAll_(cache, keys) {
+  var out = {};
+  for (var i = 0; i < keys.length; i += FB_GET_CHUNK) {
+    var part = cache.getAll(keys.slice(i, i + FB_GET_CHUNK));
+    Object.keys(part).forEach(function (k) { out[k] = part[k]; });
+  }
+  return out;
+}
+
+function minuteNo_() { return Math.floor(Date.now() / 60000); }
+
+/** Запасной слот без блокировки: ключ <prefix><минута>_<случайный номер>. Занят — потеря (считается). */
+function slotPut_(prefix, json) {
+  try {
     var cache = CacheService.getScriptCache();
-    lock = LockService.getDocumentLock();
-    got = lock.tryLock(500);
-    if (!got) { fbLost_(1); return false; }
-    var both = cache.getAll(['fb_n', 'fb_t']);
-    var t = parseInt(both.fb_t, 10) || 0;
-    var n = Math.max(parseInt(both.fb_n, 10) || 0, t);
-    if (n - t >= FB_MAX_PENDING) { fbLost_(1); return false; }
-    n++;
-    cache.put('fb_' + n, json, FB_TTL); // сначала данные, потом счётчик
-    cache.put('fb_n', String(n), FB_TTL);
+    var m = minuteNo_();
+    var key = prefix + m + '_' + Math.floor(Math.random() * FB_SLOTS);
+    if (cache.get(key) !== null) { fbLost_(1); return false; } // столкновение слотов
+    cache.put(key, json, FB_TTL);
+    cache.put(prefix + 'm_' + m, '1', FB_TTL); // отметка «в этой минуте есть слоты»
     return true;
   } catch (err) {
     fbLost_(1);
     return false;
+  }
+}
+
+/** Минуты from…to, в которых есть слоты prefix (по отметкам). */
+function slotMinutes_(cache, prefix, from, to) {
+  if (to < from) return [];
+  var keys = [], mins = [];
+  for (var m = from; m <= to; m++) keys.push(prefix + 'm_' + m);
+  var got = cacheGetAll_(cache, keys);
+  for (var m2 = from; m2 <= to; m2++) if (got[prefix + 'm_' + m2]) mins.push(m2);
+  return mins;
+}
+
+/** Все слоты этих минут одним проходом: { keys: [все возможные ключи], vals: { ключ: строка } }. */
+function slotRead_(cache, prefix, mins) {
+  var keys = [];
+  mins.forEach(function (m) { for (var i = 0; i < FB_SLOTS; i++) keys.push(prefix + m + '_' + i); });
+  return { keys: keys, vals: cacheGetAll_(cache, keys) };
+}
+
+/** Кладёт пачку { e: [строки событий], c: отметка клиента } в буфер. true — принято; false — отброшено (потери посчитаны). */
+function bufferPush_(batch) {
+  var json;
+  try {
+    json = JSON.stringify(batch);
+  } catch (err0) { fbLost_(1); return false; }
+  if (json.length > FB_MAX_BYTES) { fbLost_(1); return false; }
+  var cache;
+  try { cache = CacheService.getScriptCache(); } catch (err1) { return false; }
+  var lock = counterLock_(500, 300);
+  if (!lock) return slotPut_('fs_', json); // ни одной блокировки: запасные слоты
+  var n = 0;
+  try {
+    var both = cache.getAll(['fb_n', 'fb_t']);
+    var t = parseInt(both.fb_t, 10) || 0;
+    n = Math.max(parseInt(both.fb_n, 10) || 0, t);
+    if (n - t >= FB_MAX_PENDING) { fbLost_(1); return false; }
+    n++;
+    cache.put('fb_n', String(n), FB_TTL); // под блокировкой только номер
+  } catch (err) {
+    fbLost_(1);
+    return false;
   } finally {
-    if (got) { try { lock.releaseLock(); } catch (err2) { /* уже снята */ } }
+    unlock_(lock);
+  }
+  try {
+    cache.put('fb_' + n, json, FB_TTL); // данные — уже вне блокировки; flushJob ждёт номер без данных один цикл
+    return true;
+  } catch (err2) {
+    fbLost_(1);
+    return false;
   }
 }
 
@@ -160,7 +251,7 @@ function touchPrep_(user, lang, sure, src) {
   var uid = String(user && user.id !== undefined && user.id !== null ? user.id : '').trim();
   if (!/^\d+$/.test(uid)) return null; // только личные чаты
   var cache = CacheService.getScriptCache();
-  src = srcLabel_(src, null); // источник — только проверенная метка; пишется один раз (первый), не перезаписывается
+  src = srcLabel_(src, null, true); // источник — только проверенная метка из src_list; пишется один раз (первый), не перезаписывается
   if (src && cache.get('cls_' + uid)) src = ''; // источник этому человеку уже записывали недавно
   if (!sure && !src && cache.get('cl_' + uid)) return null;
   cache.put('cl_' + uid, '1', CLIENT_TOUCH_SEC);
@@ -228,38 +319,58 @@ function applyClientTouches_(touches) {
 }
 
 /**
- * Один проход записи буфера. lockMs — сколько ждать блокировку скрипта (tryLock). Возвращает { deferred, batches, events, clients, more }.
+ * Один проход записи буфера. lockMs — сколько ждать блокировку скрипта (tryLock). Возвращает { deferred, batches, events, clients, more, gap }.
  * deferred: блокировка занята — ничего не записано и не потеряно, следующий запуск продолжит.
+ * Буфер пуст (ни пачек, ни слотов) — возврат сразу: ни таблицы, ни блокировки.
  */
 function flushBuffer_(lockMs) {
-  var res = { deferred: false, batches: 0, events: 0, clients: 0, more: false, error: false };
+  var res = { deferred: false, batches: 0, events: 0, clients: 0, more: false, error: false, gap: false };
   var cache = CacheService.getScriptCache();
-  var peek = cache.getAll(['fb_n', 'fb_t']);
-  if (!((parseInt(peek.fb_n, 10) || 0) > (parseInt(peek.fb_t, 10) || 0))) return res;
+  var cur = minuteNo_();
+  var peek = cache.getAll(['fb_n', 'fb_t', 'fs_done']);
+  var slotFrom = Math.max((parseInt(peek.fs_done, 10) || 0) + 1, cur - FB_SLOT_LOOKBACK), slotTo = cur - 1; // текущую минуту дочитаем в следующий раз
+  var hasMain = (parseInt(peek.fb_n, 10) || 0) > (parseInt(peek.fb_t, 10) || 0);
+  var slotMins = slotMinutes_(cache, 'fs_', slotFrom, slotTo);
+  if (!hasMain && !slotMins.length) return res;
   var lock = LockService.getScriptLock();
   var got = false;
   try { got = lock.tryLock(lockMs); } catch (err) { got = false; }
   if (!got) { res.deferred = true; return res; }
   try {
-    var both = cache.getAll(['fb_n', 'fb_t']);
+    var both = cache.getAll(['fb_n', 'fb_t', 'fb_gap']);
     var n = parseInt(both.fb_n, 10) || 0, t = parseInt(both.fb_t, 10) || 0;
-    if (n <= t) return res;
     var from = Math.max(t, n - FB_MAX_PENDING); // более старые уже не помещаются в очередь
     var to = Math.min(n, from + FB_FLUSH_BATCHES);
     var keys = [];
     for (var k = from + 1; k <= to; k++) keys.push('fb_' + k);
-    var got2 = cache.getAll(keys);
-    var events = [], touches = [], missing = 0;
-    keys.forEach(function (key) {
-      var raw = got2[key];
-      if (typeof raw !== 'string') { missing++; return; }
+    var got2 = keys.length ? cacheGetAll_(cache, keys) : {};
+    var events = [], touches = [], missing = n > t ? from - t : 0, gapAt = 0, dropKeys = [];
+    function take(raw) {
       try {
         var b = JSON.parse(raw);
         if (b && Array.isArray(b.e)) b.e.forEach(function (r) { events.push([new Date(Number(r[0]) || Date.now()), r[1], r[2], r[3], r[4], r[5]]); });
         if (b && b.c) touches.push(b.c);
         res.batches++;
       } catch (err) { missing++; }
-    });
+    }
+    var prevGap = String(both.fb_gap || '');
+    for (var i = 0; i < keys.length; i++) {
+      var raw = got2[keys[i]];
+      if (typeof raw !== 'string') {
+        // номер уже занят, а данных ещё нет: запрос не успел положить. Ждём один цикл, потом считаем потерянной.
+        if (String(from + 1 + i) === prevGap) { missing++; continue; }
+        gapAt = from + 1 + i;
+        break;
+      }
+      take(raw);
+      dropKeys.push(keys[i]);
+    }
+    var newT = gapAt ? gapAt - 1 : to;
+    var slotKeys = [];
+    if (slotMins.length) {
+      var sl = slotRead_(cache, 'fs_', slotMins);
+      sl.keys.forEach(function (key) { if (typeof sl.vals[key] === 'string') { take(sl.vals[key]); slotKeys.push(key); } });
+    }
     if (missing) fbLost_(missing);
     try {
       applyClientTouches_(touches); // сначала отметки (повтор безвреден), потом события
@@ -268,38 +379,45 @@ function flushBuffer_(lockMs) {
     } catch (err) {
       // Запись не удалась: fb_t не сдвигается, следующий запуск повторит. Пять неудач подряд — пачку отбрасываем, чтобы не застрять.
       var fails = (parseInt(cache.get('fb_fail'), 10) || 0) + 1;
-      console.error('flush: ' + (err && err.message || err));
+      console.error('flush: ' + safeErr_(err));
       res.error = true;
       if (fails < 5) { cache.put('fb_fail', String(fails), 3600); return res; }
       cache.remove('fb_fail');
-      fbLost_(keys.length);
+      fbLost_(dropKeys.length + slotKeys.length);
       res.batches = 0; events = []; touches = [];
     }
-    cache.put('fb_t', String(to), FB_TTL);
-    cache.removeAll(keys);
+    if (n > t) cache.put('fb_t', String(newT), FB_TTL);
+    if (gapAt) cache.put('fb_gap', String(gapAt), FB_TTL); else if (prevGap) cache.remove('fb_gap');
+    if (slotMins.length) cache.put('fs_done', String(slotTo), FB_TTL);
+    if (dropKeys.length || slotKeys.length) cacheRemoveAll_(cache, dropKeys.concat(slotKeys));
     res.events = events.length;
     res.clients = touches.length;
-    res.more = to < n;
+    res.gap = !!gapAt;
+    res.more = newT < n && !gapAt;
   } finally {
     lock.releaseLock();
   }
   return res;
 }
 
-/** Триггер раз в минуту (ставит пункт меню «Увімкнути швидкий режим»). Занята блокировка — отложить до следующего запуска. */
+function cacheRemoveAll_(cache, keys) {
+  for (var i = 0; i < keys.length; i += FB_GET_CHUNK) cache.removeAll(keys.slice(i, i + FB_GET_CHUNK));
+}
+
+/** Триггер раз в минуту (ставит пункт меню «Увімкнути швидкий режим»). Занята блокировка — отложить до следующего запуска. Пустой буфер — выход сразу. */
 function flushJob() {
   try {
     var cache = CacheService.getScriptCache();
     if (scriptProps_().getProperty('FAST_MODE') === '1') cache.put('fb_hb', '1', FB_HEARTBEAT_SEC);
     var started = Date.now();
-    for (var round = 0; round < 3; round++) {
+    for (var round = 0; round < FB_FLUSH_ROUNDS; round++) {
       var res = flushBuffer_(2000);
-      if (res.deferred || res.error || !res.more || Date.now() - started > 20000) break; // между проходами блокировка свободна: заказ пройдёт
+      if (res.deferred || res.error || !res.more || Date.now() - started > 25000) break; // между проходами блокировка свободна: заказ пройдёт
     }
     var lost = parseInt(cache.get('fb_lost'), 10) || 0;
     if (lost) { console.warn('flush: втрачено подій/відміток: ' + lost); cache.remove('fb_lost'); }
   } catch (err) {
-    console.error('flushJob: ' + (err && err.message || err));
+    console.error('flushJob: ' + safeErr_(err));
   }
 }
 
@@ -332,7 +450,7 @@ function menuFastOff() {
   stage9bDeleteTriggers_('flushJob');
   scriptProps_().setProperty('FAST_MODE', '0'); // новые события снова пишутся сразу
   var rounds = 0, res = null;
-  do { res = flushBuffer_(20000); rounds++; } while (res && !res.deferred && !res.error && res.more && rounds < 20); // сначала дописать буфер
+  do { res = flushBuffer_(20000); rounds++; } while (res && !res.deferred && !res.error && (res.more || (res.gap && rounds < 3)) && rounds < 20); // сначала дописать буфер
   var cache = CacheService.getScriptCache();
   var left = (parseInt(cache.get('fb_n'), 10) || 0) > (parseInt(cache.get('fb_t'), 10) || 0);
   stage9bAlert_(left
@@ -351,12 +469,9 @@ function backupFolder_() {
   var props = scriptProps_();
   var id = props.getProperty('BACKUP_FOLDER_ID');
   var folder = null;
+  // Папка — ТОЛЬКО по сохранённому id (по имени не ищем никогда: посторонняя папка с таким именем не должна получить копии таблицы).
   if (id) {
-    try { folder = DriveApp.getFolderById(id); if (folder.isTrashed && folder.isTrashed()) folder = null; } catch (err) { folder = null; }
-  }
-  if (!folder) {
-    var it = DriveApp.getFoldersByName(BACKUP_FOLDER_NAME);
-    while (it.hasNext()) { var f = it.next(); if (!(f.isTrashed && f.isTrashed())) { folder = f; break; } }
+    try { folder = DriveApp.getFolderById(id); if (!folder || (folder.isTrashed && folder.isTrashed())) folder = null; } catch (err) { folder = null; }
   }
   if (!folder) folder = DriveApp.createFolder(BACKUP_FOLDER_NAME);
   if (folder.getId() !== id) props.setProperty('BACKUP_FOLDER_ID', folder.getId());
@@ -395,7 +510,7 @@ function backupJob() {
     console.log('backup: ' + r.name + ', у кошик: ' + r.trashed);
     return { ok: true };
   } catch (err) {
-    console.error('backup: ' + (err && err.message || err));
+    console.error('backup: ' + safeErr_(err));
     try {
       var props = scriptProps_();
       var token = props.getProperty('BOT_TOKEN');
@@ -419,7 +534,7 @@ function menuBackupNow() {
     stage9bAlert_('Копію створено: ' + r.name + '\nПапка на Google Диску: «' + BACKUP_FOLDER_NAME + '». Зберігається останніх ' + BACKUP_KEEP + ' копій, старіші йдуть у кошик Диска.\nКопия создана, хранятся последние ' + BACKUP_KEEP + '.');
     return { ok: true, name: r.name };
   } catch (err) {
-    console.error('backup: ' + (err && err.message || err));
+    console.error('backup: ' + safeErr_(err));
     stage9bAlert_('Не вдалося зробити копію. Спробуйте ще раз; якщо повториться — перевірте доступ скрипта до Google Диска.\nНе удалось сделать копию.');
     return { ok: false };
   }
@@ -441,22 +556,57 @@ function menuBackupOff() {
 /* ------------------------- б7.7: ошибки витрины ------------------------- */
 
 var ERR_PER_DID_HOUR = 5;
-var ERR_TOTAL_HOUR = 300;
+var ERR_TOTAL_HOUR = 300;     // общий счётчик: выше него повторы уже известных текстов не растут
+var ERR_DISTINCT_HOUR = 40;   // разных текстов в час: новые сверх этого молча отбрасываются
+var ERR_TEXT_MAX = 80;
+var ERR_SUMMARY_TOP = 5;
+var ERR_SLOT_LOOKBACK = 65;   // минут слотов, которые читает часовая сводка
 
-/** Чистка текста ошибки: ничего, похожего на телефон, initData, адрес с параметрами или почту, не остаётся. */
+/**
+ * Чистка текста ошибки. Любые адреса (http/https/www, домены слово.зона, t.me), @имена, телефоны, почта, initData и параметры
+ * вырезаются; остаются только буквы, цифры, пробел и базовая пунктуация. Чужая ссылка в сводку админу попасть не может.
+ */
 function errScrub_(v, max) {
   var s = clean_(v, 2000);
-  s = s.replace(/[?#]\S*/g, ' '); // адрес с параметрами или якорем: всё после ? и # отрезается (первым, чтобы не терять сам адрес)
+  s = s.replace(/\b(?:https?|ftp):\/\/\S*/gi, ' ');
+  s = s.replace(/\bwww\.\S*/gi, ' ');
+  s = s.replace(/\bt\.me\S*/gi, ' ');
+  s = s.replace(/[?#]\S*/g, ' '); // остаток с параметрами или якорем
   s = s.replace(/\S*(?:initData|tgWebAppData)\S*/gi, ' ');
   s = s.replace(/\b(?:hash|user|query_id|auth_date|signature|start_param)(?:=|%3D)\S*/gi, ' ');
   s = s.replace(/\S+@\S+\.\S+/g, ' ');
+  s = s.replace(/@\w+/g, ' '); // @имена
+  s = s.replace(/(?:[\p{L}\p{N}_-]+\.)+[\p{L}]{2,24}(?![\p{L}\p{N}_])\S*/gu, ' '); // домены слово.зона и всё после них (путь)
+  s = s.replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b\S*/g, ' '); // IP-адреса
   s = s.replace(/\+?\d[\d\s().\-]{5,}\d/g, function (m) { return m.replace(/\D/g, '').length >= 7 ? ' ' : m; });
+  s = s.replace(/[^\p{L}\p{N} .,:;!?()'"\-]+/gu, ' '); // только буквы, цифры, пробел и базовая пунктуация
   return s.replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+/** Добавляет одну запись в буфер ошибок: тот же текст — одна запись со счётчиком. */
+function errBufAdd_(buf, x) {
+  var key = x.s + '\u0001' + x.v + '\u0001' + x.m;
+  if (buf.m[key] !== undefined) { // повтор: не расходует потолок разных текстов, общий счётчик растёт до ERR_TOTAL_HOUR
+    if (buf.n < ERR_TOTAL_HOUR) { buf.m[key]++; buf.n++; }
+    return;
+  }
+  if (Object.keys(buf.m).length >= ERR_DISTINCT_HOUR) return; // разных текстов слишком много
+  buf.m[key] = 1;
+  buf.n++;
+}
+
+function errBufParse_(raw) {
+  var buf = {};
+  try { buf = JSON.parse(raw || '{}') || {}; } catch (err) { buf = {}; }
+  buf.n = Number(buf.n) || 0;
+  buf.m = buf.m && typeof buf.m === 'object' ? buf.m : {};
+  return buf;
+}
+
 /**
- * action: 'err' — { did, items: [{ m, s, v }] }. initData не нужен и не читается. Сохраняются только текст (≤200), экран (≤24), версия (≤12).
- * ≤5 записей в час с одного did, ≤300 в час всего; сверх — молча ok. Копится в кэше, в лист ничего не пишется.
+ * action: 'err' — { did, items: [{ m, s, v }] }. initData не нужен и не читается. Сохраняются только текст (≤80), экран (≤24), версия (≤12).
+ * ≤5 записей в час с одного did; один и тот же текст — одна запись со счётчиком; разных текстов ≤40 в час; сверх — молча ok.
+ * Копится в кэше, в лист ничего не пишется. Нет блокировок — запасные слоты (fx_), сводка их дочитает.
  */
 function handleErr_(body) {
   var did = String(body && body.did || '');
@@ -467,34 +617,25 @@ function handleErr_(body) {
   var items = [];
   body.items.slice(0, ERR_PER_DID_HOUR).forEach(function (it) {
     if (used + items.length >= ERR_PER_DID_HOUR) return;
-    var m = errScrub_(it && it.m, 200);
+    var m = errScrub_(it && it.m, ERR_TEXT_MAX);
     if (!m) return;
-    items.push({ m: m, s: String((it && it.s) || '').replace(/[^\w.:\-]/g, '').slice(0, 24), v: String((it && it.v) || '').replace(/[^\w.\-]/g, '').slice(0, 12) });
+    var v = String((it && it.v) || '').replace(/[^0-9A-Za-z.\-]/g, '').slice(0, 12);
+    if (!/^v?\d[\w.\-]*$/i.test(v)) v = ''; // версия похожа на версию, а не на адрес
+    items.push({ m: m, s: String((it && it.s) || '').replace(/[^\w:\-]/g, '').slice(0, 24), v: v });
   });
   if (!items.length) return { ok: true };
   cache.put(dKey, String(used + items.length), 3600);
-  var lock = null, got = false;
+  var lock = counterLock_(500, 300);
+  if (!lock) { slotPut_('fx_', JSON.stringify(items)); return { ok: true }; }
   try {
-    lock = LockService.getDocumentLock();
-    got = lock.tryLock(500);
-    if (got) {
-      var buf = {};
-      try { buf = JSON.parse(cache.get('er_buf') || '{}') || {}; } catch (err) { buf = {}; }
-      buf.n = Number(buf.n) || 0;
-      buf.m = buf.m && typeof buf.m === 'object' ? buf.m : {};
-      items.forEach(function (x) {
-        if (buf.n >= ERR_TOTAL_HOUR) return;
-        var key = x.s + '\u0001' + x.v + '\u0001' + x.m;
-        buf.m[key] = (buf.m[key] || 0) + 1;
-        buf.n++;
-      });
-      var json = JSON.stringify(buf);
-      if (json.length <= FB_MAX_BYTES) cache.put('er_buf', json, FB_TTL);
-    }
+    var buf = errBufParse_(cache.get('er_buf'));
+    items.forEach(function (x) { errBufAdd_(buf, x); });
+    var json = JSON.stringify(buf);
+    if (json.length <= FB_MAX_BYTES) cache.put('er_buf', json, FB_TTL);
   } catch (err2) {
     console.warn('err: буфер недоступний');
   } finally {
-    if (got) { try { lock.releaseLock(); } catch (err3) { /* уже снята */ } }
+    unlock_(lock);
   }
   return { ok: true };
 }
@@ -502,28 +643,40 @@ function handleErr_(body) {
 /** Раз в час (из hourlyJob): одна сводка получателям заказов, если ошибки были; буфер очищается. В лист ничего не пишется. */
 function errorsJob() {
   var cache = CacheService.getScriptCache();
-  var lock = null, got = false, buf = null;
+  var cur = minuteNo_();
+  var slotMins = slotMinutes_(cache, 'fx_', cur - ERR_SLOT_LOOKBACK, cur);
+  if (!cache.get('er_buf') && !slotMins.length) return { sent: 0 };
+  var lock = counterLock_(1000, 1000);
+  if (!lock) return { sent: 0, deferred: true }; // следующий час
+  var buf = null;
   try {
-    if (!cache.get('er_buf')) return { sent: 0 };
-    lock = LockService.getDocumentLock();
-    got = lock.tryLock(1000);
-    if (!got) return { sent: 0, deferred: true }; // следующий час
-    try { buf = JSON.parse(cache.get('er_buf') || 'null'); } catch (err) { buf = null; }
+    buf = errBufParse_(cache.get('er_buf'));
     cache.remove('er_buf');
+    if (slotMins.length) { // ошибки, записанные без блокировки: сливаем в общую сводку
+      var sl = slotRead_(cache, 'fx_', slotMins);
+      sl.keys.forEach(function (key) {
+        if (typeof sl.vals[key] !== 'string') return;
+        try { (JSON.parse(sl.vals[key]) || []).forEach(function (x) { if (x && x.m) errBufAdd_(buf, { m: String(x.m).slice(0, ERR_TEXT_MAX), s: String(x.s || ''), v: String(x.v || '') }); }); } catch (e) { /* испорченный слот */ }
+      });
+      cacheRemoveAll_(cache, sl.keys.filter(function (key) { return typeof sl.vals[key] === 'string'; }));
+      cacheRemoveAll_(cache, slotMins.map(function (m) { return 'fx_m_' + m; }));
+    }
   } finally {
-    if (got) { try { lock.releaseLock(); } catch (err2) { /* уже снята */ } }
+    unlock_(lock);
   }
   if (!buf || !(buf.n > 0)) return { sent: 0 };
   var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   var ids = orderNotifyIds_(props);
   if (!token || !ids.length) return { sent: 0 };
-  var top = Object.keys(buf.m || {}).map(function (k) { return { k: k, c: buf.m[k] }; })
-    .sort(function (a, b) { return (b.c - a.c) || (a.k < b.k ? -1 : 1); }).slice(0, 5);
+  var all = Object.keys(buf.m || {}).map(function (k) { return { k: k, c: buf.m[k] }; })
+    .sort(function (a, b) { return (b.c - a.c) || (a.k < b.k ? -1 : 1); });
+  var top = all.slice(0, ERR_SUMMARY_TOP);
   var lines = top.map(function (x) {
     var p = x.k.split('\u0001');
     return '• ' + escHtml_(p[2]) + ' (екран: ' + escHtml_(p[0] || '—') + ', версія: ' + escHtml_(p[1] || '—') + ') × ' + x.c;
   });
+  if (all.length > top.length) lines.push('ще ' + (all.length - top.length) + ' інших / еще ' + (all.length - top.length) + ' других');
   var text = 'Помилки у магазині: ' + buf.n + (lines.length ? '\n' + lines.join('\n') : '');
   ids.forEach(function (id) { tg_(token, 'sendMessage', { chat_id: id, text: text, parse_mode: 'HTML', disable_web_page_preview: true }); });
   return { sent: ids.length, n: buf.n };

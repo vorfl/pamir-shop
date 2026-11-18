@@ -83,6 +83,32 @@ async function scenario(title, opt) {
   return res;
 }
 
+// «300 посетителей по 6 пачек за 2 минуты»: посетители приходят равномерно за 120 с, первая пачка через 8 с, потом каждые 20 с.
+// По одному событию на пачку (первая — open). Время виртуальное: flushJob запускается на границах виртуальных минут. Проверяем: потерь нет.
+function burst(title, opt) {
+  const g = createGas(CODE, seed());
+  g.call('menuFastOn');
+  if (opt.docNull) g.setDocLockNull(true);
+  const V = 300, B = 6;
+  const reqs = [];
+  for (let i = 0; i < V; i++) for (let k = 0; k < B; k++) reqs.push({ at: (i * 120000 / V) + 8000 + k * 20000, uid: 20000 + i, k });
+  reqs.sort((a, b) => a.at - b.at);
+  let nextFlush = 60000, fail = 0, maxPending = 0;
+  for (const r of reqs) {
+    while (r.at >= nextFlush) { g.advance(60000); g.call('flushJob'); nextFlush += 60000; }
+    const u = U(r.uid);
+    const ev = r.k === 0 ? { e: 'open', t: Date.now() } : { e: 'view', id: 'DRY-039', t: Date.now() };
+    const out = g.post({ action: 'ev', initData: g.initData(u), sid: 's' + r.uid, events: [ev] });
+    if (!out.ok || out.n !== 1) fail++;
+    maxPending = Math.max(maxPending, (Number(g.cache.fb_n) || 0) - (Number(g.cache.fb_t) || 0));
+  }
+  let guard = 0;
+  do { g.advance(60000); g.call('flushJob'); } while (++guard < 5 && ((Number(g.cache.fb_n) || 0) > (Number(g.cache.fb_t) || 0)));
+  const events = g.sheets['Події'] ? g.sheets['Події'].rows.length - 1 : 0;
+  const clients = g.sheets['Клієнти'] ? g.sheets['Клієнти'].rows.length - 1 : 0;
+  return { title, requests: reqs.length, events, clients, wantClients: V, fail, maxPending, lost: Number(g.cache.fb_lost || 0) };
+}
+
 function print(r) {
   const f = x => x.toFixed(2);
   console.log('\n== ' + r.title);
@@ -102,10 +128,14 @@ function print(r) {
   results.push(await scenario('Как раньше, блокировка скрипта занята 5 с', { fast: false, busy: 5000 }));
   results.push(await scenario('Быстрый режим, блокировка скрипта занята 5 с', { fast: true, busy: 5000 }));
   results.forEach(print);
+  const bursts = [burst('300 посетителей по 6 пачек за 2 минуты (быстрый режим)', {}), burst('то же, DocumentLock = null', { docNull: true })];
+  bursts.forEach(b => console.log('\n== ' + b.title + '\n  запросов: ' + b.requests + '; событий в листе: ' + b.events + ' из ' + b.requests + '; клиентов: ' + b.clients + ' из ' + b.wantClients + '; отказов в ответе: ' + b.fail + '; пик очереди: ' + b.maxPending + '; потеряно: ' + b.lost));
+  const burstBad = bursts.filter(b => b.events !== b.requests || b.clients !== b.wantClients || b.fail || b.lost);
   const bad = results.filter(r => r.okOrders !== ORDERS || r.orderRows !== ORDERS + (r.retries ? 0 : 0) || r.dupNumbers || r.retryDup || r.lostEvents || r.openFail);
   const fastBusy = results[3], slowBusy = results[2];
   const gain = fastBusy.waitOpenAvg < slowBusy.waitOpenAvg;
   console.log('\nИтог: ' + (bad.length ? 'ЕСТЬ ПОТЕРИ ИЛИ ДУБЛИ в сценариях: ' + bad.map(b => b.title).join('; ') : 'заказы и события не потеряны, дублей нет') +
     '; при занятой блокировке открытие не ждёт в быстром режиме: ' + (gain ? 'да' : 'нет'));
-  process.exit(bad.length || !gain ? 1 : 0);
+  console.log('Пачки 300×6: ' + (burstBad.length ? 'ЕСТЬ ПОТЕРИ: ' + burstBad.map(b => b.title).join('; ') : 'потерь нет'));
+  process.exit(bad.length || !gain || burstBad.length ? 1 : 0);
 })();

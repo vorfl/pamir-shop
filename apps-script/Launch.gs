@@ -145,7 +145,7 @@ function launchLog_(rows) {
     launchRoom_(sheet, sheet.getLastRow() + out.length, LOG_HEAD.length);
     sheet.getRange(sheet.getLastRow() + 1, 1, out.length, LOG_HEAD.length).setValues(out);
   } catch (err) {
-    console.error('launch log: ' + (err && err.stack || err));
+    console.error('launch log: ' + safeErr_(err, true));
   }
 }
 
@@ -715,7 +715,7 @@ function launchApply_(opts) {
     whMapMemo_ = null; settingsMemo_ = null; pointsMemo_ = null;
     lock.releaseLock();
     // «Статистика» пересчитывается уже после снятия блокировки: salesStats_ сама берёт и отпускает блокировку скрипта.
-    if (doneAll) { try { salesStats_(true); } catch (err) { console.error('launch stats: ' + (err && err.stack || err)); } }
+    if (doneAll) { try { salesStats_(true); } catch (err) { console.error('launch stats: ' + safeErr_(err, true)); } }
   }
 }
 
