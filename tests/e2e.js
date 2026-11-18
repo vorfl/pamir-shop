@@ -66,8 +66,8 @@ const smallTargets = page => page.evaluate(() => {
 
     ok(await count(page, '.card') === 20, 'первая страница каталога: 20 карточек', await count(page, '.card'));
     ok(await count(page, '.feature') === 1 && /Наша курага/.test(await text(page, '.feature__title')), 'блок «Наша курага» наверху');
-    ok(await count(page, '.perk') === 2, 'подарок от суммы и подарок постоянным клиентам показаны на главной');
-    const rails = await page.locator('.main .rail__title').allInnerTexts();
+    ok(await count(page, '.plus__item[data-k="gift"], .plus__item[data-k="loyal"]') === 2 && /Подарунок від 500\s₴/.test(await text(page, '#homeGift')) && /Постійним клієнтам/.test(await text(page, '.plus__item[data-k="loyal"]')), 'подарок от суммы и подарок постоянным клиентам показаны в строке «плюсов» на главной', await page.locator('.plus__item').allInnerTexts());
+    const rails = (await page.locator('.main .rail__title').allInnerTexts()).concat(await page.locator('.morerails .chip').allInnerTexts()); // лишние ленты — чипы «Ще»
     ok(rails.includes('Популярне') && rails.includes('Акції') && rails.includes('Новинки') && rails.includes('Набори'), 'подборки на главной', rails);
     ok(await page.locator('.main .rail').first().locator('.mini').first().getAttribute('data-id') === 'DRY-039', '«Популярне» начинается с самого заказываемого товара');
     ok(await noOverflow(page), 'нет горизонтальной прокрутки страницы на 360 px');
@@ -240,7 +240,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(/Профиль/.test(await text(page, '.page__title')) && /Корзина/.test(await text(page, '.tabbar [data-go="cart"]')), 'переключение языка в профиле: интерфейс на русском');
     await page.click('.tabbar [data-go="catalog"]');
     await page.waitForSelector('.main .rail');
-    const ruRails = await page.locator('.main .rail__title').allInnerTexts();
+    const ruRails = (await page.locator('.main .rail__title').allInnerTexts()).concat(await page.locator('.morerails .chip').allInnerTexts()); // не поместившиеся в три — чипы «Ещё»
     ok(ruRails.includes('Купить снова') && ruRails.includes('Вы смотрели'), 'на главной появились «Купить снова» и «Вы смотрели»', ruRails);
     await page.screenshot({ path: OUT + '/18-home-ru.png' });
 
@@ -389,6 +389,7 @@ const smallTargets = page => page.evaluate(() => {
     const st = await start(8814, oldCode, s => { s.props.ALLOW_TEST_ORDERS = '1'; });
     const { page, errors } = await open(browser, st.url, { uid: 0, query: '?debug=1' });
     ok(await count(page, '.card') === 20 && /Тестовий режим/.test(await text(page, '#banner')), 'каталог со старого бэкенда загружается');
+    ok(await count(page, '.main > .rail:not(.recs)') <= 3 && await noOverflow(page), 'старый бэкенд (нет railsMax): на главной не больше трёх лент', await count(page, '.main > .rail:not(.recs)'));
     await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
     await page.click('[data-action="add"]');
     await page.click('#toastBtn');
@@ -451,10 +452,17 @@ const smallTargets = page => page.evaluate(() => {
     // 1.6 «Ваше звичне» и шкала до подарка
     await page.waitForSelector('.usual');
     ok(/Ваше звичне/.test(await text(page, '.usual')) && /Додати все · 380/.test(await text(page, '.usual .btn')) && await page.locator('.usual .mini').getAttribute('data-id') === 'DRY-039', '«Ваше звичне»: курага из двух заказов, 500 г × 2', await text(page, '.usual'));
-    ok(await count(page, '.homegift .perk') === 1, 'на главной условие подарка, пока корзина пустая');
+    ok(/Подарунок від 500\s₴/.test(await text(page, '#homeGift')), 'на главной условие подарка, пока корзина пустая');
+    await page.click('#homeGift');
+    await page.waitForSelector('#sheet .plus__text');
+    ok(/Подарунок до замовлення від 500\s₴: 100 г кураги/.test(await text(page, '#sheet')), 'нажатие на подарок открывает шторку с условием', await text(page, '#sheet'));
+    await page.click('#sheet .sheet__close');
     await page.click('.usual [data-w1="usual"]');
-    await page.waitForSelector('.homegift .prog');
-    ok(/Ще 120\s₴ до подарунка: 100 г кураги/.test(await text(page, '.homegift .prog')) && /380/.test(await text(page, '.tabbar [data-go="cart"]')), '«Додати все» кладёт привычное в корзину; на главной шкала до подарка', await text(page, '.homegift'));
+    await page.waitForFunction(() => /Ще 120/.test(document.getElementById('homeGift').textContent));
+    await page.click('#homeGift');
+    await page.waitForSelector('#sheet .prog');
+    ok(/Ще 120\s₴ до подарунка: 100 г кураги/.test(await text(page, '#sheet .prog')) && /Ще 120\s₴ до подарунка/.test(await text(page, '#homeGift')) && /380/.test(await text(page, '.tabbar [data-go="cart"]')), '«Додати все» кладёт привычное в корзину; на главной шкала до подарка (в строке и в шторке)', await text(page, '#sheet'));
+    await page.click('#sheet .sheet__close');
     ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'главная волны 1: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
     await page.screenshot({ path: OUT + '/40-w1-home.png', fullPage: true });
     await page.waitForTimeout(4500); // корзина уходит на сервер через 4 секунды покоя
@@ -1278,8 +1286,12 @@ const smallTargets = page => page.evaluate(() => {
 
     // обычный клиент: оптовых цен нет нигде, есть ссылка на форму
     const { page, errors } = await open(browser, st.url, { uid: 681 });
-    await page.waitForSelector('.bizline');
-    ok(/Оптові ціни — для бізнесу/.test(await text(page, '.bizline')), 'на главной строка «…Оптові ціни — для бізнесу»');
+    await page.waitForSelector('.plus__item[data-k="biz"]');
+    ok(/Оптові ціни/.test(await text(page, '.plus__item[data-k="biz"]')), 'на главной в строке «плюсов» плашка «Оптові ціни»');
+    await page.click('.plus__item[data-k="biz"]');
+    await page.waitForSelector('#sheet .btn[data-view="biz"]');
+    ok(/Працюємо з кафе, магазинами та офісами/.test(await text(page, '#sheet')), 'плашка «Оптові ціни» открывает шторку с кратким текстом и кнопкой перехода');
+    await page.click('#sheet .sheet__close');
     await page.waitForTimeout(1300); // запрос оптовых цен уже прошёл
     ok(n('wh.prices') === 1 && await page.evaluate(() => !/"w":|"wm":/.test(localStorage.getItem('pamir_catalog_v1') || '')), 'в каталоге на телефоне клиента оптовых цен нет');
     await page.locator('.main .mini[data-id="DRY-039"]').first().click();
@@ -1498,7 +1510,7 @@ const smallTargets = page => page.evaluate(() => {
     const g = st.gas;
     const { page, errors } = await open(browser, st.url, { uid: 700 });
     await page.waitForSelector('.recs');
-    ok(await count(page, '.recs__item') === 1 && /Узвар з кураги/.test(await text(page, '.recs')), 'на главной блок «Рецепти» только с показываемым рецептом');
+    ok(await count(page, '.recs .rcard') === 1 && /Узвар з кураги/.test(await text(page, '.recs')) && await count(page, '.recs .rcard__img img') === 1, 'на главной лента «Рецепти» только с показываемым рецептом (с фото рецепта)');
     ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'главная с рецептами: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(page));
     await page.locator('.main .mini[data-id="DRY-039"]').first().click();
     await page.waitForSelector('.sheet .how');
@@ -1571,9 +1583,11 @@ const smallTargets = page => page.evaluate(() => {
     };
     const st = await start(8826, undefined, tagged);
     const { page, errors } = await open(browser, st.url, { uid: 710 });
-    await page.waitForSelector('.bizline--quiz');
-    ok(/Підібрати смаколики/.test(await text(page, '.bizline--quiz')) && await noOverflow(page) && (await smallTargets(page)).length === 0, 'на главной кнопка «Підібрати смаколики»', await smallTargets(page));
-    await page.click('.bizline--quiz');
+    await page.waitForSelector('.plus__item[data-k="quiz"]');
+    ok(/Підібрати смаколики/.test(await text(page, '.plus__item[data-k="quiz"]')) && await noOverflow(page) && (await smallTargets(page)).length === 0, 'на главной плашка «Підібрати смаколики»', await smallTargets(page));
+    await page.click('.plus__item[data-k="quiz"]');
+    await page.waitForSelector('#sheet .btn[data-view="quiz"]');
+    await page.click('#sheet .btn[data-view="quiz"]');
     await page.waitForSelector('.quiz__opt');
     const opts = () => page.locator('.quiz__opt').allInnerTexts();
     ok(/Питання 1 з 3/.test(await text(page, '.quiz__step')) && (await opts()).join('|') === 'До чаю|Перекус|Подарунок|Байдуже', 'вопрос 1: только те варианты, для которых есть товары в наличии', await opts());
@@ -1609,7 +1623,7 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForSelector('#quizGrid .card');
     ok(await ids() === 'NUT-001,NUT-002', 'бюджет сравнивается с ценой самой маленькой фасовки', await ids());
     await page.evaluate(() => window.__tg.back.cb());
-    await page.waitForSelector('.bizline--quiz');
+    await page.waitForSelector('.plus__item[data-k="quiz"]');
     ok(await page.evaluate(() => document.body.getAttribute('data-view')) === 'catalog', '«Назад» Telegram возвращает из квиза в каталог');
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await page.context().close();
@@ -1623,7 +1637,7 @@ const smallTargets = page => page.evaluate(() => {
     const st2 = await start(8827, undefined, withPhotos);
     const e = await open(browser, st2.url, { uid: 712 });
     await e.page.waitForSelector('.card');
-    ok(await count(e.page, '.bizline--quiz') === 0 && await count(e.page, '.recs') === 0, 'без тегов квиза нет; без листа «Рецепти» блока рецептов нет');
+    ok(await count(e.page, '.plus__item[data-k="quiz"]') === 0 && await count(e.page, '.recs') === 0, 'без тегов квиза нет; без листа «Рецепти» блока рецептов нет');
     await e.page.context().close();
     const e2 = await open(browser, st2.url, { uid: 713, query: '?view=quiz' });
     await e2.page.waitForSelector('.page__title');
@@ -2105,6 +2119,203 @@ const smallTargets = page => page.evaluate(() => {
     await n.page.locator('[data-opt="pay-card"]').click();
     ok(/Переказ на картку/.test(await text(n.page, '[data-opt="pay-card"]')) && /після підтвердження замовлення/.test(await text(n.page, '#cardNote')) && !/ФОП/.test(await text(n.page, '#form')), 'без флага fop — прежнее название и подсказка');
     await n.page.context().close(); stN.server.close();
+  }
+
+  /* ---------------- 12. Выпуск Б, блок 1: главная без хаоса, рецепты лентой, лёгкие фото ---------------- */
+  console.log('Выпуск Б · блок 1: главная на 360 × 640, «всё включено»');
+  {
+    // Всё включено: «Наша курага», специи отца, подарок, подарок постоянным, теги для квиза, опт, два рецепта, ленты.
+    const full = s => {
+      withPhotos(s);
+      const rows = s.sheets['Товари'], head = rows[0], row = id => rows.find(r => r[0] === id);
+      s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис'], ['gift_from', '500', ''], ['gift_text_ua', '100 г кураги', ''], ['loyal_every', '3', ''], ['loyal_text_ua', 'чурчхела', ''],
+        ['feature_id', 'DRY-039', ''], ['father_ids', 'SPC-001, SPC-002, SPC-003', ''], ['father_text_ua', 'Мелемо самі', ''], ['min_order', '100', '']];
+      row('NUT-001')[head.indexOf('Опт: ціна')] = 500; row('NUT-001')[head.indexOf('Опт: мін. обсяг')] = '2 кг';
+      head.push('Теги'); rows.slice(1).forEach(r => r.push(''));
+      const tag = (id, v) => { row(id)[head.indexOf('Теги')] = v; };
+      tag('DRY-039', 'До чаю, солодке'); tag('SWT-001', 'до чаю, солодке, подарунок'); tag('NUT-001', 'перекус, солоне'); tag('NUT-002', 'перекус, солоне');
+      s.sheets['Рецепти'] = [['ID', 'Назва (UA)', 'Название (RU)', 'Фото', 'Текст (UA)', 'Текст (RU)', 'Товари', 'Показувати'],
+        ['REC-1', 'Узвар з кураги', 'Узвар из кураги', '', 'Промити.', 'Промыть.', 'DRY-039, NUT-008', 'так'],
+        ['REC-2', 'Плов з курагою', 'Плов с курагой', '', 'Текст', 'Текст', 'DRY-039', 'так']];
+    };
+    // railsMax приходит из каталога (его добавляет новый бэкенд); в стенде подменяем ответ каталога. undefined — поля нет, как у старого бэкенда.
+    const withMax = v => async page => {
+      await page.route(/\/api\?.*action=catalog/, async route => {
+        const res = await route.fetch(); const j = await res.json();
+        if (v === undefined) delete j.shop.railsMax; else j.shop.railsMax = v;
+        await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(j) });
+      });
+    };
+    const metrics = page => page.evaluate(() => {
+      const top = n => Math.round(n.getBoundingClientRect().top + window.scrollY), hgt = n => Math.round(n.getBoundingClientRect().height);
+      const q = sel => document.querySelector(sel), rails = [].slice.call(document.querySelectorAll('.main > .rail:not(.recs)'));
+      return { above: top(document.getElementById('gridHead')), firstRail: rails.length ? top(rails[0]) : -1, rails: rails.length,
+        titles: rails.map(r => r.querySelector('.rail__title').textContent), railH: rails.length ? hgt(rails[0]) : 0,
+        plusH: q('.plus') ? hgt(q('.plus')) : 0, recsH: q('.recs') ? hgt(q('.recs')) : 0, chips: [].map.call(document.querySelectorAll('.morerails .chip'), c => c.textContent) };
+    });
+    const st = await start(8850, undefined, full);
+    const A = await open(browser, st.url, { uid: 501, w: 360, h: 640, before: withMax(undefined) });
+    const pg = A.page;
+    await pg.waitForSelector('#grid .card');
+    const m = await metrics(pg);
+    const n0 = m.rails + m.chips.length; // всего непустых лент в этом стенде
+    ok(m.above < 2232, 'высота всего над «Усі товари» меньше прежних 2232 px (было 2232 → стало ' + m.above + ')', m.above);
+    ok(m.firstRail > 0 && m.firstRail <= 960, 'первая лента товаров начинается в пределах 1,5 экрана (≤ 960 px): ' + m.firstRail, m.firstRail);
+    ok(m.plusH > 0 && m.plusH <= 72, 'высота строки «плюсов» не больше 72 px: ' + m.plusH, m.plusH);
+    ok(m.rails === 3 && n0 > 3 && m.chips.length === n0 - 3, 'лент на главной ровно 3 (по умолчанию, без railsMax), остальные непустые — в строке «Ще»: ' + m.titles.join(', ') + ' / ' + m.chips.join(', '), m);
+    ok(m.titles[0] === 'Популярне' && m.titles[1] === 'Набори', 'приоритет лент: «Популярне», затем «Набори»', m.titles);
+    ok(await count(pg, '.morerails .morerails__label') === 1 && /^Ще:/.test(await text(pg, '.morerails')) && await count(pg, '.main > .rail:not(.recs) .mini') > 0, 'строка чипов начинается с «Ще:»; пустых лент нет', await text(pg, '.morerails'));
+    ok(await pg.evaluate(() => { const o = [ '.feature', '.father', '.plus', '.main > .rail:not(.recs)', '.recs', '#gridHead' ].map(s => document.querySelector(s));
+      return o.every(Boolean) && o.every((n, i) => i === 0 || (o[i - 1].compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) > 0); }), 'порядок: «Наша курага» → специи отца → «плюсы» → ленты → рецепты → «Усі товари»');
+    ok(await count(pg, '.plus__item') === 4 && await count(pg, '.perks, .perk, .bizline') === 0, 'в строке четыре плашки: подарок, подарок постоянным, подбор, опт; старых плашек нет', await pg.locator('.plus__item').allInnerTexts());
+    const look = await pg.evaluate(() => { const its = [].slice.call(document.querySelectorAll('.plus__item')), cs = its.map(i => getComputedStyle(i));
+      return { same: cs.every(c => c.backgroundColor === cs[0].backgroundColor && c.borderTopColor === cs[0].borderTopColor && c.color === cs[0].color),
+        accent: its.every(i => getComputedStyle(i.querySelector('.ico')).color !== getComputedStyle(i).color), min: Math.min.apply(null, its.map(i => i.getBoundingClientRect().height)) }; });
+    ok(look.same && look.accent && look.min >= 44, 'плашки одного стиля: одна поверхность и линия, акцентный цвет только у иконки, высота ≥ 44 px', look);
+    ok(await noOverflow(pg) && (await smallTargets(pg)).length === 0, 'главная: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(pg));
+    ok(m.recsH > 0 && m.recsH <= m.railH, 'блок «Рецепти» не выше одной ленты карточек: ' + m.recsH + ' ≤ ' + m.railH, [m.recsH, m.railH]);
+    ok(await count(pg, '.recs .rcard') === 2 && await count(pg, '.recs .rcard__img .ico') === 2 && await count(pg, '.recs__item') === 0, 'рецепты — горизонтальная лента карточек (без фото — иконка)');
+    await pg.screenshot({ path: OUT + '/104-b1-home-light-uk.png' });
+    await pg.screenshot({ path: OUT + '/105-b1-home-light-uk-full.png', fullPage: true });
+
+    // подробности плашек — в шторке
+    await pg.click('.plus__item[data-k="gift"]');
+    await pg.waitForSelector('#sheet .plus__text');
+    ok(/Подарунок до замовлення від 500\s₴: 100 г кураги/.test(await text(pg, '#sheet')) && await pg.evaluate(() => !document.getElementById('sheet').hidden), 'плашка подарка: шторка с условием', await text(pg, '#sheet'));
+    await pg.waitForTimeout(500); // дать закончиться анимации
+    await pg.screenshot({ path: OUT + '/106-b1-plus-sheet.png' });
+    await pg.click('#sheet .sheet__close');
+    await pg.click('.plus__item[data-k="loyal"]');
+    await pg.waitForSelector('#sheet .plus__text');
+    ok(/До кожного 3-го замовлення даруємо: чурчхела/.test(await text(pg, '#sheet')) && await count(pg, '#sheet .btn') === 0, 'плашка постоянным: шторка с текстом, без кнопки', await text(pg, '#sheet'));
+    await pg.click('#sheet .sheet__close');
+    await pg.click('.plus__item[data-k="biz"]');
+    await pg.waitForSelector('#sheet .btn[data-view="biz"]');
+    await pg.click('#sheet .btn[data-view="biz"]');
+    await pg.waitForFunction(() => document.body.getAttribute('data-view') === 'biz');
+    ok(await pg.evaluate(() => document.getElementById('sheet').hidden), 'плашка «Оптові ціни»: кнопка в шторке ведёт на экран «Для бізнесу», шторка закрылась');
+    await pg.evaluate(() => window.__tg.back.cb());
+    await pg.waitForSelector('.plus__item[data-k="quiz"]');
+    await pg.click('.plus__item[data-k="quiz"]');
+    await pg.click('#sheet .btn[data-view="quiz"]');
+    await pg.waitForSelector('.quiz__opt');
+    ok(await pg.evaluate(() => document.body.getAttribute('data-view')) === 'quiz', 'плашка «Підібрати смаколики»: кнопка в шторке открывает подбор');
+    await pg.evaluate(() => window.__tg.back.cb());
+    await pg.waitForSelector('.morerails');
+
+    // «Ще»: чип открывает экран со списком
+    const chipText = (await pg.locator('.morerails .chip').first().innerText()).trim();
+    await pg.locator('.morerails .chip').first().click();
+    await pg.waitForFunction(() => document.body.getAttribute('data-view') === 'rail');
+    ok((await text(pg, '.page__title')).trim() === chipText && await count(pg, '.page .grid .card') >= 2 && await count(pg, '.page [data-nav="back"]') === 1 && await noOverflow(pg) && (await smallTargets(pg)).length === 0, 'чип «Ще: ' + chipText + '» открывает экран со списком товаров сеткой и кнопкой «назад»', await text(pg, '.page__title'));
+    await pg.waitForTimeout(500); // дать закончиться анимации
+    await pg.screenshot({ path: OUT + '/107-b1-more-page.png' });
+    await pg.click('.page [data-nav="back"]');
+    await pg.waitForSelector('.morerails');
+    ok(await pg.evaluate(() => document.body.getAttribute('data-view')) === 'catalog', '«Назад» с экрана подборки возвращает на главную');
+
+    // рецепты: «Усі рецепти»
+    await pg.click('.recs__all');
+    await pg.waitForFunction(() => document.body.getAttribute('data-view') === 'recipes');
+    ok(await count(pg, '.page .recs__item') === 2 && /Рецепти/.test(await text(pg, '.page__title')) && await noOverflow(pg) && (await smallTargets(pg)).length === 0, '«Усі рецепти» открывает отдельный экран со списком всех рецептов', await count(pg, '.page .recs__item'));
+    await pg.waitForTimeout(500); // дать закончиться анимации
+    await pg.screenshot({ path: OUT + '/108-b1-recipes-page.png' });
+    await pg.locator('.page .recs__item').first().click();
+    await pg.waitForSelector('.rec__p');
+    ok(/Узвар з кураги/.test(await text(pg, '.page__title')), 'нажатие в списке открывает рецепт');
+    await pg.click('.page [data-nav="back"]');
+    await pg.waitForFunction(() => document.body.getAttribute('data-view') === 'recipes');
+    await pg.click('.page [data-nav="back"]');
+    await pg.waitForSelector('.recs');
+    ok(await pg.evaluate(() => document.body.getAttribute('data-view')) === 'catalog', '«Назад» из рецепта — в список, из списка — на главную');
+    await pg.locator('.recs .rcard').first().click();
+    await pg.waitForSelector('.rec__p');
+    ok(/Узвар з кураги/.test(await text(pg, '.page__title')), 'карточка рецепта на главной открывает рецепт, как раньше');
+    ok(A.errors.length === 0, 'в консоли браузера нет ошибок', A.errors);
+    await A.ctx.close();
+
+    // RU, тёмная тема
+    const R = await open(browser, st.url, { uid: 501, w: 360, h: 640, theme: 'dark', lc: 'ru', before: withMax(undefined) });
+    await R.page.waitForSelector('#grid .card');
+    const mr = await metrics(R.page);
+    ok(mr.above < 2232 && mr.firstRail <= 960 && mr.plusH <= 72 && mr.rails === 3, 'RU, тёмная тема: те же высоты (над «Все товары» ' + mr.above + ', первая лента ' + mr.firstRail + ', плюсы ' + mr.plusH + ')', mr);
+    ok(/^Ещё:/.test(await text(R.page, '.morerails')) && /Подарок от 500\s₴/.test(await text(R.page, '#homeGift')) && /Оптовые цены/.test(await text(R.page, '.plus__item[data-k="biz"]')) && /Все рецепты/.test(await text(R.page, '.recs__all')), 'RU: «Ещё:», «Подарок от 500 ₴», «Оптовые цены», «Все рецепты»', await text(R.page, '.morerails'));
+    ok(await noOverflow(R.page) && (await smallTargets(R.page)).length === 0, 'RU, тёмная тема: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(R.page));
+    await R.page.screenshot({ path: OUT + '/109-b1-home-dark-ru.png' });
+    await R.page.screenshot({ path: OUT + '/110-b1-home-dark-ru-full.png', fullPage: true });
+    await R.page.click('.plus__item[data-k="gift"]');
+    await R.page.waitForSelector('#sheet .plus__text');
+    ok(/Подарок к заказу от 500\s₴/.test(await text(R.page, '#sheet')), 'RU: шторка подарка на русском', await text(R.page, '#sheet'));
+    await R.page.waitForTimeout(500); // дать закончиться анимации
+    await R.page.screenshot({ path: OUT + '/111-b1-plus-sheet-dark-ru.png' });
+    await R.ctx.close();
+
+    // railsMax из каталога
+    const counts = async v => { const c = await open(browser, st.url, { uid: 501, w: 360, h: 640, before: withMax(v) }); await c.page.waitForSelector('#grid .card'); const r = await metrics(c.page); await c.ctx.close(); return r; };
+    const m1 = await counts(1), m5 = await counts(5), m99 = await counts(99), mBad = await counts('abc');
+    ok(m1.rails === 1 && m1.chips.length === n0 - 1, 'railsMax = 1: одна лента, остальные в «Ще»', m1);
+    ok(m5.rails === Math.min(5, n0) && m5.chips.length === Math.max(0, n0 - 5), 'railsMax = 5 учитывается', m5);
+    ok(m99.rails === n0 && m99.chips.length === 0, 'railsMax больше 8 сводится к 8: при ' + n0 + ' лентах «Ще» нет', m99);
+    ok(mBad.rails === 3, 'railsMax не число — по умолчанию 3', mBad);
+    st.server.close();
+
+    // «Ваше звичне» — первая; «Купити знову» уходит в «Ще»
+    const st2 = await wave1(8851);
+    const U = await open(browser, st2.url, { uid: 501, w: 360, h: 640, before: withMax(undefined) });
+    await U.page.waitForSelector('.usual');
+    const mu = await metrics(U.page);
+    ok(/Ваше звичне/.test(mu.titles[0]) && mu.titles.length <= 3 && mu.chips.some(c => /Купити знову/.test(c)), 'у постоянного клиента первая лента «Ваше звичне»; «Купити знову» не вошла в три и лежит в «Ще»', mu);
+    ok(await noOverflow(U.page) && (await smallTargets(U.page)).length === 0, 'главная постоянного клиента: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(U.page));
+    await U.ctx.close(); st2.server.close();
+  }
+
+  console.log('Выпуск Б · блок 1: лёгкие фото');
+  {
+    const BIG = 'https://shop.test/img/products/'; // витрина принимает только https; сами картинки отдаёт заглушка в route
+    const st = await start(8852, undefined, s => {
+      const rows = s.sheets['Товари'], pc = rows[0].indexOf('Фото (посилання)'), row = id => rows.find(r => r[0] === id);
+      row('DRY-039')[pc] = BIG + 'DRY-039.webp';   // обычный адрес витрины: карточка берёт маленькую, шторка — большую
+      row('DRY-001')[pc] = BIG + 'DRY-001.webp';   // маленькой копии нет (404): должна показаться большая
+      row('DRY-002')[pc] = BIG + 'DRY-002.webp';   // нет ни маленькой, ни большой: заглушка
+      row('DRY-003')[pc] = 'https://drive.google.com/uc?export=view&id=TESTID123'; // Drive: адрес не меняется
+    });
+    const reqs = [];
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#d9a066"/></svg>';
+    const before = async page => {
+      await page.route(/\/img\/products\//, r => {
+        const u = r.request().url(); reqs.push(u);
+        if (/\/s\/DRY-001\.webp$/.test(u) || /DRY-002\.webp$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
+        r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg });
+      });
+      await page.route('https://drive.google.com/**', r => { reqs.push(r.request().url()); r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg }); });
+    };
+    const { page, ctx, errors } = await open(browser, st.url, { uid: 502, w: 360, h: 640, before });
+    await page.waitForSelector('#grid .card');
+    await page.waitForTimeout(700);
+    const src = id => page.evaluate(i => { const im = document.querySelector('#grid .card[data-id="' + i + '"] .card__img img'); return im ? im.getAttribute('src') : null; }, id);
+    const has = re => reqs.some(u => re.test(u));
+    ok(/\/img\/products\/s\/DRY-039\.webp$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp$/) && !has(/\/img\/products\/DRY-039\.webp$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
+    ok(/\/img\/products\/DRY-001\.webp$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
+    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
+    const catImg = st.gas.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-003').img;
+    ok(/drive\.google\.com/.test(catImg) && await src('DRY-003') === catImg && !/\/s\//.test(await src('DRY-003')), 'адрес Google Drive не меняется', [catImg, await src('DRY-003')]);
+    const miniSrc = await page.evaluate(() => { const im = document.querySelector('.mini[data-id="DRY-039"] img'); return im ? im.getAttribute('src') : ''; });
+    ok(!miniSrc || /\/s\/DRY-039\.webp$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
+    await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
+    await page.waitForSelector('.sheet__img img');
+    await page.waitForTimeout(300);
+    ok(/\/img\/products\/DRY-039\.webp$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp$/), 'шторка товара берёт большое фото');
+    await page.click('[data-action="add"]');
+    await page.click('#toastBtn');
+    await page.waitForSelector('.line__img img');
+    ok(/\/img\/products\/s\/DRY-039\.webp$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
+    ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
+    await ctx.close(); st.server.close();
+    // файлы: у каждого большого фото есть копия не тяжелее 30 КБ
+    const dir = path.join(__dirname, '..', 'webapp', 'img', 'products');
+    const bigs = fs.readdirSync(dir).filter(f => /\.webp$/i.test(f));
+    const small = bigs.map(f => { const p = path.join(dir, 's', f); return fs.existsSync(p) ? fs.statSync(p).size : -1; });
+    ok(bigs.length > 0 && small.every(x => x > 0 && x <= 30 * 1024), 'у каждого из ' + bigs.length + ' фото есть маленькая копия ≤ 30 КБ (самая тяжёлая ' + Math.round(Math.max.apply(null, small) / 1024) + ' КБ)', small.filter(x => x <= 0 || x > 30 * 1024));
   }
 
   await browser.close();

@@ -918,10 +918,17 @@
     return list.filter(function (p) { return p.a; }).concat(list.filter(function (p) { return !p.a; }));
   }
 
-  function photoHtml(p, eager) {
-    return p.img
-      ? '<img src="' + esc(p.img) + '" alt="" ' + (eager === true ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"') + ' decoding="async" referrerpolicy="no-referrer">'
-      : MARK;
+  /** Адрес маленькой копии (360 px) — только для файлов витрины вида …/img/products/<ID>.webp; остальные адреса (Google Drive и т. п.) не меняются. */
+  function thumbUrl(u) {
+    var m = /^(.*\/img\/products\/)([^\/?#]+\.webp)$/i.exec(String(u || ''));
+    return m ? m[1] + 's/' + m[2] : '';
+  }
+  /** small — карточки, ленты, корзина: берут маленькую копию; шторка товара — большую. Нет маленькой — один раз подставляется большая (см. обработчик error). */
+  function photoHtml(p, eager, small) {
+    if (!p.img) return MARK;
+    var thumb = small ? thumbUrl(p.img) : '';
+    return '<img src="' + esc(thumb || p.img) + '"' + (thumb ? ' data-full="' + esc(p.img) + '"' : '') + ' alt="" ' +
+      (eager === true ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"') + ' decoding="async" referrerpolicy="no-referrer">';
   }
 
   function leftText(p) {
@@ -966,7 +973,7 @@
     var story = shopInfo().story ? '<button type="button" class="feature__story" data-w1="go" data-view="story">' + esc(t('storyBtn')) + '</button>' : '';
     if (list.length === 1) {
       var p = list[0], cp = cardPrice(p);
-      return '<article class="feature" data-id="' + esc(p.id) + '">' + ORN + '<div class="feature__img card__img">' + photoHtml(p, true) + '</div>' +
+      return '<article class="feature" data-id="' + esc(p.id) + '">' + ORN + '<div class="feature__img card__img">' + photoHtml(p, true, true) + '</div>' +
         '<div class="feature__body"><h2 class="feature__title">' + esc(gTitle || name(p)) + '</h2>' +
         (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') + story +
         '<div class="feature__foot"><div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
@@ -977,7 +984,7 @@
       (text ? '<p class="feature__text featuregroup__text">' + esc(text) + '</p>' : '') + story;
     list.forEach(function (q, i) {
       var c = cardPrice(q);
-      html += '<article class="feature feature--item" data-id="' + esc(q.id) + '"><div class="feature__img card__img">' + photoHtml(q, i === 0) + '</div>' +
+      html += '<article class="feature feature--item" data-id="' + esc(q.id) + '"><div class="feature__img card__img">' + photoHtml(q, i === 0, true) + '</div>' +
         '<div class="feature__body"><h3 class="feature__title feature__title--item">' + esc(name(q)) + '</h3>' +
         '<div class="feature__foot"><div class="card__meta">' + (c ? priceHtml(c) : '') + '</div>' +
         '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
@@ -985,13 +992,52 @@
     return html + '</section>';
   }
 
-  /** Подарок от суммы и подарок постоянным клиентам — если они заданы в настройках магазина. */
-  function perksHtml() {
-    var s = shopInfo(), ru = state.lang === 'ru', out = '';
-    function perk(ico, text) { return '<p class="perk">' + icon(ico) + '<span>' + esc(text) + '</span></p>'; }
-    if (s.gift) out += '<div id="homeGift" class="homegift">' + homeGiftHtml() + '</div>';
-    if (s.loyal) out += perk('users', tf('loyalText', { k: s.loyal.every, g: ru ? s.loyal.ru : s.loyal.ua }));
-    return (out ? '<div class="perks">' + out + '</div>' : '') + quizBannerHtml() + bizBannerHtml();
+  /* ---- Б9. Одна строка «плюсов»: подарок, подарок постоянным, подбор, опт ---- */
+  /** Подпись плашки подарка: условие, пока корзина пустая; потом — сколько осталось. Подробности и шкала — в шторке. */
+  function giftPlusInner() {
+    var s = shopInfo(), total = cartTotal();
+    var label = !(total > 0) ? tf('plusGift', { n: money(s.gift.from) })
+      : total >= s.gift.from ? t('plusGiftOk') : tf('plusGiftLeft', { n: money(s.gift.from - total) });
+    return icon('gift') + '<span>' + esc(label) + '</span>';
+  }
+  /** Показ каждой плашки — по тем же условиям, что раньше: подарок и постоянным — если заданы в настройках, подбор — если есть теги, опт — для не оптовика в Telegram. */
+  function plusKeys() {
+    var s = shopInfo(), keys = [];
+    if (s.gift) keys.push('gift');
+    if (s.loyal) keys.push('loyal');
+    if (quizOn()) keys.push('quiz');
+    if (bizPlusOn()) keys.push('biz');
+    return keys;
+  }
+  function plusHtml() {
+    var s = shopInfo(), out = '';
+    function item(key, ico, label) {
+      return '<button type="button" class="plus__item" data-w1="plus" data-k="' + key + '">' + icon(ico) + '<span>' + esc(label) + '</span></button>';
+    }
+    plusKeys().forEach(function (k) {
+      if (k === 'gift') out += '<button type="button" class="plus__item" id="homeGift" data-w1="plus" data-k="gift">' + giftPlusInner() + '</button>';
+      else if (k === 'loyal') out += item(k, 'users', t('loyalTitle'));
+      else if (k === 'quiz') out += item(k, 'sliders', t('quizBtn'));
+      else out += item(k, 'store', t('plusBiz'));
+    });
+    return out ? '<div class="plus" role="group">' + out + '</div>' : '';
+  }
+  function plusSheetHtml(key) {
+    var s = shopInfo(), title = '', body = '', go = '', goText = '';
+    if (key === 'gift' && s.gift) { title = t('plusGiftTitle'); body = homeGiftHtml(); }
+    else if (key === 'loyal' && s.loyal) { title = t('loyalTitle'); body = '<p class="plus__text">' + esc(tf('loyalText', { k: s.loyal.every, g: loc(s.loyal) })) + '</p>'; }
+    else if (key === 'quiz') { title = t('quizTitle'); body = '<p class="plus__text">' + esc(t('plusQuizText')) + '</p>'; go = 'quiz'; goText = t('quizBtn'); }
+    else if (key === 'biz') { title = t('bizTitle'); body = '<p class="plus__text">' + esc(t('bizIntro')) + '</p>'; go = 'biz'; goText = t('bizBtn'); }
+    return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
+      '<div class="sheet__grab" aria-hidden="true"></div>' +
+      '<div class="sheet__body"><h2 class="sheet__title sheet__title--pad" id="sheetTitle">' + esc(title) + '</h2>' + body + '</div>' +
+      (go ? '<div class="sheet__foot"><button type="button" class="btn btn--primary btn--block" data-w1="go" data-view="' + go + '">' + esc(goText) + '</button></div>' : '');
+  }
+  function openPlus(key) {
+    if (plusKeys().indexOf(key) < 0) return;
+    state.sheet = { kind: 'plus', key: key };
+    renderSheet();
+    showSheet(false);
   }
 
   /** Кнопка под карточкой. Штучный товар кладётся в корзину сразу; у весового сначала выбирают вес. */
@@ -1015,7 +1061,7 @@
   function cardHtml(p, eager) {
     var cp = cardPrice(p);
     return '<article class="card' + (p.a ? '' : ' card--out') + '" data-id="' + esc(p.id) + '">' +
-      '<div class="card__img">' + photoHtml(p, eager) + badgeHtml(p) + promoHtml(p) + favBtn(p) + '</div>' +
+      '<div class="card__img">' + photoHtml(p, eager, true) + badgeHtml(p) + promoHtml(p) + favBtn(p) + '</div>' +
       '<h2 class="card__name">' + esc(name(p)) + '</h2>' + cardExtraHtml(p) +
       '<div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
       '<div class="card__act" data-act="' + esc(p.id) + '">' + actHtml(p) + '</div></article>';
@@ -1024,7 +1070,7 @@
   /** Маленькая карточка для горизонтальных подборок. quick — с кнопкой «+» (в корзине). */
   function miniHtml(p, quick) {
     var cp = cardPrice(p);
-    return '<article class="mini" data-id="' + esc(p.id) + '"><div class="mini__img card__img">' + photoHtml(p) + promoHtml(p) +
+    return '<article class="mini" data-id="' + esc(p.id) + '"><div class="mini__img card__img">' + photoHtml(p, false, true) + promoHtml(p) +
       (quick ? '<button type="button" class="mini__add" data-quick="1" aria-label="' + esc(t('addToCart')) + '">' + icon('plus') + '</button>' : '') + '</div>' +
       '<h3 class="mini__name">' + esc(name(p)) + '</h3>' +
       '<div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
@@ -1061,20 +1107,55 @@
       .sort(function (a, b) { return (cats[b.c] - cats[a.c]) || ((b.n || 0) - (a.n || 0)); }).slice(0, 10);
   }
 
-  function homeRails() {
-    var all = state.catalog.products, html = usualHtml();
-    function two(list) { return list.length >= 2 ? list.slice(0, 10) : []; }
-    html += railHtml(t('secAgain'), '', inStockList(my.bought || []).slice(0, 10));
-    if (all.length >= 8) { // в совсем маленьком каталоге подборки только повторяли бы список ниже
-      var pop = popular(10);
-      html += railHtml(t('secPop'), pop.real ? t('secPopSub') : '', two(pop.list));
-      html += railHtml(t('secSale'), '', two(all.filter(function (p) { return p.a && hasOld(p); })));
-      html += railHtml(t('secNew'), '', two(all.filter(function (p) { return p.a && p.b === 'new'; })));
-      html += railHtml(t('secSets'), '', two(all.filter(function (p) { return p.a && p.b === 'set'; })));
-      html += railHtml(t('secForYou'), '', two(forYou()));
+  /** Сколько лент показывать на главной: настройка магазина railsMax (1…8); нет поля (старый бэкенд) или не число — 3. */
+  function railsMax() {
+    var v = shopInfo().railsMax, n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+    if (!isFinite(n)) return 3;
+    return Math.max(1, Math.min(8, Math.floor(n)));
+  }
+  /**
+   * Ленты главной списком объектов {key, title, sub, list, html}; в списке они уже в порядке показа.
+   * Приоритет: «Ваше звичне» (нет — «Купити знову»), «Популярне», «Набори», дальше по прежнему порядку.
+   * Точка расширения (Б11): праздничную подборку добавить вызовом add(-1, key, title, sub, list) в railItems() ниже — она встанет первой.
+   */
+  function railItems() {
+    var all = state.catalog.products, items = [], usual = usualLines();
+    function add(pri, key, title, sub, full, html) {
+      if (!full.length) return;
+      items.push({ key: key, title: title, sub: sub, list: full, pri: pri, html: html || railHtml(title, sub, full.slice(0, 10)), seq: items.length });
     }
-    html += railHtml(t('secSeen'), '', seen.map(product).filter(Boolean).slice(0, 10));
+    function two(list) { return list.length >= 2 ? list : []; }
+    if (usual.length) add(0, 'usual', t('usualTitle'), t('usualSub'), usual.map(function (l) { return product(l[0]); }), usualHtml());
+    add(usual.length ? 3 : 0, 'again', t('secAgain'), '', inStockList(my.bought || []));
+    if (all.length >= 8) { // в совсем маленьком каталоге подборки только повторяли бы список ниже
+      var pop = popular(40);
+      add(1, 'pop', t('secPop'), pop.real ? t('secPopSub') : '', two(pop.list));
+      add(4, 'sale', t('secSale'), '', two(all.filter(function (p) { return p.a && hasOld(p); })));
+      add(5, 'new', t('secNew'), '', two(all.filter(function (p) { return p.a && p.b === 'new'; })));
+      add(2, 'sets', t('secSets'), '', two(all.filter(function (p) { return p.a && p.b === 'set'; })));
+      add(6, 'foryou', t('secForYou'), '', two(forYou()));
+    }
+    add(7, 'seen', t('secSeen'), '', seen.map(product).filter(Boolean));
+    items.sort(function (x, y) { return (x.pri - y.pri) || (x.seq - y.seq); });
+    return items;
+  }
+  function homeRails() {
+    var items = railItems(), max = railsMax();
+    var html = items.slice(0, max).map(function (i) { return i.html; }).join('');
+    var rest = items.slice(max);
+    if (rest.length) { // лишние непустые ленты — строкой чипов; чип открывает отдельный экран со списком
+      html += '<div class="morerails"><span class="morerails__label">' + esc(t('plusMore')) + '</span>' + rest.map(function (i) {
+        return '<button type="button" class="chip chip--sm" data-w1="rail" data-k="' + esc(i.key) + '">' + esc(i.title) + '</button>';
+      }).join('') + '</div>';
+    }
     return html + recipesHomeHtml();
+  }
+  function railPageHtml() {
+    var it = null;
+    if (state.catalog) railItems().forEach(function (i) { if (i.key === state.rail) it = i; });
+    if (!it) return pageHead(t('secAll')) + '<p class="state__text adm__msg">' + esc(t('railGone')) + '</p>';
+    return pageHead(it.title) + (it.sub ? '<p class="rail__sub">' + esc(it.sub) + '</p>' : '') +
+      '<div class="grid">' + it.list.map(function (p) { return cardHtml(p); }).join('') + '</div>' + (it.key === 'usual' ? usualBtnHtml() : '');
   }
 
   function skeletonHtml() {
@@ -1106,7 +1187,7 @@
         railHtml(t('secPop'), '', popular(10).list);
       return;
     }
-    var html = home ? featureHtml() + fatherHtml() + perksHtml() + homeRails() : '';
+    var html = home ? featureHtml() + fatherHtml() + plusHtml() + homeRails() : '';
     // Список листается страницами по PAGE_SIZE товаров; номер страницы живёт в flt.page.
     flt.page = clampPage(flt.page, list.length, PAGE_SIZE);
     var from = (flt.page - 1) * PAGE_SIZE;
@@ -1244,6 +1325,7 @@
   function renderSheet() {
     var s = state.sheet;
     if (s.kind === 'filter') { el.sheet.innerHTML = filterSheetHtml(); return; }
+    if (s.kind === 'plus') { el.sheet.innerHTML = plusSheetHtml(s.key); return; }
     if (s.kind === 'confirm') { // подтверждение рисуется один раз: фоновое обновление каталога не должно сбрасывать его кнопки
       if (!s.drawn) { el.sheet.innerHTML = confirmSheetHtml(s.o); s.drawn = true; }
       return;
@@ -1543,7 +1625,7 @@
     refreshActs();
     updateChrome();
     var homeGift = document.getElementById('homeGift');
-    if (homeGift) homeGift.innerHTML = homeGiftHtml();
+    if (homeGift && shopInfo().gift) homeGift.innerHTML = giftPlusInner();
     if (state.view === 'cart') renderPage();
     if (bump) {
       var count = document.getElementById('cartCount');
@@ -1650,6 +1732,7 @@
       if (reload) loadAdmin(false);
       return;
     }
+    if (state.view === 'recipe' && state.recFrom === 'recipes') { go('recipes'); return; }
     if (SUB_VIEWS[state.view]) { go(state.back && state.back !== 'done' ? state.back : 'catalog'); return; }
     if (state.view !== 'catalog') go('catalog');
   }
@@ -1720,6 +1803,8 @@
     else if (state.view === 'biz') el.page.innerHTML = bizHtml();
     else if (state.view === 'recipe') el.page.innerHTML = recipeHtml();
     else if (state.view === 'quiz') el.page.innerHTML = quizHtml();
+    else if (state.view === 'rail') el.page.innerHTML = railPageHtml();
+    else if (state.view === 'recipes') el.page.innerHTML = recipesPageHtml();
     else el.page.innerHTML = '';
   }
 
@@ -1799,7 +1884,7 @@
       if (!info.ok) note = '<p class="line__note line__note--out">' + esc(p ? t('lineOut') : t('lineGone')) + '</p>';
       else if (l.was) note = '<p class="line__note">' + esc(t('priceWas')) + ' ' + money(l.was) + '</p>';
       html += '<li class="line' + (info.ok ? '' : ' line--out') + '">' +
-        '<div class="line__img">' + (p ? photoHtml(p) : MARK) + '</div>' +
+        '<div class="line__img">' + (p ? photoHtml(p, false, true) : MARK) + '</div>' +
         '<div class="line__text"><p class="line__name">' + esc(p ? name(p) : l.id) + '</p>' +
         '<p class="line__sub">' + esc(lineLabel(l, info)) +(info.ok ? ' · ' + money(info.price) : '') + (info.wh ? ' <span class="badge badge--opt">' + esc(t('whTag')) + '</span>' : '') + '</p>' + note + '</div>' +
         '<button type="button" class="iconbtn iconbtn--plain" data-line-del="' + i + '" aria-label="' + esc(t('remove')) + '">' + icon('trash-2') + '</button>';
@@ -3116,7 +3201,7 @@
       if (goBtn) { go(goBtn.getAttribute('data-go')); return; }
       var lg = e.target.closest('button[data-lang]');
       if (lg) { setLang(lg.getAttribute('data-lang')); return; }
-      if ((state.view === 'fav' || state.view === 'cart' || state.view === 'recipe' || state.view === 'quiz') && productClick(e)) return;
+      if ((state.view === 'fav' || state.view === 'cart' || state.view === 'recipe' || state.view === 'quiz' || state.view === 'rail') && productClick(e)) return;
       var rep = e.target.closest('[data-repeat]');
       if (rep) { repeatOrder(rep.getAttribute('data-repeat')); return; }
       var myr = e.target.closest('[data-action="my-refresh"]');
@@ -3329,7 +3414,9 @@
     document.addEventListener('error', function (e) {
       var img = e.target;
       if (img && img.tagName === 'IMG' && img.parentNode &&
-          /(^| )(card|sheet|line|mini|feature)__img( |$)/.test(img.parentNode.className)) {
+          /(^| )(card|sheet|line|mini|feature|rcard)__img( |$)/.test(img.parentNode.className)) {
+        var full = img.getAttribute('data-full');
+        if (full) { img.removeAttribute('data-full'); img.src = full; return; } // маленькой копии нет — один раз пробуем большую
         var holder = document.createElement('span');
         holder.innerHTML = MARK;
         img.parentNode.replaceChild(holder.firstChild, img);
@@ -4004,7 +4091,7 @@
     var s = shopInfo();
     if (!s.gift) return '';
     var total = cartTotal(), g = loc(s.gift);
-    if (!(total > 0)) return '<p class="perk">' + icon('gift') + '<span>' + esc(tf('giftFrom', { n: money(s.gift.from), g: g })) + '</span></p>';
+    if (!(total > 0)) return '<p class="plus__text">' + esc(tf('giftFrom', { n: money(s.gift.from), g: g })) + '</p>';
     return total >= s.gift.from
       ? '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf('giftOk', { g: g })) + '</span></p>'
       : progressHtml(total / s.gift.from, tf('giftLeft', { n: money(s.gift.from - total), g: g }), 'gift');
@@ -4031,11 +4118,13 @@
   function usualHtml() {
     var lines = usualLines();
     if (!lines.length) return '';
-    var sum = 0;
-    lines.forEach(function (l) { sum += unitPrice(product(l[0]), l[1]) * l[2]; });
     return '<section class="rail usual"><div class="rail__head"><h2 class="rail__title">' + esc(t('usualTitle')) + '</h2><span class="rail__sub">' + esc(t('usualSub')) + '</span></div>' +
-      '<div class="rail__list">' + lines.map(function (l) { return miniHtml(product(l[0])); }).join('') + '</div>' +
-      '<button type="button" class="btn btn--soft btn--block" data-w1="usual">' + icon('plus') + esc(t('usualAdd')) + ' · ' + money(sum) + '</button></section>';
+      '<div class="rail__list">' + lines.map(function (l) { return miniHtml(product(l[0])); }).join('') + '</div>' + usualBtnHtml() + '</section>';
+  }
+  function usualBtnHtml() {
+    var sum = 0;
+    usualLines().forEach(function (l) { sum += unitPrice(product(l[0]), l[1]) * l[2]; });
+    return '<button type="button" class="btn btn--soft btn--block" data-w1="usual">' + icon('plus') + esc(t('usualAdd')) + ' · ' + money(sum) + '</button>';
   }
   function addUsual() {
     var added = 0;
@@ -4117,6 +4206,11 @@
       refShare(false);
     } else if (kind === 'ref-copy') {
       refShare(true);
+    } else if (kind === 'plus') {
+      openPlus(b.getAttribute('data-k'));
+    } else if (kind === 'rail') {
+      state.rail = b.getAttribute('data-k');
+      go('rail');
     } else if (kind === 'rec') {
       openRecipe(b.getAttribute('data-id'));
     } else if (kind === 'rec-add') {
@@ -4341,6 +4435,8 @@
       quizBtn: 'Підібрати смаколики', quizTitle: 'Підібрати смаколики', quizQ1: 'Для чого обираєте?', quizQ2: 'Солодке чи солоне?', quizQ3: 'Скільки готові витратити на одну позицію?',
       quizAny: 'Байдуже', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без обмежень', quizStep: 'Питання {a} з {b}', quizResult: 'Ось що вам підійде', quizPopular: 'Точного збігу немає. Ось те, що зараз беруть найчастіше',
       quizAgain: 'Підібрати ще раз', quizBack: 'Назад',
+      plusGift: 'Подарунок від {n}', plusGiftLeft: 'Ще {n} до подарунка', plusGiftOk: 'Подарунок у замовленні', plusGiftTitle: 'Подарунок до замовлення',
+      plusQuizText: 'Дайте відповідь на три короткі запитання — підберемо товари, які вам підійдуть.', plusBiz: 'Оптові ціни', plusMore: 'Ще:', railGone: 'Цієї підбірки зараз немає.', recAll: 'Усі рецепти',
       'tag_до чаю': 'До чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарунок', 'tag_солодке': 'Солодке', 'tag_солоне': 'Солоне', 'tag_для плову': 'Для плову', 'tag_для випічки': 'Для випічки',
       'tag_сніданок': 'На сніданок', 'tag_випічка': 'Для випічки', "tag_до м'яса": 'До м’яса', 'tag_суп': 'У суп', 'tag_узвар': 'На узвар', 'tag_спеції батька': 'Спеції від батька',
       mailBtn_rec: 'Відкрити рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Розсилка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
@@ -4356,6 +4452,8 @@
       quizBtn: 'Подобрать вкусности', quizTitle: 'Подобрать вкусности', quizQ1: 'Для чего выбираете?', quizQ2: 'Сладкое или солёное?', quizQ3: 'Сколько готовы потратить на одну позицию?',
       quizAny: 'Неважно', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без ограничений', quizStep: 'Вопрос {a} из {b}', quizResult: 'Вот что вам подойдёт', quizPopular: 'Точного совпадения нет. Вот то, что сейчас берут чаще всего',
       quizAgain: 'Подобрать ещё раз', quizBack: 'Назад',
+      plusGift: 'Подарок от {n}', plusGiftLeft: 'Ещё {n} до подарка', plusGiftOk: 'Подарок в заказе', plusGiftTitle: 'Подарок к заказу',
+      plusQuizText: 'Ответьте на три коротких вопроса — подберём товары, которые вам подойдут.', plusBiz: 'Оптовые цены', plusMore: 'Ещё:', railGone: 'Этой подборки сейчас нет.', recAll: 'Все рецепты',
       'tag_до чаю': 'К чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарок', 'tag_солодке': 'Сладкое', 'tag_солоне': 'Солёное', 'tag_для плову': 'Для плова', 'tag_для випічки': 'Для выпечки',
       'tag_сніданок': 'На завтрак', 'tag_випічка': 'Для выпечки', "tag_до м'яса": 'К мясу', 'tag_суп': 'В суп', 'tag_узвар': 'На компот', 'tag_спеції батька': 'Специи от отца',
       mailBtn_rec: 'Открыть рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Рассылка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
@@ -4364,7 +4462,7 @@
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_2C[lang]).forEach(function (k) { I18N[lang][k] = I18N_2C[lang][k]; });
   });
-  var SUB_VIEWS = { points: 1, story: 1, biz: 1, recipe: 1, quiz: 1 };
+  var SUB_VIEWS = { points: 1, story: 1, biz: 1, recipe: 1, quiz: 1, rail: 1, recipes: 1 };
 
   /* ---- В1. «Як їсти» и рецепты ---- */
   /** Рецепт виден, только когда его главный ингредиент (первый в списке товаров) есть на витрине и в наличии. Рецепт без товаров виден всегда. */
@@ -4392,12 +4490,23 @@
       return '<button type="button" class="linkbtn" data-w1="rec" data-id="' + esc(r.id) + '">' + esc(recName(r)) + '</button>';
     }).join('') + '</div>';
   }
+  /** Главная: горизонтальная лента карточек (фото рецепта или иконка + название) и «Усі рецепти» — экран со списком всех. */
   function recipesHomeHtml() {
     var list = recipes();
     if (!list.length) return '';
-    return '<section class="rail recs"><div class="rail__head"><h2 class="rail__title">' + esc(t('recTitle')) + '</h2></div><div class="recs__list">' + list.slice(0, 8).map(function (r) {
-      return '<button type="button" class="recs__item" data-w1="rec" data-id="' + esc(r.id) + '">' + icon('sprout') + '<span>' + esc(recName(r)) + '</span></button>';
+    return '<section class="rail recs"><div class="rail__head"><h2 class="rail__title">' + esc(t('recTitle')) + '</h2>' +
+      '<button type="button" class="linkbtn recs__all" data-w1="go" data-view="recipes">' + esc(t('recAll')) + '</button></div><div class="rail__list">' + list.slice(0, 8).map(function (r) {
+      return '<button type="button" class="rcard" data-w1="rec" data-id="' + esc(r.id) + '"><span class="rcard__img">' +
+        (r.img ? '<img src="' + esc(r.img) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">' : icon('sprout')) +
+        '</span><span class="rcard__name">' + esc(recName(r)) + '</span></button>';
     }).join('') + '</div></section>';
+  }
+  function recipesPageHtml() {
+    var list = recipes(), html = pageHead(t('recTitle'));
+    if (!list.length) return html + '<p class="state__text adm__msg">' + esc(t('recGone')) + '</p>';
+    return html + '<div class="recs__list">' + list.map(function (r) {
+      return '<button type="button" class="recs__item" data-w1="rec" data-id="' + esc(r.id) + '">' + icon('sprout') + '<span>' + esc(recName(r)) + '</span></button>';
+    }).join('') + '</div>';
   }
   var startRec = String(params.get('rec') || '').toUpperCase();
   function openStartRecipe() { // ссылка ?rec=ID из рассылки: открываем один раз, когда каталог загружен
@@ -4408,6 +4517,7 @@
   function openRecipe(id) {
     if (!recipeById(id)) return;
     state.recipe = id; state.recipeNote = '';
+    state.recFrom = state.view === 'recipes' ? 'recipes' : ''; // «Назад» из рецепта возвращает в список, если открыли из него
     go('recipe');
     window.scrollTo(0, 0);
   }
@@ -4519,10 +4629,6 @@
     return set;
   }
   function quizOn() { return Object.keys(quizTagSet()).length > 0; }
-  function quizBannerHtml() {
-    if (!quizOn()) return '';
-    return '<button type="button" class="bizline bizline--quiz" data-w1="go" data-view="quiz">' + icon('gift') + '<span>' + esc(t('quizBtn')) + '</span></button>';
-  }
   /** Самая маленькая цена, за которую товар можно купить: младшая фасовка у весового, упаковка или штука у остальных. */
   function minPrice(p) {
     if (p.t !== 'w') return p.p > 0 ? p.p : Infinity;
@@ -4883,10 +4989,9 @@
   function bizAvailable() {
     return inTelegram && !!cfg.API_URL && (wh.ok || (!!state.catalog && state.catalog.products.some(function (p) { return p.wb; })));
   }
-  /** Строка на главной — только когда в магазине есть товары с оптовой ценой и человек ещё не оптовик. */
-  function bizBannerHtml() {
-    if (!inTelegram || wh.on || !state.catalog || !state.catalog.products.some(function (p) { return p.wb; })) return '';
-    return '<button type="button" class="bizline" data-w1="go" data-view="biz">' + icon('users') + '<span>' + esc(t('bizBanner')) + '</span></button>';
+  /** Плашка на главной — только когда в магазине есть товары с оптовой ценой и человек ещё не оптовик. */
+  function bizPlusOn() {
+    return inTelegram && !wh.on && !!state.catalog && state.catalog.products.some(function (p) { return p.wb; });
   }
   var biz = { type: '', busy: false };
   function bizHtml() {
