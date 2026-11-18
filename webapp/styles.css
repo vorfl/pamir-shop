@@ -1151,13 +1151,14 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .ny-strip--lane { position: absolute !important; top: 0; left: 0; }
 body[data-season="newyear"] .feature.lane { padding-top: 9px; border-color: var(--lapis); }
 body[data-season="newyear"] .rail__sub { color: var(--lapis); }
-/* Снег: 18 ромбиков, только transform, нажатия проходят насквозь; при prefers-reduced-motion скрыт */
-.snow { position: fixed; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; contain: strict; }
+/* Снег: 14 мелких ромбиков ПОД содержимым (виден только на фоне страницы), только на главной и в каталоге; только transform, нажатия проходят насквозь; при prefers-reduced-motion скрыт */
+.snow { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; contain: strict; }
 .snow i {
-  position: absolute; top: -12px; width: var(--s); height: var(--s); background: var(--lapis-soft); box-shadow: 0 0 0 1px var(--lapis); opacity: .55;
+  position: absolute; top: -12px; width: var(--s); height: var(--s); background: var(--lapis); opacity: .28;
   transform: translate3d(0, -12px, 0) rotate(45deg); animation: snowfall var(--d) linear var(--w) infinite; will-change: transform;
 }
-:root[data-theme="dark"] .snow i { background: var(--ink); box-shadow: none; opacity: .4; }
+:root[data-theme="dark"] .snow i { background: var(--ink); opacity: .22; }
+body:not([data-view="catalog"]) .snow, body.is-locked .snow { display: none; }
 @keyframes snowfall { to { transform: translate3d(var(--dx), 105vh, 0) rotate(225deg); } }
 @media (prefers-reduced-motion: reduce) { .snow { display: none; } }
 .ny-until { margin-bottom: var(--space-3); }

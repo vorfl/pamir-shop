@@ -1054,11 +1054,16 @@
     var m = /^(.*\/img\/products\/)([^\/?#]+\.webp)$/i.exec(String(u || ''));
     return m ? m[1] + 's/' + m[2] : '';
   }
+  /** К файлам витрины …/img/products/<ID>.webp (и s/<ID>.webp) добавляется ?v=<версия из index.html>: после замены фото телефоны не показывают старый кэш. Остальные адреса не меняются. */
+  function verUrl(u) {
+    u = String(u || '');
+    return SCRIPT_V && /\/img\/products\/(s\/)?[^\/?#]+\.webp$/i.test(u) ? u + '?v=' + SCRIPT_V : u;
+  }
   /** small — карточки, ленты, корзина: берут маленькую копию; шторка товара — большую. Нет маленькой — один раз подставляется большая (см. обработчик error). */
   function photoHtml(p, eager, small) {
     if (!p.img) return MARK;
     var thumb = small ? thumbUrl(p.img) : '';
-    return '<img src="' + esc(thumb || p.img) + '"' + (thumb ? ' data-full="' + esc(p.img) + '"' : '') + ' alt="" ' +
+    return '<img src="' + esc(verUrl(thumb || p.img)) + '"' + (thumb ? ' data-full="' + esc(verUrl(p.img)) + '"' : '') + ' alt="" ' +
       (eager === true ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"') + ' decoding="async" referrerpolicy="no-referrer">';
   }
 
@@ -2314,7 +2319,7 @@
     var total = cartTotal();
     setBusy(true);
     askWriteAccess().then(function () { return sendOrder(buildOrder()); }).then(function (res) {
-      if (!res || !res.ok) { orderFailed(res && res.error); return; }
+      if (!res || !res.ok) { orderFailed(res && res.error, res); return; }
       state.done = { number: res.number || '', stub: !!res.stub, test: DEBUG && !res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay,
         npType: state.form.npType, point: state.form.delivery === 'pickup' && pointById(state.form.point) ? loc(pointById(state.form.point)) : '',
         gifts: Array.isArray(res.gifts) ? res.gifts : [] };
@@ -2333,8 +2338,26 @@
     }).catch(function () { orderFailed('network'); });
   }
 
-  function orderFailed(code) {
+  /** Сервер уже принял заказ с этим ключом, а корзина с тех пор изменилась: ничего не очищаем, следующий заказ — с новым ключом. */
+  function dupChanged(res) {
+    var box = document.getElementById('formErr');
+    var num = res && /^[\w-]{1,20}$/.test(String(res.number || '')) ? String(res.number) : '';
+    if (!box) return;
+    box.innerHTML = esc(num ? tf('dupChanged', { n: num }) : t('dupChangedNoNum')) +
+      '<button type="button" class="btn btn--block form__retry" data-go="orders">' + esc(t('myOrders')) + '</button>' +
+      '<button type="button" class="btn btn--primary btn--block form__retry" data-action="send-new">' + esc(t('sendAsNew')) + '</button>';
+    box.hidden = false;
+    box.scrollIntoView({ block: 'center' });
+  }
+
+  function orderFailed(code, res) {
     haptic('error');
+    if (code === 'dup_changed') {
+      setRid('');
+      setBusy(false);
+      dupChanged(res);
+      return;
+    }
     if (code === 'changed') {
       // Сервер пересчитал заказ по таблице и получил другую сумму: показываем свежую корзину.
       setRid('');
@@ -2955,7 +2978,7 @@
     if (p.cat && !cats.some(function (c) { return c[0] === p.cat; })) cats.unshift([p.cat, p.cat]);
     var photo = isNew
       ? '<p class="info info__muted">' + esc(t('admPhotoLater')) + '</p>'
-      : '<div class="photo"><div class="photo__box">' + (p.img ? '<img src="' + esc(p.img) + '" alt="" referrerpolicy="no-referrer">' : MARK) + '</div>' +
+      : '<div class="photo"><div class="photo__box">' + (p.img ? '<img src="' + esc(verUrl(p.img)) + '" alt="" referrerpolicy="no-referrer">' : MARK) + '</div>' +
         '<div class="photo__acts">' + (can('photo') ? '<label class="btn btn--block">' + esc(t('admPhotoCam')) +
         '<input type="file" id="a-photo-cam" accept="image/*" capture="environment" hidden></label>' +
         '<label class="btn btn--block">' + esc(t('admPhotoGal')) + '<input type="file" id="a-photo" accept="image/*" hidden></label>' +
@@ -3314,10 +3337,10 @@
     var v = String(value || '').trim();
     if (!v) return '<span class="spv__empty">' + esc(t('spvEmpty')) + '</span>';
     if (pk.kind === 'notice') return '<div class="spv__notice">' + esc(v) + '</div>';
-    if (pk.kind === 'gift') return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'giftOk').replace('{g}', v)) + '</span></div>';
+    if (pk.kind === 'gift') return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'giftOk').replace('{g}', function () { return v; })) + '</span></div>';
     if (pk.kind === 'loyal') {
       var every = document.getElementById('a-loyal_every'), n = every ? Math.round(Number(every.value)) : 0;
-      return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'loyalText').replace('{k}', n >= 2 ? n : 'N').replace('{g}', v)) + '</span></div>';
+      return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'loyalText').replace('{k}', n >= 2 ? n : 'N').replace('{g}', function () { return v; })) + '</span></div>';
     }
     if (pk.kind === 'title') return '<div class="feature__title">' + esc(v) + '</div>';
     if (pk.kind === 'text') return '<div class="feature__text">' + esc(v) + '</div>';
@@ -3555,7 +3578,7 @@
         } catch (err) { clear(window.confirm(t('clearAsk'))); }
         return;
       }
-      if (act.getAttribute('data-action') === 'retry-order') { submitOrder(); return; }
+      if (act.getAttribute('data-action') === 'retry-order' || act.getAttribute('data-action') === 'send-new') { submitOrder(); return; }
       if (act.getAttribute('data-action') === 'home-screen') {
         try { tg.addToHomeScreen(); } catch (err) { /* старый клиент Telegram */ }
         return;
@@ -4019,7 +4042,7 @@
     return '<svg class="' + cls + '" aria-hidden="true" focusable="false"><defs><pattern id="' + id + '" width="42" height="9" patternUnits="userSpaceOnUse">' +
       d(-1, 'apricot') + d(13, 'lapis') + d(27, 'pistachio') + '</pattern></defs><rect width="100%" height="9" fill="url(#' + id + ')"/></svg>';
   }
-  /** Снег: только при ny.snow = 1, не больше 20 снежинок, чистый CSS, без перехвата нажатий; при prefers-reduced-motion его нет. */
+  /** Снег: только при ny.snow = 1, не больше 14 снежинок, чистый CSS, без перехвата нажатий; при prefers-reduced-motion его нет. */
   function applySnow(want) {
     var box = document.getElementById('snow');
     var calm = false;
@@ -4029,7 +4052,7 @@
     box = document.createElement('div');
     box.id = 'snow'; box.className = 'snow'; box.setAttribute('aria-hidden', 'true');
     var html = '';
-    for (var i = 0; i < 18; i++) {
+    for (var i = 0; i < 14; i++) {
       html += '<i style="left:' + ((i * 37 + 11) % 100) + '%;--s:' + (4 + (i * 5) % 4) + 'px;--d:' + (11 + (i * 7) % 9) + 's;--w:-' + ((i * 13) % 17) + 's;--dx:' + (((i * 29) % 41) - 20) + 'px"></i>';
     }
     box.innerHTML = html;
@@ -6378,6 +6401,9 @@
     ua: {
       nyGiftsTitle: 'Подарунки до свят', fGiftNote: 'Підпис до подарунка', giftNotePh: 'Наприклад: Мамі від Олени', giftNoteCount: '{n} / 120',
       errSendRetry: 'Не вдалося надіслати — спробуйте ще раз', retryOrder: 'Спробувати ще раз',
+      dupChanged: 'Попереднє замовлення {n} уже прийняте. Кошик змінено — у ньому залишилися товари. Надішліть їх окремим замовленням або напишіть нам.',
+      dupChangedNoNum: 'Попереднє замовлення вже прийняте. Кошик змінено — у ньому залишилися товари. Надішліть їх окремим замовленням або напишіть нам.',
+      sendAsNew: 'Надіслати як нове замовлення',
       sh_theme: 'Сезонне оформлення магазину. Порожньо — звичайне; доступні newyear (гірлянда, святкова добірка, рядок про строки) і navruz.',
       sh_theme_until: 'Остання дата, коли діє сезонна тема (включно); після неї тема вимикається сама. Порожньо — без обмеження.',
       sh_ny_snow: 'Падаючий сніг на новорічній темі. Вимкнено за замовчуванням; не заважає натисканню кнопок і не показується тим, у кого на телефоні вимкнено анімацію.',
@@ -6391,6 +6417,9 @@
     ru: {
       nyGiftsTitle: 'Подарки к праздникам', fGiftNote: 'Подпись к подарку', giftNotePh: 'Например: Маме от Елены', giftNoteCount: '{n} / 120',
       errSendRetry: 'Не удалось отправить — попробуйте ещё раз', retryOrder: 'Повторить отправку',
+      dupChanged: 'Предыдущий заказ {n} уже принят. Корзина изменена — в ней остались товары. Отправьте их отдельным заказом или напишите нам.',
+      dupChangedNoNum: 'Предыдущий заказ уже принят. Корзина изменена — в ней остались товары. Отправьте их отдельным заказом или напишите нам.',
+      sendAsNew: 'Отправить как новый заказ',
       sh_theme: 'Сезонное оформление магазина. Пусто — обычное; доступны newyear (гирлянда, праздничная подборка, строка о сроках) и navruz.',
       sh_theme_until: 'Последняя дата, когда действует сезонная тема (включительно); после неё тема выключается сама. Пусто — без ограничения.',
       sh_ny_snow: 'Падающий снег на новогодней теме. По умолчанию выключен; не мешает нажимать кнопки и не показывается тем, у кого на телефоне отключена анимация.',
