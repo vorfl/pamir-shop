@@ -4590,7 +4590,12 @@ function handleCallback8_(cq, token, props, answer) {
   if (data === 'nc') { // клиент отказался от напоминаний о корзине
     var until = stopCartReminders_(fromId);
     var untilText = until ? Utilities.formatDate(new Date(until), 'Europe/Kiev', 'dd.MM.yyyy') : '';
-    answer(untilText ? (ru ? 'Хорошо, не будем напоминать до ' : 'Добре, не нагадуватимемо до ') + untilText : (ru ? 'Больше не напоминаем' : 'Більше не нагадуємо'));
+    answer(ru ? 'Хорошо' : 'Добре'); // всплывающий ответ короткий; строка с датой — обычным сообщением в чат (не чаще раза в минуту)
+    var ncCache = CacheService.getScriptCache();
+    if (untilText && !ncCache.get('ncm_' + fromId)) {
+      ncCache.put('ncm_' + fromId, '1', 60);
+      tg_(token, 'sendMessage', { chat_id: chatId, text: (ru ? 'Хорошо, не будем напоминать до ' : 'Добре, не нагадуватимемо до ') + untilText });
+    }
     noButtons();
     return true;
   }

@@ -569,14 +569,18 @@ console.log('Этап 8, волна 1: хит недели, отзывы, бро
   const kb = lastTo(g, 80, 'sendMessage').payload.reply_markup.inline_keyboard[1][0];
   ok(kb.text === 'Не нагадувати місяць' && kb.callback_data === 'nc', 'без настройки (30 дней) кнопка «Не нагадувати місяць»', kb);
   tgPress(g, 80, 'nc');
-  const ans = g.sent.filter(m => m.method === 'answerCallbackQuery').pop().payload.text;
+  const ans = lastTo(g, 80, 'sendMessage').payload.text;
+  ok(g.sent.filter(m => m.method === 'answerCallbackQuery').pop().payload.text === 'Добре', 'всплывающий ответ короткий: «Добре»');
   const until = cartsRows()[1][5];
   const fmt = d => g.sandbox.Utilities.formatDate(d, 'Europe/Kiev', 'dd.MM.yyyy');
   ok(isDateV(until) && Math.abs(until.getTime() - (Date.now() + 30 * 86400000)) < 5000, 'пауза 30 дней от момента нажатия', until);
   ok(ans === 'Добре, не нагадуватимемо до ' + fmt(until), 'ответ бота одной строкой с датой ДД.ММ.РРРР (UA)', ans);
   g.sent.length = 0;
   tgPost(g, { callback_query: { id: 'cqru', data: 'nc', from: { id: 80, language_code: 'ru' }, message: { message_id: 78, chat: { id: 80 } } } });
-  ok(g.sent.filter(m => m.method === 'answerCallbackQuery').pop().payload.text === 'Хорошо, не будем напоминать до ' + fmt(cartsRows()[1][5]), 'ответ бота на русском с датой');
+  ok(g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '80').length === 0, 'повторное нажатие в течение минуты второе сообщение не шлёт');
+  delete g.cache.ncm_80; g.sent.length = 0;
+  tgPost(g, { callback_query: { id: 'cqru2', data: 'nc', from: { id: 80, language_code: 'ru' }, message: { message_id: 78, chat: { id: 80 } } } });
+  ok(lastTo(g, 80, 'sendMessage').payload.text === 'Хорошо, не будем напоминать до ' + fmt(cartsRows()[1][5]), 'ответ бота на русском с датой');
   // пока пауза — молчим; после — снова
   old(cartsRows()[1]); cartsRows()[1][4] = '';
   ok(g.call('remindCarts_') === 0, 'во время паузы напоминаний нет');
