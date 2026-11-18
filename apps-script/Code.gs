@@ -946,6 +946,11 @@ function handleOrder_(body) {
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
+    // Повторная проверка под блокировкой: параллельный дубль мог записать заказ, пока мы ждали.
+    if (rid) {
+      var prev2 = cache.get('rid_' + rid);
+      if (prev2) return { ok: true, number: prev2 };
+    }
     var rlKey = 'rl_' + (o.uid || 'test');
     var count = parseInt(cache.get(rlKey), 10) || 0;
     if (count >= (o.uid ? MAX_ORDERS_PER_HOUR : MAX_TEST_ORDERS_PER_HOUR)) return { ok: false, error: 'rate_limit' };

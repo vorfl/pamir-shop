@@ -65,6 +65,21 @@ console.log('Заказ');
   const same = { action: 'order', initData: g.initData(U(43)), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Ігор', phone: '+380671234567', delivery: 'np', city: 'Київ', branch: '12', pay: 'cod', lang: 'ru', rid: 'same-rid' };
   const a = g.post(same), b = g.post(same);
   ok(a.ok && b.ok && a.number === b.number, 'повторная отправка не создаёт второй заказ', [a, b]);
+  { // гонка: дубль с тем же rid целиком выполняется, пока первый запрос ждёт блокировку (ранняя проверка уже пройдена)
+    const gr = fresh();
+    const rows0 = gr.sheets['Замовлення'].rows.length;
+    const race = { action: 'order', initData: gr.initData(U(47)), items: [{ id: 'NUT-007', g: 0, q: 1 }], total: 85, name: 'Ігор', phone: '+380671234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'race-rid' };
+    const realLock = gr.sandbox.LockService;
+    let inner = null, armed = true;
+    gr.sandbox.LockService = { getScriptLock: () => { const l = realLock.getScriptLock(); return { tryLock: l.tryLock, releaseLock: l.releaseLock, waitLock(ms) { if (armed) { armed = false; inner = gr.post(race); } return l.waitLock(ms); } }; } };
+    const outer = gr.post(race);
+    gr.sandbox.LockService = realLock;
+    const again = gr.post(race);
+    const adminOrderMsgs = gr.sent.filter(m => m.method === 'sendMessage' && m.payload.chat_id === '900' && /P-\d+/.test(m.payload.text || ''));
+    ok(inner && inner.ok && outer.ok && inner.number === outer.number && again.number === outer.number, 'гонка с тем же rid: оба ответа с одним номером', [inner, outer, again]);
+    ok(gr.sheets['Замовлення'].rows.length === rows0 + 1, 'гонка с тем же rid: в листе одна новая строка', gr.sheets['Замовлення'].rows.length - rows0);
+    ok(adminOrderMsgs.length === 1, 'гонка с тем же rid: админу ушло одно сообщение о заказе', adminOrderMsgs.length);
+  }
   let lastRes;
   for (let i = 0; i < 6; i++) lastRes = order(g, U(44), [{ id: 'NUT-007', g: 0, q: 1 }], 85);
   ok(lastRes.error === 'rate_limit', 'не больше 5 заказов в час с одного аккаунта', lastRes);
