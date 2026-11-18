@@ -3677,7 +3677,7 @@
 
   /* ---- 1.7 Нова пошта: тип доставки, города, подсказки (если на сервере задан NP_API_KEY) ---- */
   var NP_CITIES = [['Харків', 'Харьков'], ['Київ', 'Киев'], ['Дніпро', 'Днепр'], ['Львів', 'Львов'], ['Одеса', 'Одесса'], ['Запоріжжя', 'Запорожье'], ['Вінниця', 'Винница'], ['Полтава', 'Полтава']];
-  var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0 };
+  var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0, resolving: false, whAt: {}, whPending: {} };
   var NP_TIMEOUT = 5000;
   function npFieldsHtml() {
     var f = state.form;
@@ -3701,7 +3701,7 @@
     npShowWh();
   }
   /** GET к серверу с обрывом через 5 с: долгий ответ не мешает оформлению, остаётся ручной ввод. */
-  function apiGetTimed(query) {
+  function apiGetTimed(query, limit) {
     return new Promise(function (resolve, reject) {
       var done = false, ctl = null;
       try { ctl = window.AbortController ? new AbortController() : null; } catch (e) { ctl = null; }
@@ -3710,7 +3710,7 @@
         done = true;
         try { if (ctl) ctl.abort(); } catch (e) { /* уже закончено */ }
         reject(new Error('timeout'));
-      }, NP_TIMEOUT);
+      }, limit || NP_TIMEOUT);
       fetch(cfg.API_URL + (cfg.API_URL.indexOf('?') < 0 ? '?' : '&') + query, ctl ? { signal: ctl.signal } : undefined)
         .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
         .then(function (v) { if (done) return; done = true; clearTimeout(timer); resolve(v); },
@@ -3734,7 +3734,7 @@
   /* --- города: дебаунс 500 мс, кэш по строке запроса, не короче 2 букв --- */
   function npCityTyped(input) {
     clearTimeout(np.timer);
-    np.ref = ''; np.seq++;
+    np.ref = ''; np.seq++; np.resolving = false;
     npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], '');
     var q = input.value.trim(), key = q.toLowerCase(), seq = np.seq;
     if (q.length < 2) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
@@ -3748,9 +3748,10 @@
       var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
       if (list) np.cities[key] = list;
       if (seq !== np.seq) return; // пришёл устаревший ответ — не затираем свежий
+      np.resolving = false;
       npBusy('cityBusy', false);
       if (list) npCityShow(list, pick, q, chip); else suggShow('citySugg', [], '');
-    }).catch(function () { if (seq === np.seq) { npBusy('cityBusy', false); suggShow('citySugg', [], ''); } });
+    }).catch(function () { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } });
   }
   function npCityShow(list, pick, q, chip) {
     suggShow('citySugg', list, 'np-city');
@@ -3770,6 +3771,7 @@
     var seq = ++np.seq, key = q.toLowerCase();
     if (np.cities[key]) { npBusy('cityBusy', false); npCityShow(np.cities[key], true, q, chip); return; }
     npBusy('cityBusy', true);
+    np.resolving = true; // поиск «по уходу с поля» или из чипа уже идёт: второй не запускаем
     npCityFetch(q, seq, true, chip);
   }
   function npChooseCity(x, auto) {
@@ -3789,15 +3791,29 @@
   function npLoadWh() {
     var ref = np.ref;
     if (!npOn() || !ref) return;
-    if (np.wh[ref] === undefined) {
-      np.wh[ref] = 'loading';
+    var st = np.wh[ref], retryMs = Number(window.__NP_RETRY_MS) || 30000;
+    // Прошлая попытка не удалась: повторяем при следующем фокусе поля, не чаще раза в 30 с на город.
+    if (st === 'old' && !np.whPending[ref] && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined;
+    if (st === undefined) {
+      np.wh[ref] = 'loading'; np.whPending[ref] = true; np.whAt[ref] = Date.now();
       npBusy('whBusy', state.form.npType !== 'courier');
-      apiGetTimed('action=np.whall&city=' + encodeURIComponent(ref)).then(function (res) {
+      // Через 5 с «Шукаю…» исчезает и работает ручной ввод / старый путь, но сам запрос ждём до 40 с и ответ сохраняем.
+      setTimeout(function () {
+        if (np.wh[ref] !== 'loading') return;
+        np.wh[ref] = 'old';
+        if (np.ref === ref) npBusy('whBusy', false);
+      }, NP_TIMEOUT);
+      apiGetTimed('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
+        np.whPending[ref] = false;
         var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
           .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
         np.wh[ref] = list || 'old'; // нет ответа или бэкенд не знает np.whall — подсказки по-старому, через np.wh
-        if (np.ref === ref) { npBusy('whBusy', false); npShowWh(); }
-      }).catch(function () { np.wh[ref] = 'old'; if (np.ref === ref) npBusy('whBusy', false); });
+        if (np.ref === ref) {
+          npBusy('whBusy', false);
+          var inp = document.getElementById('f-branch');
+          if (list && inp && (document.activeElement === inp || !inp.value)) npShowWh(); // открытый список обновляем
+        }
+      }).catch(function () { np.whPending[ref] = false; np.wh[ref] = 'old'; if (np.ref === ref) npBusy('whBusy', false); });
       return;
     }
     npShowWh();
@@ -3847,13 +3863,14 @@
     if (input.name === 'city') npCityTyped(input); else npBranchTyped(input);
   }
   // Нажатие на подсказку не должно теряться из-за blur поля, который на телефоне срабатывает раньше click.
-  ['pointerdown', 'touchstart', 'mousedown'].forEach(function (ev) {
-    el.page.addEventListener(ev, function (e) {
-      if (!e.target.closest || !e.target.closest('.sugg')) return;
-      np.tap = Date.now() + 700;
-      if (ev !== 'touchstart' && e.cancelable) e.preventDefault(); // поле не теряет фокус, список не перерисовывается до click
-    }, { passive: false });
-  });
+  function npTap(e) {
+    if (!e.target.closest || !e.target.closest('.sugg')) return;
+    np.tap = Date.now() + 700;
+    if (e.type !== 'touchstart' && e.cancelable) e.preventDefault(); // поле не теряет фокус, список не перерисовывается до click
+  }
+  el.page.addEventListener('touchstart', npTap, { passive: true }); // прокрутку не тормозим: preventDefault здесь не нужен
+  el.page.addEventListener('pointerdown', npTap);
+  el.page.addEventListener('mousedown', npTap);
   el.page.addEventListener('focusin', function (e) {
     if (!npOn() || e.target.name !== 'branch') return;
     var city = document.getElementById('f-city');
@@ -3864,7 +3881,7 @@
     var name = e.target && e.target.name;
     if (name !== 'city' && name !== 'branch') return;
     setTimeout(function () {
-      if (Date.now() < np.tap || !npOn()) return;
+      if (Date.now() < np.tap || !npOn() || np.resolving) return;
       var inp = document.getElementById('f-' + name);
       if (!inp || document.activeElement === inp) return;
       if (name === 'city') npCityResolve(inp.value, false);
@@ -4112,7 +4129,7 @@
       if (city && kind === 'np-city') npChooseCity({ s: b.getAttribute('data-val'), ref: b.getAttribute('data-ref') }, false);
       else if (city) { // чип с крупным городом: ref неизвестен — спрашиваем сервер и выбираем точное совпадение
         city.value = b.getAttribute('data-city');
-        np.ref = ''; np.seq++; suggShow('citySugg', [], ''); npBusy('cityPick', false); suggShow('whSugg', [], '');
+        np.ref = ''; np.seq++; np.resolving = false; suggShow('citySugg', [], ''); npBusy('cityPick', false); suggShow('whSugg', [], '');
         setError('city', ''); readForm(); hapticSelect();
         npCityResolve(city.value, true);
       }

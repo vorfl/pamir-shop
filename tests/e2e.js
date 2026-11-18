@@ -1880,6 +1880,7 @@ const smallTargets = page => page.evaluate(() => {
           calls.whall++;
           if (o.whall === 'error') return send({ ok: false });
           if (o.whall === 'hang') return send({ ok: true, list: WH }, 6500);
+          if (o.whall === 'slow') return send({ ok: true, list: WH }, 8000);
           return send({ ok: true, list: WH });
         }
         if (action === 'np.wh') { calls.wh++; return send({ ok: true, list: [{ n: 'Відділення №12: вул. Стара, 1', num: '12' }] }); }
@@ -2003,6 +2004,12 @@ const smallTargets = page => page.evaluate(() => {
     await e1.page.locator('#citySugg button').first().click();
     await e1.page.waitForTimeout(300);
     ok(await e1.page.locator('#whSugg').isHidden() && await e1.page.locator('#whBusy').isHidden(), 'np.whall вернул ошибку — тихо, без списка и без «Шукаю…»');
+    await e1.page.evaluate(() => { window.__NP_RETRY_MS = 300; });
+    await e1.page.waitForTimeout(400);
+    await e1.page.click('#f-phone');
+    await e1.page.click('#f-branch');
+    await e1.page.waitForTimeout(300);
+    ok(c4.whall === 2, '{ok:false}: при следующем фокусе поля отделения np.whall повторяется', c4.whall);
     await e1.page.fill('#f-branch', '12');
     await e1.page.waitForSelector('#whSugg button');
     ok(c4.wh === 1 && /№?12/.test((await sugg(e1.page, 'whSugg'))[0]), 'бэкенд без np.whall: подсказки по-старому через np.wh');
@@ -2040,6 +2047,39 @@ const smallTargets = page => page.evaluate(() => {
     await e3.page.waitForSelector('.done');
     ok(e3.errors.length === 0, 'зависший ответ: заказ оформлен без ошибок в консоли', e3.errors);
     await e3.page.context().close(); st3.server.close();
+
+    // ответ np.whall приходит через 8 с: через 5 с доступен ручной ввод, после ответа работает новая схема
+    const stS = await mk(8846);
+    const sl = await toNpCheckout(stS, 911);
+    const cS = await stubNp(sl.page, { whall: 'slow' });
+    await pickNp(sl.page);
+    await sl.page.locator('#cityChips .chip', { hasText: 'Київ' }).click();
+    await sl.page.waitForSelector('#whBusy:not([hidden])');
+    await sl.page.waitForTimeout(5400);
+    ok(await sl.page.locator('#whBusy').isHidden(), 'np.whall отвечает долго: через 5 с «Шукаю…» исчезло, ввод доступен');
+    await sl.page.fill('#f-branch', '12');
+    await sl.page.waitForSelector('#whSugg button');
+    ok(cS.wh >= 1 && /Стара/.test((await sugg(sl.page, 'whSugg'))[0]), 'пока список грузится — подсказки по-старому через np.wh', await sugg(sl.page, 'whSugg'));
+    await sl.page.waitForFunction(() => /^№12,/.test((document.querySelector('#whSugg button') || {}).textContent || ''), null, { timeout: 6000 });
+    const whBefore = cS.wh;
+    await sl.page.fill('#f-branch', '777');
+    await sl.page.fill('#f-branch', '121');
+    const ls = await sugg(sl.page, 'whSugg');
+    ok(/^№121,/.test(ls[0]) && cS.wh === whBefore && cS.whall === 1, 'ответ пришёл позже 5 с: список из 1200 работает без новых запросов, открытый список обновился', { ls: ls.slice(0, 2), wh: cS.wh, whall: cS.whall });
+    ok(sl.errors.length === 0, 'долгий np.whall: ошибок в консоли нет', sl.errors);
+    await sl.page.context().close(); stS.server.close();
+
+    // чип города сразу после ввода в поле города
+    const stC = await mk(8847);
+    const ch = await toNpCheckout(stC, 912);
+    await stubNp(ch.page, {});
+    await pickNp(ch.page);
+    await ch.page.fill('#f-city', 'Хар');
+    await ch.page.locator('#cityChips .chip', { hasText: 'Харків' }).click();
+    await ch.page.waitForSelector('#whSugg button');
+    await ch.page.waitForTimeout(600);
+    ok(await ch.page.inputValue('#f-city') === 'Харків' && await ch.page.locator('#cityPick').isHidden() && await ch.page.locator('#whSugg button').count() === 10, 'чип сразу после ввода «Хар»: город выбран однозначно, отделения показаны, «Оберіть місто» нет');
+    await ch.page.context().close(); stC.server.close();
 
     // --- оплата на счёт ФОП ---
     const stF = await mk(8844, s => { s.fop = 1; s.pay = ['cash', 'card']; });

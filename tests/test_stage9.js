@@ -26,7 +26,7 @@ function build() {
     rows.push(row);
   };
   const base = { 'Категорія (UA)': 'Спеції', 'Категория (RU)': 'Специи', 'Наявність': 'є' };
-  add(Object.assign({}, base, { 'ID': 'SPS-001', 'Назва (UA)': 'Суміш для плову стара', 'Название (RU)': 'Смесь для плова', 'Тип': 'вагова', 'Фасування': '50 г / 80 г', 'Ціна за 1 кг': 700 }));
+  add(Object.assign({}, base, { 'ID': 'SPS-001', 'Назва (UA)': 'Суміш для плову стара', 'Название (RU)': 'Смесь для плова', 'Тип': 'вагова', 'Фасування': '50 г / 80 г', 'Ціна за 1 кг': 700, 'Стара ціна': 1200, 'Акція до': '31.12.2099', 'Опт: ціна': 600, 'Опт: мін. обсяг': 'від 5 кг', 'Залишок': 2.5 }));
   add(Object.assign({}, base, { 'ID': 'SPS-007', 'Назва (UA)': 'Барбарис', 'Тип': 'вагова', 'Фасування': '100 г', 'Ціна за 1 кг': 900, 'Фото (посилання)': DRIVE, 'Приховати з вітрини': 'так' }));
   add(Object.assign({}, base, { 'ID': 'SPS-021', 'Назва (UA)': 'Суміш для лагману', 'Тип': 'упаковка', 'Ціна за упаковку/шт': 50 }));
   add({ 'ID': 'NUT-045', 'Категорія (UA)': 'Горіхи', 'Категория (RU)': 'Орехи', 'Назва (UA)': 'Арахіс смажений', 'Тип': 'вагова', 'Фасування': '100 г', 'Ціна за 1 кг': 300, 'Наявність': 'є', 'Фото (посилання)': 'https://old.example/p.jpg' });
@@ -89,6 +89,7 @@ console.log('Блокировка занята');
 console.log('Первый запуск');
 const g = fresh();
 const before = table(g);
+const beforeAll = JSON.stringify(g.sheets['Товари'].rows);
 const beforeRows = JSON.stringify(before.rows);
 const beforeProps = JSON.stringify(g.props);
 const t0 = Date.now();
@@ -99,7 +100,7 @@ ok(JSON.stringify(Object.assign({}, g.props, { STAGE9_NOTICE_DONE: undefined }))
 ok(copies(g).length === 1 && /^Товари — копія перед етапом 9 \d\d\.\d\d\.\d{4}$/.test(copies(g)[0]), 'копия листа «Товари» с датой создана одна', copies(g));
 {
   const cp = g.sheets[copies(g)[0]].rows;
-  ok(JSON.stringify(cp) === JSON.stringify(JSON.parse(JSON.stringify(g.sheets['Товари'].rows.slice(0, before.rows.length + 1).map((r, i) => i === 0 ? r.slice(0, before.head.length) : r.slice(0, before.head.length))))) || cp.length === before.rows.length + 1, 'копия — состояние до изменений (то же число строк)', cp.length);
+  ok(cp.length === before.rows.length + 1, 'копия имеет те же строки, что лист до изменений', cp.length);
 }
 const T = table(g);
 ok(['Вага упаковки, г', 'Порядок', 'Приховати з вітрини'].every(h => T.head.includes(h)) && T.head.filter(h => h === 'Приховати з вітрини').length === 1, 'колонки созданы (скрытие не продублировано)', T.head.slice(-4));
@@ -268,6 +269,77 @@ console.log('Полоска: отметка STAGE9_NOTICE_DONE');
   g3.sheets['Налаштування'].rows.find(x => x[0] === 'notice_text_ua')[1] = '';
   const r = g3.call('stage9Apply');
   ok(get('notice_text_ua') === '' && r.changedCells === 0, 'после очистки и повторного запуска полоска не возвращается');
+}
+
+console.log('Старые значения «за кг» при смене типа на «упаковка»');
+{
+  const k = catalog(g);
+  const row = T.byId('SPS-001');
+  ok(['Стара ціна', 'Акція до', 'Опт: ціна', 'Опт: мін. обсяг', 'Залишок'].every(h => row[T.col(h)] === ''), 'стара ціна, акція, опт и залишок очищены у бывшей весовой строки');
+  ok(k.by['SPS-001'].p === 35 && !k.by['SPS-001'].o && !k.by['SPS-001'].q && !k.by['SPS-001'].wb, 'в каталоге нет ложной скидки, остатка и опта');
+  ok(res1.rep.cleared.some(x => /SPS-001: Стара ціна \(було 1200\)/.test(x)) && res1.rep.cleared.some(x => /Залишок \(було 2\.5\)/.test(x)) && /Очищено \(було …\)/.test(res1.message), 'очищенное показано в итоге блоком «Очищено (було …)»', res1.rep.cleared);
+  ok(T.byId('SPS-003') && T.byId('SPS-003')[T.col('Тип')] === 'упаковка', 'прочие баночки получили тип «упаковка»');
+}
+
+console.log('Залишок, вписанный владельцем позже');
+{
+  const T3 = table(g);
+  T3.byId('SPS-001')[T3.col('Залишок')] = 12;
+  const r = g.call('stage9Apply');
+  ok(r.changedCells === 0 && T3.byId('SPS-001')[T3.col('Залишок')] === 12, 'повторный запуск не стирает «Залишок» баночки');
+}
+
+console.log('Копия листа');
+ok(JSON.stringify(g.sheets[copies(g)[0]].rows) === beforeAll, 'копия совпадает с листом до изменений (ячейка в ячейку)');
+
+console.log('Куркума под SPS-021 — чужой товар');
+{
+  const s = build();
+  s.sheets['Товари'].find(r => r[0] === 'SPS-021')[3] = 'Куркума ціла';
+  const g4 = createGas(CODE, s);
+  g4.sheets['Товари'].copyTo = ss => { const n = ss.insertSheet('x'); n.rows = JSON.parse(JSON.stringify(g4.sheets['Товари'].rows)); n.setName = nm => { delete g4.sheets.x; n.name = nm; g4.sheets[nm] = n; }; return n; };
+  const r = g4.call('stage9Apply');
+  const T4 = table(g4);
+  ok(T4.byId('SPS-021')[3] === 'Куркума ціла' && T4.byId('SPS-021')[T4.col('Приховати з вітрини')] === 'так' && !r.rep.renamed.some(x => /SPS-021/.test(x)), 'куркума не переименована в «для курки», скрыта как прочие специи');
+  ok(T4.byId('SPS-026') && T4.byId('SPS-026')[3] === 'Спеції для курки — родинний рецепт', 'курка получила новый ID');
+}
+
+console.log('ID без учёта регистра и пробелов');
+{
+  const s = build();
+  const row = s.sheets['Товари'][0].map(() => '');
+  const head = s.sheets['Товари'][0];
+  row[head.indexOf('ID')] = ' sps-014 '; row[head.indexOf('Назва (UA)')] = 'Хмелі стара'; row[head.indexOf('Категорія (UA)')] = 'Спеції'; row[head.indexOf('Тип')] = 'вагова'; row[head.indexOf('Наявність')] = 'є';
+  s.sheets['Товари'].push(row);
+  const g5 = createGas(CODE, s);
+  g5.sheets['Товари'].copyTo = ss => { const n = ss.insertSheet('x'); n.rows = JSON.parse(JSON.stringify(g5.sheets['Товари'].rows)); n.setName = nm => { delete g5.sheets.x; n.name = nm; g5.sheets[nm] = n; }; return n; };
+  g5.call('stage9Apply');
+  const hops = g5.sheets['Товари'].rows.filter(r => /^\s*sps-014\s*$/i.test(r[0]));
+  ok(hops.length === 1 && hops[0][3] === 'Хмелі-сунелі', '« sps-014 » — это SPS-014: вторая строка не создана, эта обновлена', hops.map(r => r[0]));
+}
+
+console.log('Колонки «Порядок» и «Вага упаковки, г» — только точное название');
+{
+  const s = build();
+  const head = s.sheets['Товари'][0];
+  head.push('Порядок (старий)', 'Вага упаковки, г (стара)');
+  s.sheets['Товари'].forEach((r, i) => { if (i) r.push('x', 'y'); });
+  const g6 = createGas(CODE, s);
+  g6.sheets['Товари'].copyTo = ss => { const n = ss.insertSheet('x'); n.rows = JSON.parse(JSON.stringify(g6.sheets['Товари'].rows)); n.setName = nm => { delete g6.sheets.x; n.name = nm; g6.sheets[nm] = n; }; return n; };
+  g6.call('stage9Apply');
+  const T6 = table(g6);
+  ok(T6.head.includes('Порядок') && T6.head.includes('Вага упаковки, г') && T6.rows.every(r => ['x', ''].includes(r[T6.col('Порядок (старий)')]) && ['y', ''].includes(r[T6.col('Вага упаковки, г (стара)')])) && T6.byId('SET-001')[T6.col('Порядок')] === 1, 'создана отдельная колонка «Порядок», «Порядок (старий)» не тронута');
+}
+
+console.log('Launch после этапа 9');
+{
+  const g7 = createGas(CODE, seed());
+  g7.props.STAGE9_NOTICE_DONE = '1';
+  const b = snap(g7);
+  g7.call('menuLaunchApply');
+  const msg = g7.ui.alerts.pop();
+  const r = g7.call('launchApply_');
+  ok(/Етап 9 уже застосовано.*запуск скасовано/.test(msg) && r.ok === false && r.error === 'stage9_done' && snap(g7) === b, '«Підготовка до запуску → Застосувати» после этапа 9 отказывает и ничего не меняет', msg);
 }
 
 console.log('\n' + pass + ' ok, ' + fail + ' fail');

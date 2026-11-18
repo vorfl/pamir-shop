@@ -20,7 +20,7 @@ var STAGE9_ORDER_HEAD = 'Порядок';
 var STAGE9_JARS = [
   { id: 'SPS-001', ua: 'Спеції для плову — родинний рецепт', ru: 'Специи для плова — семейный рецепт', price: 35, father: 1 },
   { id: 'SPS-003', ua: 'Спеції для шашлику — родинний рецепт', ru: 'Специи для шашлыка — семейный рецепт', price: 35, father: 1 },
-  { id: 'SPS-021', ua: 'Спеції для курки — родинний рецепт', ru: 'Специи для курицы — семейный рецепт', price: 35, father: 1, rel: 1, kw: /курк|куриц|курин/i },
+  { id: 'SPS-021', ua: 'Спеції для курки — родинний рецепт', ru: 'Специи для курицы — семейный рецепт', price: 35, father: 1, rel: 1, kw: /курк(?!ум)|куриц|курин/i },
   { id: 'SPS-022', ua: 'Спеції для риби — родинний рецепт', ru: 'Специи для рыбы — семейный рецепт', price: 35, father: 1, rel: 1, kw: /риб|рыб/i },
   { id: 'SPS-023', ua: 'Спеції для корейської моркви — родинний рецепт', ru: 'Специи для корейской моркови — семейный рецепт', price: 35, father: 1, rel: 1, kw: /морк/i },
   { id: 'SPS-014', ua: 'Хмелі-сунелі', ru: 'Хмели-сунели', price: 35 },
@@ -167,6 +167,10 @@ function stage9Run_() {
   spec.packG = ['вага упаковки, г'];
   spec.order = ['порядок'];
   var col = mapHeaders_(vals[0], spec);
+  // «Порядок» и «Вага упаковки, г» — только точное совпадение заголовка (как в Code.gs), а не «по началу»
+  var exactHead = vals[0].map(function (h) { return String(h || '').replace(/s+/g, ' ').trim().toLowerCase(); });
+  col.packG = exactHead.indexOf('вага упаковки, г');
+  col.order = exactHead.indexOf('порядок');
   var must = [['id', 'ID'], ['nameUa', 'Назва (UA)'], ['type', 'Тип'], ['pUnit', 'Ціна за упаковку'], ['stock', 'Наявність'], ['photo', 'Фото'], ['catUa', 'Категорія (UA)']];
   for (var m = 0; m < must.length; m++) {
     if (col[must[m][0]] < 0) return { ok: false, error: 'no_col', message: 'В аркуші «' + SHEET_PRODUCTS + '» немає колонки «' + must[m][1] + '». Нічого не змінено.' };
@@ -174,7 +178,7 @@ function stage9Run_() {
 
   var touched = {};            // «r:c» → true: ячейки, которые меняем
   var cells = [];              // [[r, c, value]]
-  var rep = { changed: [], created: [], skipped: [], waiting: [], renamed: [], drive: [], replaced: [], notes: [], warn: [] };
+  var rep = { changed: [], created: [], skipped: [], waiting: [], renamed: [], cleared: [], drive: [], replaced: [], notes: [], warn: [] };
   var rowChanges = {};         // r → [что изменено]
   var newCols = [];
 
@@ -211,14 +215,16 @@ function stage9Run_() {
     var ac = mapHeaders_(av[0], PRODUCT_COLS);
     for (var a = 1; a < av.length; a++) {
       var aid = cell_(av[a], ac.id), anm = cell_(av[a], ac.nameUa);
+      aid = aid.trim().toUpperCase();
       if (aid) arch.byId[aid] = anm;
       if (anm && !arch.byName[s9Norm_(anm)]) arch.byName[s9Norm_(anm)] = aid;
     }
   }
 
   var rowById = {}, rowByName = {};
+  function idOf(r) { return text(r, 'id').toUpperCase(); }
   function index(r) {
-    var id = text(r, 'id'), nm = s9Norm_(text(r, 'nameUa'));
+    var id = idOf(r), nm = s9Norm_(text(r, 'nameUa'));
     if (id && rowById[id] === undefined) rowById[id] = r;
     if (nm && rowByName[nm] === undefined) rowByName[nm] = r;
   }
@@ -230,7 +236,7 @@ function stage9Run_() {
   function allocId(prefix) {
     if (allocated[prefix] === undefined) {
       var max = 0;
-      var scan = function (id) { var mm = String(id).match(/^([A-Z0-9]+)-(\d+)$/); if (mm && mm[1] === prefix) max = Math.max(max, parseInt(mm[2], 10)); };
+      var scan = function (id) { id = String(id).toUpperCase(); var mm = String(id).match(/^([A-Z0-9]+)-(\d+)$/); if (mm && mm[1] === prefix) max = Math.max(max, parseInt(mm[2], 10)); };
       Object.keys(rowById).forEach(scan);
       Object.keys(arch.byId).forEach(scan);
       try { if (typeof reservedIdMax_ === 'function') max = Math.max(max, reservedIdMax_(prefix)); } catch (e) { /* без резерва — только по листам */ }
@@ -303,6 +309,16 @@ function stage9Run_() {
     return r;
   }
 
+  var QTY_CLEAR = [['oldPrice', 'Стара ціна'], ['saleEnd', 'Акція до'], ['whPrice', 'Опт: ціна'], ['whMin', 'Опт: мін. обсяг'], ['whMinKg', 'Опт: мін, кг'], ['qty', 'Залишок']];
+  /** Строка была не «упаковка»: старые значения «за кг» (стара ціна, опт, залишок у кг) дали бы ложную скидку. Пустой «Залишок» = облік не ведеться (leftQty_ → null). */
+  function clearOnPack(r) {
+    if (r >= origRows || s9Norm_(text(r, 'type')) === 'упаковка') return;
+    QTY_CLEAR.forEach(function (c) {
+      if (col[c[0]] === undefined || col[c[0]] < 0) return;
+      var was = text(r, c[0]);
+      if (was && set(r, col[c[0]], '')) rep.cleared.push(idOf(r) + ': ' + c[1] + ' (було ' + was + ')');
+    });
+  }
   var spicesCat = { ua: 'Спеції', ru: 'Специи' };
 
   // 3. Баночки и 5. наборы.
@@ -314,6 +330,7 @@ function stage9Run_() {
     keep[r] = true;
     field(r, 'nameUa', j.ua, 'назва UA');
     field(r, 'nameRu', j.ru, 'назва RU');
+    clearOnPack(r);
     field(r, 'type', 'упаковка', 'тип');
     field(r, 'pUnit', j.price, 'ціна');
     field(r, 'packs', '', 'фасування очищено');
@@ -329,6 +346,7 @@ function stage9Run_() {
     keep[r] = true;
     field(r, 'nameUa', s.ua, 'назва UA');
     field(r, 'nameRu', s.ru, 'назва RU');
+    clearOnPack(r);
     field(r, 'type', 'упаковка', 'тип');
     field(r, 'pUnit', s.price, 'ціна');
     field(r, 'descUa', s.dUa, 'опис UA');
@@ -342,7 +360,7 @@ function stage9Run_() {
   // 4. Остальные специи — скрыть.
   for (var h = 1; h < origRows; h++) {
     if (keep[h]) continue;
-    var hid = text(h, 'id');
+    var hid = idOf(h);
     if (!hid || !text(h, 'nameUa')) continue;
     var cu = s9Norm_(text(h, 'catUa')), cr = s9Norm_(text(h, 'catRu'));
     var isSpice = cu === 'спеції' || cr === 'специи' || (!cu && !cr && /^SPS-/.test(hid));
@@ -358,7 +376,7 @@ function stage9Run_() {
   STAGE9_JARS.forEach(function (j) {
     var r = jarRows[j.id];
     if (r === undefined) return;
-    if (j.father) { orderList.push([r, 11 + fi++]); fatherIds.push(text(r, 'id')); } else { orderList.push([r, 21 + oi++]); }
+    if (j.father) { orderList.push([r, 11 + fi++]); fatherIds.push(idOf(r)); } else { orderList.push([r, 21 + oi++]); }
   });
   // Остальные баночки должны идти после смесей отца: нумерация 21+ в порядке таблицы задания.
   orderList.forEach(function (o) { field(o[0], 'order', o[1], 'порядок'); });
@@ -483,7 +501,7 @@ function stage9Run_() {
 
   // 8. Настройки.
   var noticeDone = String(scriptProps_().getProperty(STAGE9_NOTICE_FLAG) || '') === '1';
-  var st = s9PlanSettings_(ss, fatherIds, STAGE9_KURAGA.map(function (k) { return kRows[k.id] === undefined ? '' : text(kRows[k.id], 'id'); }).filter(Boolean), noticeDone);
+  var st = s9PlanSettings_(ss, fatherIds, STAGE9_KURAGA.map(function (k) { return kRows[k.id] === undefined ? '' : text(kRows[k.id], 'id').toUpperCase(); }).filter(Boolean), noticeDone);
   st.setFlag = !noticeDone;
 
   var changedCells = cells.length + st.updates.length + st.appends.length;
@@ -572,6 +590,7 @@ function s9Report_(ss, rep, res, headline) {
   if (res.newCols.length) lines.push('Нові колонки: ' + res.newCols.join(', '));
   block('Змінено', rep.changed);
   block('Перейменовано (той самий товар)', rep.renamed);
+  block('Очищено (було …)', rep.cleared);
   block('Створено', rep.created);
   block('Пропущено', rep.skipped);
   block('Чекає ціну (приховано, на вітрині немає)', rep.waiting);

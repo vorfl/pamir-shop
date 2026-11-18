@@ -53,6 +53,7 @@ function menuLaunchBackup() {
 
 function menuLaunchApply() {
   var ui = SpreadsheetApp.getUi();
+  if (launchStage9Done_()) { ui.alert(LAUNCH_STAGE9_MSG); return; }
   if (!launchBackupToday_()) {
     ui.alert('Спочатку зробіть резервну копію: меню PAMIR → «Підготовка до запуску» → «2. Зробити резервну копію».\n\nБез сьогоднішньої копії зміни не вносяться.');
     return;
@@ -666,8 +667,15 @@ function launchBackup_() {
  * Вносит изменения. Возвращает { ok, done, phase }.
  * opts (только для тестов): budgetMs — сколько работать за один запуск, chunk — товаров в архив за порцию.
  */
+/** Этап 9 уже внесён (отметка Stage9.gs): «Застосувати» вернул бы специи к весовым и убрал новые товары. */
+var LAUNCH_STAGE9_MSG = 'Етап 9 уже застосовано. Цей пункт повернув би спеції до вагових і прибрав нові товари — запуск скасовано.';
+function launchStage9Done_() {
+  try { return String(scriptProps_().getProperty('STAGE9_NOTICE_DONE') || '') === '1'; } catch (err) { return false; }
+}
+
 function launchApply_(opts) {
   opts = opts || {};
+  if (launchStage9Done_()) return { ok: false, error: 'stage9_done', message: LAUNCH_STAGE9_MSG };
   if (!launchBackupToday_()) return { ok: false, error: 'no_backup', message: 'немає резервної копії за сьогодні' };
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return { ok: false, error: 'busy' };
