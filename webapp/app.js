@@ -564,6 +564,7 @@
     data.products.forEach(function (p) { data.byId[p.id] = p; });
     buildSearchIndex(data);
     state.catalog = data;
+    npc.off = false;
     state.status = 'ready';
     if (state.cat && !data.categories.some(function (c) { return c.code === state.cat; })) state.cat = '';
     reconcileCart();
@@ -4461,16 +4462,26 @@
   var npPauseUntil = Number(ssGet('pamir_nppause_v1')) || 0;
   function npPaused() { return Date.now() < npPauseUntil; }
   function npPauseSet(res) {
-    var ra = res && Number(res.retryAfter), ms = ra > 0 ? Math.min(ra, 3600) * 1000 : NP_PAUSE_MS; // retryAfter — секунды, поле необязательное
+    var ra = res && Number(res.retryAfter), ms = ra > 0 ? Math.min(ra, 3600) * 1000 : NP_PAUSE_MS; // retryAfter — секунды; без него (три ошибки подряд у старого бэкенда) — 10 минут
     npPauseUntil = Date.now() + ms;
     ssSet('pamir_nppause_v1', String(npPauseUntil));
     clearTimeout(np.timer); clearTimeout(np.whTimer); clearTimeout(npc.timer); npc.want = ''; np.queued = null;
   }
-  /** Запрос np.* через единую дверь: в паузе не уходит; ответ ok:false (кроме «старый бэкенд не знает действие») включает паузу. */
+  /** Запрос np.* через единую дверь: в паузе не уходит. ОБЩУЮ паузу включает только ответ с retryAfter (так новый бэкенд сообщает о лимите НП)
+   *  или три ошибки ok:false подряд за 2 минуты (старый бэкенд retryAfter не присылает). Остальные ошибки отключают только свой запрос — решает вызывающий. */
+  var npErrAt = [];
   function npGet(query, limit) {
     if (npPaused()) return Promise.reject(new Error('np_pause'));
     return apiGetTimed(query, limit).then(function (res) {
-      if (res && res.ok === false && res.error !== 'unknown_action') npPauseSet(res);
+      if (res && res.ok === false) {
+        var now = Date.now();
+        if (Number(res.retryAfter) > 0) { npErrAt = []; npPauseSet(res); }
+        else {
+          npErrAt.push(now);
+          npErrAt = npErrAt.filter(function (t0) { return now - t0 <= 120000; });
+          if (npErrAt.length >= 3) { npErrAt = []; npPauseSet(null); }
+        }
+      } else if (res && res.ok) npErrAt = [];
       return res;
     });
   }
@@ -4491,7 +4502,7 @@
 
   /* --- стоимость доставки «≈ 85 ₴ за тарифом Нової пошти» (только при shop.npp = 1; в сумму заказа не входит) --- */
   // Не чаще одного запроса на пару (город, ступень веса 0,5 кг) за сессию: кэш в памяти и в sessionStorage; после ошибки — не раньше чем через 10 минут.
-  var npc = { cache: {}, failAt: {}, timer: null, want: '' };
+  var npc = { cache: {}, failAt: {}, timer: null, want: '', off: false }; // off: сервер не считает стоимость (off / нет функции) — до перезагрузки каталога не спрашиваем
   var NPC_DEBOUNCE = 400, NPC_RETRY_MS = NP_PAUSE_MS;
   (function () {
     try {
@@ -4505,7 +4516,7 @@
     Object.keys(npc.cache).forEach(function (k) { if (typeof npc.cache[k] === 'number') s.c[k] = npc.cache[k]; else if (npc.cache[k] === 'fail') s.f[k] = npc.failAt[k] || 0; });
     ssSet('pamir_npc_v1', JSON.stringify(s));
   }
-  function npCostOn() { return Number(shopInfo().npp) === 1 && !!cfg.API_URL; }
+  function npCostOn() { return Number(shopInfo().npp) === 1 && !!cfg.API_URL && !npc.off; }
   /** Что спрашивать у сервера сейчас: город, вес корзины, сумма. null — не хватает данных (нет города с ref, не наш вид доставки, вес хоть одной позиции неизвестен). */
   function npCostTarget() {
     if (!npCostOn() || state.form.delivery !== 'np' || !state.catalog) return null;
@@ -4545,7 +4556,9 @@
         npcSave();
       };
       npGet('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
-        done(res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0);
+        if (res && res.ok === false && res.error === 'off') npc.off = true;                // данные отправителя устарели: стоимость не спрашиваем до перезагрузки каталога
+        else if (res && res.ok === true && !('cost' in res)) npc.off = true;               // старый бэкенд: на неизвестное действие отвечает {ok:true} без данных — функции нет
+        done(res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0);   // прочие ошибки (np_error, busy): этот ключ — не раньше чем через 10 минут
       }).catch(function () { done(0); })
         .then(function () { if (npc.want === w.key) npc.want = ''; npCostSync(); }); // устаревший ответ только ложится в кэш: показывается то, что нужно сейчас
     }, NPC_DEBOUNCE);
@@ -4635,15 +4648,22 @@
     npBusy('cityBusy', true);
     np.timer = setTimeout(function () { npCityFetch(q, seq, false, false); }, NP_DEBOUNCE);
   }
-  function npCityFetch(q, seq, pick, chip) {
+  var npCityFail = {}; // текст -> до какого момента его не запрашиваем (ошибка не из-за лимита: только этот текст)
+  function npCityFetch(q, seq, pick, chip, retried) {
     var key = npKey(q);
-    if (npPaused()) { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } return; }
+    if (npPaused() || Date.now() < (npCityFail[key] || 0)) { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } return; }
     if (np.flight) { np.queued = { q: q, seq: seq, pick: pick, chip: chip }; return; } // один запрос в пути: новый ждёт его конца
     np.flight = key;
     var finish = function () { np.flight = ''; npCityNext(); };
     npGet('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
       var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
       if (list) np.cities[key] = list;
+      if (!list && res && res.ok === false && res.error === 'busy' && !retried) { // такой же запрос уже идёт: один повтор через ~2,5 с, если текст не менялся
+        setTimeout(function () { if (seq === np.seq) npCityFetch(q, seq, pick, chip, true); else if (np.seq === seq) npBusy('cityBusy', false); }, 2500);
+        finish();
+        return;
+      }
+      if (!list && res && res.ok === false) npCityFail[key] = Date.now() + 60000; // этот текст — не раньше чем через минуту
       if (seq === np.seq) { // устаревший ответ только ложится в кэш и не затирает свежий
         np.resolving = false;
         npBusy('cityBusy', false);
@@ -4705,7 +4725,7 @@
     var st = np.wh[ref], retryMs = Number(window.__NP_RETRY_MS) || NP_PAUSE_MS;
     // Список — один раз на город за сессию. Прошлая попытка не удалась: повторяем при следующем фокусе поля, не раньше чем через 10 минут.
     if (npPaused() && (st === undefined || st === 'old' || st === 'err')) return; // пауза: не грузим, поле работает вручную
-    if (st === 'err') st = undefined; // пауза закончилась — один новый запрос списка
+    if (st === 'err' && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined; // ошибка списка этого города: не раньше чем через 10 минут
     if (st === 'old' && !np.whPending[ref] && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined;
     if (st === undefined) {
       np.wh[ref] = 'loading'; np.whPending[ref] = true; np.whAt[ref] = Date.now();
@@ -4716,22 +4736,33 @@
         np.wh[ref] = 'old';
         if (np.ref === ref) npBusy('whBusy', false);
       }, NP_TIMEOUT);
-      npGet('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
-        np.whPending[ref] = false;
-        var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
-          .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
-        // Ошибка НП (ok:false, кроме unknown_action): запасной np.wh НЕ включаем — иначе лимит поддерживал бы сам себя; список повторим после паузы.
-        var npErr = res && res.ok === false && res.error !== 'unknown_action';
-        np.wh[ref] = list || (npErr ? 'err' : 'old'); // нет ответа или бэкенд не знает np.whall — подсказки по-старому, через np.wh
-        if (np.ref === ref) {
-          npBusy('whBusy', false);
-          var inp = document.getElementById('f-branch');
-          if (list && inp && (document.activeElement === inp || !inp.value)) npShowWh(); // открытый список обновляем
-        }
-      }).catch(function () { np.whPending[ref] = false; np.wh[ref] = 'old'; if (np.ref === ref) npBusy('whBusy', false); });
+      npWhAll(ref, false);
       return;
     }
     npShowWh();
+  }
+  /** Запрос списка отделений города. busy — одна повторная попытка через ~5 с; прочие ошибки — этот город 10 минут не запрашиваем. Запасной np.wh при ошибке НП не включаем. */
+  function npWhAll(ref, retried) {
+    npGet('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
+      np.whPending[ref] = false;
+      var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
+        .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
+      var npErr = res && res.ok === false;
+      if (npErr && res.error === 'busy' && !retried) { // список города грузит другой запрос: ждём ~5 с и пробуем один раз
+        np.wh[ref] = 'wait'; np.whPending[ref] = true;
+        if (np.ref === ref) npBusy('whBusy', false);
+        setTimeout(function () { if (npPaused()) { np.wh[ref] = 'err'; np.whAt[ref] = Date.now(); np.whPending[ref] = false; return; } np.wh[ref] = 'loading'; npWhAll(ref, true); }, 5000);
+        return;
+      }
+      if (npErr) np.whAt[ref] = Number(res.retryAfter) > 0 ? 0 : Date.now(); // лимит НП (retryAfter): список повторим сразу после общей паузы; иная ошибка — через 10 минут
+      // Ответ без списка и без ok:false — старый бэкенд ({ok:true} на неизвестное действие): подсказки по-старому, через np.wh.
+      np.wh[ref] = list || (npErr ? 'err' : 'old');
+      if (np.ref === ref) {
+        npBusy('whBusy', false);
+        var inp = document.getElementById('f-branch');
+        if (list && inp && (document.activeElement === inp || !inp.value)) npShowWh(); // открытый список обновляем
+      }
+    }).catch(function () { np.whPending[ref] = false; np.wh[ref] = 'old'; if (np.ref === ref) npBusy('whBusy', false); });
   }
   /** Номер — точное совпадение первым («12» → №12, потом №120…), затем по улице. Тип — до обрезки списка. */
   function npFilterWh(list, q, type) {

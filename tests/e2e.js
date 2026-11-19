@@ -1952,7 +1952,7 @@ const smallTargets = page => page.evaluate(() => {
         }
         if (action === 'np.whall') {
           calls.whall++;
-          if (o.whall === 'error') return send({ ok: false, error: 'unknown_action' }); // старый бэкенд не знает np.whall (лимит НП — отдельный сценарий Б3)
+          if (o.whall === 'error') return send({ ok: true, service: 'PAMIR' }); // настоящий старый бэкенд (Code.gs 185bff6): на неизвестный GET-action отвечает {ok:true,service:'PAMIR'} без данных
           if (o.whall === 'hang') return send({ ok: true, list: WH }, 6500);
           if (o.whall === 'slow') { Promise.resolve(o.gate).then(() => send({ ok: true, list: WH })); return; } // ответ держим до команды теста (не по таймеру: иначе гонка с медленным прогоном)
           return send({ ok: true, list: WH });
@@ -4201,10 +4201,12 @@ const smallTargets = page => page.evaluate(() => {
             const u = new URL(route.request().url()), a = u.searchParams.get('action');
             log.push({ a, q: u.searchParams.get('q'), w: Number(u.searchParams.get('w')) });
             const send = b => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(b) }).catch(() => {});
-            if (mode.limit && (!mode.limit.actions || mode.limit.actions.includes(a))) { const r = { ok: false, error: mode.limit.error || 'np_error' }; if (mode.limit.retryAfter) r.retryAfter = mode.limit.retryAfter; return send(r); }
+            if (mode.old && mode.old.includes(a)) return send({ ok: true, service: 'PAMIR' }); // настоящий ответ старого бэкенда на неизвестное действие
+            if (mode.limit && (!mode.limit.actions || mode.limit.actions.includes(a)) && (mode.limit.times === undefined || mode.limit.times-- > 0)) { const r = { ok: false, error: mode.limit.error || 'np_error' }; if (mode.limit.retryAfter) r.retryAfter = mode.limit.retryAfter; return send(r); }
             if (a === 'np.city') return send({ ok: true, list: CITIES(u.searchParams.get('q')).concat(u.searchParams.get('q').toLowerCase().indexOf('ки') === 0 ? [{ n: 'м. Київ, Київська обл.', s: 'Київ', ref: '33333333-3333-3333-3333-333333333333' }] : []) });
             if (a === 'np.whall') return send({ ok: true, list: [[12, 'вул. Сумська, 12', 'w']] });
             if (a === 'np.price') return send({ ok: true, cost: priceFor(Number(u.searchParams.get('w'))) });
+            if (a === 'np.wh') return send({ ok: true, list: [{ n: 'Відділення №12: вул. Сумська, 12', num: '12' }] });
             return send({ ok: false });
           });
         } });
@@ -4290,32 +4292,37 @@ const smallTargets = page => page.evaluate(() => {
         ok(await noOverflow(p) && (await smallTargets(p)).length === 0 && L.c.errors.length === 0, 'Б3 (тёмная, RU): 360 px, кнопки ≥ 44 px, без ошибок', [await smallTargets(p), L.c.errors]);
         await L.c.ctx.close();
       }
-      /* --- Б3-3. Лимит НП на подсказках города: {ok:false,error:'np_error'} → пауза 10 минут --- */
+      /* --- Б3-3. Ошибки НП без retryAfter: сначала только свой запрос, три подряд — общая пауза 10 минут (защита для старого бэкенда) --- */
       {
         const L = await b3open(stB3, 932, {}), p = L.page;
         L.mode.limit = { error: 'np_error' };
         await p.locator('#f-city').click();
         await p.type('#f-city', 'Харків', { delay: 80 });
         await p.waitForTimeout(1500);
-        ok(L.log.length === 1 && await p.locator('#citySugg').isHidden() && await p.locator('#cityBusy').isHidden() && await count(p, '.form__err:not([hidden])') === 0 && !/Нов|тариф|помил|ліміт/i.test((await p.locator('.toast:not([hidden])').allInnerTexts()).join(' ')), 'Б3 лимит: один запрос получил ошибку — подсказок и сообщений покупателю нет', L.log);
-        await p.type('#f-city', 'а', { delay: 50 }); await p.fill('#f-city', 'Київ'); await p.waitForTimeout(1500);
+        ok(L.log.length === 1 && await p.locator('#citySugg').isHidden() && await p.locator('#cityBusy').isHidden() && await count(p, '.form__err:not([hidden])') === 0 && !/Нов|тариф|помил|ліміт/i.test((await p.locator('.toast:not([hidden])').allInnerTexts()).join(' ')), 'Б3 3 ошибки: один запрос получил ошибку — подсказок и сообщений покупателю нет', L.log);
+        await p.fill('#f-city', 'Ха'); await p.fill('#f-city', 'Харків'); await p.waitForTimeout(1500);
+        ok(L.log.length === 1, 'Б3 3 ошибки: этот же текст минуту не запрашивается', L.log);
+        await p.fill('#f-city', 'Київ'); await p.waitForTimeout(1500);
+        ok(L.log.length === 2, 'Б3 3 ошибки: после одной ошибки другой текст запрашивается (общей паузы нет)', L.log);
+        await p.fill('#f-city', 'Мерефа'); await p.waitForTimeout(1500);
+        ok(L.log.length === 3, 'Б3 3 ошибки: третья ошибка подряд', L.log);
         await p.fill('#f-branch', '12');
         await p.locator('#cityChips .chip', { hasText: 'Київ' }).click(); await p.waitForTimeout(800);
         await p.click('#f-branch'); await p.click('#f-phone'); await p.waitForTimeout(500);
-        ok(L.log.length === 1, 'Б3 лимит: после ошибки ввод города, чип, фокус отделения — 0 новых запросов np.*', L.log);
+        ok(L.log.length === 3, 'Б3 3 ошибки: общая пауза — ввод города, чип, фокус отделения дают 0 новых запросов np.*', L.log);
         await L.skew(5 * 60 * 1000); await p.fill('#f-city', 'Харкі'); await p.waitForTimeout(1500);
-        ok(L.log.length === 1, 'Б3 лимит: через 5 минут (пауза 10) — всё ещё 0 запросов', L.log);
+        ok(L.log.length === 3, 'Б3 3 ошибки: через 5 минут (пауза 10) — всё ещё 0 запросов', L.log);
         await p.fill('#f-city', 'Київ'); await p.fill('#f-branch', '15');
         await p.screenshot({ path: OUT + '/b3-np-limit-pause-light.png' });
         await L.skew(6 * 60 * 1000); L.mode.limit = null;
         await p.fill('#f-city', 'Харк'); await p.waitForSelector('#citySugg button');
-        ok(L.n('np.city') === 2, 'Б3 лимит: после 10 минут запросы возобновились (np.city 2-й раз) и подсказки снова есть', L.log);
+        ok(L.n('np.city') === 4, 'Б3 3 ошибки: после 10 минут запросы возобновились и подсказки снова есть', L.log);
         await p.locator('#citySugg button').first().click();
         await p.waitForFunction(() => document.querySelector('.js-npcost') && !document.querySelector('.js-npcost').hidden);
-        ok(L.n('np.whall') === 1 && L.n('np.price') === 1, 'Б3 лимит: после паузы выбор города — 1 np.whall и 1 np.price', cntStr(L));
+        ok(L.n('np.whall') === 1 && L.n('np.price') === 1, 'Б3 3 ошибки: после паузы выбор города — 1 np.whall и 1 np.price', cntStr(L));
         const sentL = await sendOrder(p, stB3);
-        ok(sentL && sentL.cityRef === REF_KH && sentL.delivery === 'np', 'Б3 лимит: после паузы заказ с cityRef как раньше', sentL && sentL.cityRef);
-        ok(L.c.errors.length === 0, 'Б3 лимит: в консоли нет ошибок', L.c.errors);
+        ok(sentL && sentL.cityRef === REF_KH && sentL.delivery === 'np', 'Б3 3 ошибки: после паузы заказ с cityRef как раньше', sentL && sentL.cityRef);
+        ok(L.c.errors.length === 0, 'Б3 3 ошибки: в консоли нет ошибок', L.c.errors);
         await L.c.ctx.close();
       }
       /* --- Б3-4. Лимит с retryAfter (секунды) и заказ руками во время паузы --- */
@@ -4338,25 +4345,68 @@ const smallTargets = page => page.evaluate(() => {
         ok(L2.n('np.city') === 2, 'Б3 retryAfter: через 130 с (> 120) запросы возобновились', L2.log);
         await L2.c.ctx.close();
       }
-      /* --- Б3-5. Лимит на np.price: пауза включается, цена не повторяется раньше 10 минут --- */
+      /* --- Б3-5. np_error на np.price: отключается только этот ключ цены; города и отделения работают --- */
       {
         const L = await b3open(stB3, 935, {}), p = L.page;
         L.mode.limit = { error: 'np_error', actions: ['np.price'] };
         await p.type('#f-city', 'Харк', { delay: 60 }); await p.waitForSelector('#citySugg button');
         await p.locator('#citySugg button').first().click(); await p.waitForTimeout(1500);
-        ok(L.n('np.price') === 1 && !(await costVisible(p)) && await count(p, '.form__err:not([hidden])') === 0, 'Б3 price-лимит: 1 запрос, строки стоимости и сообщений нет', cntStr(L));
+        ok(L.n('np.price') === 1 && !(await costVisible(p)) && await count(p, '.form__err:not([hidden])') === 0, 'Б3 price-ошибка: 1 запрос, строки стоимости и сообщений нет', cntStr(L));
+        ok(L.n('np.whall') === 1, 'Б3 price-ошибка: список отделений всё равно загружен', cntStr(L));
+        await p.click('#f-branch'); await p.fill('#f-branch', '12'); await p.waitForTimeout(700);
+        ok(/^№12,/.test((await sugg(p, 'whSugg'))[0] || '') && L.n('np.wh') === 0, 'Б3 price-ошибка: подсказки отделений работают', cntStr(L));
         const t0 = L.log.length;
         await p.click('[data-nav="back"]'); await p.waitForSelector('.line');
-        await p.click('[data-line-step="1"]'); await p.click('[data-line-step="1"]'); await p.waitForTimeout(1500);
-        await p.evaluate(() => window.__tg.main.cb()); await p.waitForSelector('#form');
-        await p.fill('#f-city', 'Київ'); await p.waitForTimeout(1500);
-        ok(L.log.length === t0, 'Б3 price-лимит: смена веса, возврат в оформление, ввод города — 0 новых запросов np.*', L.log.slice(t0));
-        await L.skew(11 * 60 * 1000); L.mode.limit = null;
+        await p.evaluate(() => window.__tg.main.cb()); await p.waitForSelector('#form'); await p.waitForTimeout(1500);
+        ok(L.log.length === t0, 'Б3 price-ошибка: возврат в оформление — тот же ключ цены не запрашивается снова', L.log.slice(t0));
         await p.fill('#f-city', 'Київ'); await p.waitForSelector('#citySugg button');
-        ok(L.n('np.city') === 2, 'Б3 price-лимит: после 10 минут подсказки города снова работают', cntStr(L));
+        ok(L.n('np.city') === 2 && (await sugg(p, 'citySugg')).length > 0, 'Б3 price-ошибка: подсказки города работают (общей паузы нет)', cntStr(L));
+        await L.skew(11 * 60 * 1000); L.mode.limit = null;
+        await p.fill('#f-city', 'Харк'); await p.waitForSelector('#citySugg button');
         await p.locator('#citySugg button').first().click();
         await p.waitForFunction(() => /\d/.test((document.querySelector('.js-npcost .np-cost__v') || {}).textContent || ''));
-        ok(L.n('np.price') === 2 && L.log[L.log.length - 1].a !== undefined, 'Б3 price-лимит: после паузы цена запрошена снова (1 запрос)', cntStr(L));
+        ok(L.n('np.price') === 2, 'Б3 price-ошибка: через 10 минут цена этого ключа запрошена снова (1 запрос)', cntStr(L));
+        await L.c.ctx.close();
+      }
+      /* --- Б3-5b. np.price: off — стоимость больше не спрашиваем; старый бэкенд ({ok:true,service}) — то же, отделения идут через np.wh --- */
+      {
+        const L = await b3open(stB3, 950, {}), p = L.page;
+        L.mode.limit = { error: 'off', actions: ['np.price'] };
+        await p.type('#f-city', 'Харк', { delay: 60 }); await p.waitForSelector('#citySugg button');
+        await p.locator('#citySugg button').first().click(); await p.waitForTimeout(1200);
+        await p.click('[data-nav="back"]'); await p.waitForSelector('.line');
+        await p.click('[data-line-step="1"]'); await p.click('[data-line-step="1"]'); await p.waitForTimeout(1200);
+        ok(L.n('np.price') === 1 && !(await costVisible(p)), 'Б3 price off: после «off» другие ключи веса тоже не запрашиваются', cntStr(L));
+        await L.c.ctx.close();
+        const O = await b3open(stB3, 951, {}), q = O.page;
+        O.mode.old = ['np.whall', 'np.price'];
+        await q.type('#f-city', 'Харк', { delay: 60 }); await q.waitForSelector('#citySugg button');
+        await q.locator('#citySugg button').first().click(); await q.waitForTimeout(1200);
+        await q.click('#f-branch'); await q.type('#f-branch', '12', { delay: 150 }); await q.waitForSelector('#whSugg button');
+        ok(O.n('np.whall') === 1 && O.n('np.wh') >= 1 && /№12/.test((await sugg(q, 'whSugg'))[0] || ''), 'Б3 старый бэкенд: np.whall без данных — запасной np.wh даёт подсказки отделений', cntStr(O));
+        ok(O.n('np.price') === 1 && !(await costVisible(q)), 'Б3 старый бэкенд: np.price без данных — строки нет', cntStr(O));
+        await q.click('[data-nav="back"]'); await q.waitForSelector('.line');
+        await q.click('[data-line-step="1"]'); await q.click('[data-line-step="1"]'); await q.waitForTimeout(1200);
+        ok(O.n('np.price') === 1, 'Б3 старый бэкенд: np.price больше не спрашиваем', cntStr(O));
+        await q.evaluate(() => window.__tg.main.cb()); await q.waitForSelector('#form'); await q.fill('#f-branch', '12');
+        const sentOld3 = await sendOrder(q, stB3);
+        ok(sentOld3 && sentOld3.delivery === 'np' && sentOld3.branch === '12', 'Б3 старый бэкенд: заказ проходит', sentOld3 && sentOld3.branch);
+        await O.c.ctx.close();
+      }
+      /* --- Б3-5c. np.city busy: один повтор через ~2,5 с; второй busy — текст минуту не запрашивается, общей паузы нет --- */
+      {
+        const L = await b3open(stB3, 952, {}), p = L.page;
+        L.mode.limit = { error: 'busy', actions: ['np.city'], times: 1 };
+        await p.fill('#f-city', 'Харк'); await p.waitForSelector('#citySugg button', { timeout: 6000 });
+        ok(L.n('np.city') === 2, 'Б3 city busy: busy → один повтор того же текста, подсказки появились', L.log);
+        L.mode.limit = { error: 'busy', actions: ['np.city'], times: 5 };
+        await p.fill('#f-city', 'Київ'); await p.waitForTimeout(5000);
+        ok(L.n('np.city') === 4 && await p.locator('#citySugg').isHidden(), 'Б3 city busy: ещё один повтор и стоп (всего 2 запроса на текст)', L.log);
+        await p.fill('#f-city', 'Київ'); await p.waitForTimeout(1500);
+        ok(L.n('np.city') === 4, 'Б3 city busy: тот же текст минуту не запрашивается', L.log);
+        L.mode.limit = null;
+        await p.fill('#f-city', 'Харка'); await p.waitForSelector('#citySugg button');
+        ok(L.n('np.city') === 5, 'Б3 city busy: другой текст работает — общей паузы нет', L.log);
         await L.c.ctx.close();
       }
       /* --- Б3-6. Нет sessionStorage (запрещён): всё работает в памяти, ошибок нет --- */
