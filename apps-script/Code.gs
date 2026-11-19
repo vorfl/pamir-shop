@@ -1332,7 +1332,7 @@ function handleMyOrders_(body) {
       items: cell_(row, col.items),
       total: toNum_(col.total >= 0 ? row[col.total] : 0),
       delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
-      i: again, ttn: svcTtn_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch),
+      i: again, ttn: svcTtnClient_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch),
       paid: paidCode_(cell_(row, col.paid))
     };
     if (wantNum && !one && entry.num === wantNum) one = entry;
@@ -4067,6 +4067,10 @@ function deliveryLine_(o) {
   return o.point ? 'Самовивіз: ' + o.point : 'Самовивіз з ринку';
 }
 
+/** Номер ТТН для клиента: у пробной накладной (svc.tq) не отдаётся. */
+function svcTtnClient_(svcText) {
+  try { var s = JSON.parse(svcText || '{}') || {}; return s.tq ? '' : String(s.ttn || ''); } catch (err) { return ''; }
+}
 function svcTtn_(svcText) {
   try { return String((JSON.parse(svcText || '{}') || {}).ttn || ''); } catch (err) { return ''; }
 }
@@ -4732,7 +4736,7 @@ function askTtn_(token, chatId, adminId, num) {
 }
 
 /** Записывает ТТН в заказ, обновляет сообщения админов и пишет клиенту номер с кнопкой «Відстежити». */
-function setTtn_(num, ttn, token, quiet) { // quiet: true — клиенту номер не шлём (пробная накладная)
+function setTtn_(num, ttn, token, quiet, meta) { // quiet: true — клиенту номер не шлём (пробная накладная); meta {tr, tc, tq} — Ref документа, время, признак пробной: пишутся в том же проходе, что и номер
   ttn = String(ttn || '').replace(/[\s-]+/g, '');
   if (!/^\d{10,20}$/.test(ttn)) return { ok: false, error: 'bad_ttn' };
   var found, was;
@@ -4745,7 +4749,11 @@ function setTtn_(num, ttn, token, quiet) { // quiet: true — клиенту н�
     var svc;
     try { svc = JSON.parse(found.o.svc || '{}') || {}; } catch (err) { svc = {}; }
     was = String(svc.ttn || '');
+    if (was !== ttn || (svc.tn && String(svc.tn) !== ttn)) { // другой номер (опечатка, ручной ввод): метки прежней накладной и отслеживания сбрасываются
+      ['tr', 'tc', 'tn', 'tq', 'ar', 'nd'].forEach(function (k) { delete svc[k]; });
+    }
     svc.ttn = ttn;
+    if (meta && meta.tr) { svc.tr = meta.tr; svc.tc = meta.tc; svc.tn = ttn; if (meta.tq) svc.tq = 1; } // одним проходом с номером: удаление не успеет между ними
     found.o.svc = JSON.stringify(svc);
     found.sheet.getRange(found.rowIndex, found.col.svc + 1).setValue(found.o.svc);
     if (found.col.ttn >= 0) found.sheet.getRange(found.rowIndex, found.col.ttn + 1).setValue('\'' + ttn);
@@ -4963,14 +4971,20 @@ function npCall_(method, properties, opts) {
 function npSafeReason_(text, key, max) {
   var s = String(text === null || text === undefined ? '' : text);
   if (key) s = s.split(key).join('***');
+  var phones = [];
   ['NP_SENDER_REF', 'NP_SENDER_CONTACT', 'NP_SENDER_CITY', 'NP_SENDER_ADDRESS', 'NP_SENDER_PHONE'].forEach(function (k) {
     var v = '';
     try { v = String(scriptProps_().getProperty(k) || '').trim(); } catch (err) { v = ''; }
     if (v.length >= 4) s = s.split(v).join('***');
     var d = v.replace(/\D/g, '');
     if (d.length >= 7) s = s.split(d).join('***'); // телефон в виде одних цифр
+    if (v.length >= 4) s = s.replace(new RegExp(v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '***'); // Ref-ы и прочее без учёта регистра
+    if (d.length >= 9 && k === 'NP_SENDER_PHONE') phones.push(d.slice(-9));
   });
-  if (typeof npSecretValues_ === 'function') { try { npSecretValues_().forEach(function (v) { if (v && v.length >= 7) s = s.split(v).join('***'); }); } catch (err2) { /* только прежняя очистка */ } }
+  if (phones.length) { // телефон отправителя в любой записи: пробелы, дефисы, скобки, +38, 0XX…
+    s = s.replace(/\+?\d[\d\s().\-]{7,}\d/g, function (m) { var dg = m.replace(/\D/g, ''); return dg.length >= 9 && phones.indexOf(dg.slice(-9)) >= 0 ? '***' : m; });
+  }
+  if (typeof npSecretValues_ === 'function') { try { npSecretValues_().forEach(function (v) { if (v && v.length >= 7) s = s.replace(new RegExp(String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '***'); }); } catch (err2) { /* только прежняя очистка */ } }
   return s.replace(/https?:\/\/\S+/gi, '[url]').replace(/\s+/g, ' ').trim().slice(0, max || 120);
 }
 

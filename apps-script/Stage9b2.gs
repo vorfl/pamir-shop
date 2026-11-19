@@ -796,11 +796,12 @@ var NP_MSG = {
   bad_phone: ['Телефон отримувача не українського формату (+380…). Створіть ТТН вручну', 'Телефон получателя не украинского формата (+380…). Создайте ТТН вручную'],
   bad_name: ['Вкажіть отримувача: прізвище та ім’я (два-три слова)', 'Укажите получателя: фамилия и имя (два-три слова)'],
   bad_weight: ['Вкажіть вагу від 100 г до 30 кг', 'Укажите вес от 100 г до 30 кг'],
-  bad_dims: ['Вкажіть ширину, довжину й висоту в сантиметрах (числа від 1 до 300) або залиште всі три поля порожніми', 'Укажите ширину, длину и высоту в сантиметрах (числа от 1 до 300) или оставьте все три поля пустыми'],
+  bad_dims: ['Вкажіть ширину, довжину й висоту в сантиметрах (числа від 1 до 120) або залиште всі три поля порожніми', 'Укажите ширину, длину и высоту в сантиметрах (числа от 1 до 120) или оставьте все три поля пустыми'],
   bad_amount: ['Сума не збігається із замовленням. Відкрийте підтвердження ще раз', 'Сумма не совпадает с заказом. Откройте подтверждение ещё раз'],
   not_confirmed: ['Потрібне підтвердження', 'Нужно подтверждение'],
   city_diff: ['Місто в замовленні не збігається з містом Нової пошти за кодом. Перевірте адресу й підтвердіть створення ще раз', 'Город в заказе не совпадает с городом Новой почты по коду. Проверьте адрес и подтвердите создание ещё раз'],
   del_no: ['Цю накладну не можна видалити звідси: її створено не через магазин. Видаліть її в кабінеті Нової пошти', 'Эту накладную нельзя удалить отсюда: она создана не через магазин. Удалите её в кабинете Новой почты'],
+  del_real: ['Видалити з панелі можна лише пробну накладну. Справжню — у кабінеті Нової пошти', 'Удалить из панели можно только пробную накладную. Настоящую — в кабинете Новой почты'],
   del_old: ['Минуло понад 24 години після створення. Видаліть накладну в кабінеті Нової пошти', 'Прошло больше 24 часов после создания. Удалите накладную в кабинете Новой почты'],
   del_partial: ['Накладну видалено в Нової пошти, але номер у замовленні не стерся. Очистіть колонку «ТТН» і службову комірку вручну', 'Накладная удалена в Новой почте, но номер в заказе не стёрся. Очистите колонку «ТТН» и служебную ячейку вручную']
 };
@@ -859,6 +860,12 @@ function npFindWarehouse_(cityRef, num, locker) {
       return isLocker === !!locker;
     });
   }
+  var ck = 'npwh_' + cityRef.toLowerCase() + '_' + num + (locker ? 'l' : 'b'), cache = null; // «найдено» — 6 ч, «не найдено» — 30 мин; сбои связи не кэшируются
+  try {
+    cache = CacheService.getScriptCache();
+    var hit = cache.get(ck);
+    if (hit) return JSON.parse(hit);
+  } catch (e0) { cache = null; }
   var hits = null;
   for (var attempt = 0; attempt < 2; attempt++) {
     var base = { CityRef: cityRef };
@@ -868,9 +875,15 @@ function npFindWarehouse_(cityRef, num, locker) {
     hits = pick(r.items);
     if (hits.length) break;
   }
-  if (hits.length !== 1) return { error: 'wh_unknown' };
+  if (hits.length !== 1) {
+    var nf = { error: 'wh_unknown' };
+    try { if (cache) cache.put(ck, JSON.stringify(nf), 1800); } catch (e1) { /* не критично */ }
+    return nf;
+  }
   var w = hits[0];
-  return { ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60), cityRu: String(w.CityDescriptionRu || '').slice(0, 60) };
+  var res = { ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60), cityRu: String(w.CityDescriptionRu || '').slice(0, 60) };
+  try { if (cache) cache.put(ck, JSON.stringify(res), 21600); } catch (e2) { /* не критично */ }
+  return res;
 }
 
 /* ---------- 0б. Отправитель: разрешение через API, кэш, тревога ---------- */
@@ -1160,7 +1173,7 @@ function npName_(v) {
 
 /**
  * Габариты места из тела запроса (необязательные width, length, height в см). Ничего не передано — {m3: null} (VolumeGeneral не шлём, ничего не выдумываем).
- * Передано что-то одно или не число 1…300 — {error:'bad_dims'}. Иначе {m3: 'объём в м³ строкой'}.
+ * Передано что-то одно или не число 1…120 (защита от опечатки) — {error:'bad_dims'}. Иначе {m3: 'объём в м³ строкой'}.
  */
 function npVolume_(body) {
   var keys = ['width', 'length', 'height'], vals = [], given = 0;
@@ -1171,7 +1184,7 @@ function npVolume_(body) {
   });
   if (!given) return { m3: null };
   var nums = vals.map(function (v) { return typeof v === 'string' && !/^\d+([.,]\d+)?$/.test(v.trim()) ? NaN : Number(String(v).replace(',', '.')); });
-  if (given !== 3 || nums.some(function (n) { return !isFinite(n) || n < 1 || n > 300; })) return { error: 'bad_dims' };
+  if (given !== 3 || nums.some(function (n) { return !isFinite(n) || n < 1 || n > 120; })) return { error: 'bad_dims' };
   var m3 = Math.round(nums[0] * nums[1] * nums[2]) / 1e6;
   return { m3: m3.toFixed(6).replace(/0+$/, '').replace(/\.$/, '') };
 }
@@ -1360,12 +1373,12 @@ function npTtnCreate_(body, token) {
     if (data) return npFail_('np_error', { step: 2 });                                 // ответ без номера
     return eo.api === true ? npFail_('np_api', { np: eo.text || '', step: 2 }) : npFail_('np_error', { step: 2 });
   }
-  // Ref документа и время — для admin.ttn.delete (пробная накладная). Метку tp не трогаем.
+  // Ref документа, время и признак пробной — для admin.ttn.delete; пишутся setTtn_ в том же проходе под блокировкой, что и номер. Метку tp не трогаем.
   var docRef = String(data[0].Ref || '');
-  if (/^[\w-]{8,64}$/.test(docRef)) npSvcEdit_(num, function (svc) { svc.tr = docRef; svc.tc = Date.now(); return ''; });
+  var meta = /^[\w-]{8,64}$/.test(docRef) ? { tr: docRef, tc: Date.now(), tq: quiet ? 1 : 0 } : null;
   var res = null;
   try {
-    res = setTtn_(num, ttn, token, quiet);                                             // записывает «ТТН»; клиенту пишет номер с «Відстежити», если не quiet
+    res = setTtn_(num, ttn, token, quiet, meta);                                          // записывает «ТТН»; клиенту пишет номер с «Відстежити», если не quiet
   } catch (err) {
     console.warn('np ttn save: ' + num + ' ' + ttn + ' ' + safeErr_(err));              // номер не теряем: он в ответе админу и в логе (не секрет)
     res = null;
@@ -1383,7 +1396,7 @@ function npDelOk_(svcText, now) {
   var svc;
   try { svc = JSON.parse(svcText || '{}') || {}; } catch (err) { return false; }
   var t = Number(svc.tc);
-  return !!(svc.tr && svc.ttn && t > 0 && now - t <= NP_TTN_DEL_MS && t <= now + 60000);
+  return !!(Number(svc.tq) === 1 && svc.tr && svc.ttn && svc.tn && String(svc.ttn) === String(svc.tn) && t > 0 && now - t <= NP_TTN_DEL_MS && t <= now + 60000);
 }
 
 /**
@@ -1400,8 +1413,10 @@ function npTtnDelete_(body) {
   try { svc = JSON.parse(f.o.svc || '{}') || {}; } catch (err) { svc = {}; }
   var ref = String(svc.tr || '');
   if (!/^[\w-]{8,64}$/.test(ref)) return npFail_('del_no');
+  if (Number(svc.tq) !== 1 || !svc.ttn || String(svc.ttn) !== String(svc.tn || '')) return npFail_('del_real'); // только пробная, и только если в заказе стоит именно она
   var now = Date.now(), t = Number(svc.tc);
   if (!(t > 0) || now - t > NP_TTN_DEL_MS) return npFail_('del_old');
+  if (Number(svc.tp) > 0 && now - Number(svc.tp) < NP_TTN_BUSY_MS) return npFail_('busy'); // создание ещё идёт
   if (body.confirm !== true) return npFail_('not_confirmed');
   var eo = {};
   var data = npCall_('delete', { DocumentRefs: ref }, { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
@@ -1414,7 +1429,8 @@ function npTtnDelete_(body) {
     var sv;
     try { sv = JSON.parse(f2.o.svc || '{}') || {}; } catch (err2) { sv = {}; }
     was = String(sv.ttn || '');
-    ['ttn', 'tr', 'tc', 'tp', 'ar', 'nd'].forEach(function (k) { delete sv[k]; });
+    if (String(sv.tr || '') !== ref || Number(sv.tq) !== 1 || String(sv.ttn || '') !== String(sv.tn || '')) return npFail_('del_partial'); // за время запроса номер заменили: чужое не стираем
+    ['ttn', 'tr', 'tc', 'tn', 'tq', 'tp', 'ar', 'nd'].forEach(function (k) { delete sv[k]; });
     f2.sheet.getRange(f2.rowIndex, f2.col.svc + 1).setValue(JSON.stringify(sv));
     if (f2.col.ttn >= 0) f2.sheet.getRange(f2.rowIndex, f2.col.ttn + 1).setValue('');
     SpreadsheetApp.flush();
@@ -1477,7 +1493,7 @@ function npTrackJob_() {
     var svc;
     try { svc = JSON.parse(cell_(row, col.svc) || '{}') || {}; } catch (err) { return; }
     var ttn = String(svc.ttn || '');
-    if (!/^\d{10,20}$/.test(ttn) || svc.ar || svc.nd || !/^\d+$/.test(cell_(row, col.uid))) return;
+    if (!/^\d{10,20}$/.test(ttn) || svc.ar || svc.nd || svc.tq || !/^\d+$/.test(cell_(row, col.uid))) return;
     list.push({ r: r + 2, ttn: ttn, uid: cell_(row, col.uid), num: cell_(row, col.num), ru: cell_(row, col.lang) === 'ru', phone: npPhone_(cell_(row, col.phone)) });
   });
   var sent = 0;

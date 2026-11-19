@@ -2003,6 +2003,95 @@ console.log('Доработка НП: admin.ttn.delete и флаг ttnDel');
   ok(admP(gk, 900, 'admin.ttn.delete', { num: 'P-0101', confirm: true }).error === 'off', 'без ключа: off');
 }
 
+console.log('Доработка НП 2: удаление только пробной, сброс меток, кэш отделений, габариты, маскирование');
+{
+  const mk = (o) => {
+    const g = npWorld(); const st = npStub9(g, o);
+    const rows = g.sheets['Замовлення'].rows; rows[0].push('ТТН'); rows.slice(1).forEach(r => r.push(''));
+    return { g, st, cr: (n, x) => admP(g, 900, 'admin.ttn.create', Object.assign({ num: n, weight: 1000, confirm: true }, x || {})), del: (n) => admP(g, 900, 'admin.ttn.delete', { num: n, confirm: true }), flag: (n) => admP(g, 900, 'admin.orders').orders.find(x => x.num === n).ttnDel };
+  };
+  const setSvc = (g, num, f) => { const row = g.sheets['Замовлення'].rows.find(r => r[0] === num); const s = JSON.parse(row[16] || '{}'); f(s); row[16] = JSON.stringify(s); };
+  // 1. пробная и настоящая
+  const a = mk();
+  a.cr('P-0101', { quiet: true });
+  const s1 = svcB(a.g, 'P-0101');
+  ok(s1.tq === 1 && s1.tn === TTN1 && s1.ttn === TTN1 && s1.tr === DOCREF && s1.tc > 0, 'пробная: svc.tq=1, tn=номер, tr, tc записаны вместе с номером');
+  ok(a.flag('P-0101') === 1, 'пробная: ttnDel: 1');
+  const b = mk();
+  b.cr('P-0101');
+  const sb = svcB(b.g, 'P-0101');
+  ok(sb.tq === undefined && sb.tr === DOCREF && sb.tn === TTN1 && b.flag('P-0101') === undefined, 'настоящая: tq нет, флага ttnDel нет');
+  const rb = b.del('P-0101');
+  ok(rb.error === 'del_real' && /пробну/.test(rb.msg.ua) && /Нової пошти/.test(rb.msg.ua) && /пробную/.test(rb.msg.ru) && npOf(b.st, 'delete').length === 0 && svcB(b.g, 'P-0101').ttn === TTN1, 'настоящую накладную удалить нельзя: del_real UA+RU, вызова НП нет, номер на месте', rb);
+  // подмена номера на ручной: пробная больше не удаляется, метки сброшены
+  const c = mk();
+  c.cr('P-0101', { quiet: true });
+  admP(c.g, 900, 'admin.ttn', { num: 'P-0101', ttn: '20450000000999' });
+  const sc = svcB(c.g, 'P-0101');
+  ok(sc.ttn === '20450000000999' && sc.tr === undefined && sc.tc === undefined && sc.tn === undefined && sc.tq === undefined && c.flag('P-0101') === undefined, 'ручной ввод другого номера: tr/tc/tn/tq сброшены, флага нет');
+  ok(c.del('P-0101').error === 'del_no' && npOf(c.st, 'delete').length === 0, 'после ручной замены удалять нечего: отказ без вызова НП');
+  // тот же номер повторно: пробная сохраняется
+  const c2 = mk(); c2.cr('P-0101', { quiet: true });
+  admP(c2.g, 900, 'admin.ttn', { num: 'P-0101', ttn: TTN1 });
+  ok(svcB(c2.g, 'P-0101').tq === 1 && c2.flag('P-0101') === 1, 'повторный ввод того же номера метки не трогает');
+  // ttn в заказе не равен tn
+  const c3 = mk(); c3.cr('P-0101', { quiet: true });
+  setSvc(c3.g, 'P-0101', s => { s.ttn = '20450000000888'; });
+  ok(c3.del('P-0101').error === 'del_real' && c3.flag('P-0101') === undefined && npOf(c3.st, 'delete').length === 0, 'в заказе стоит не та накладная (ttn не равен tn): del_real, флага нет');
+  // 2. опечатка: nd и ar сбрасываются при смене номера
+  const d = mk();
+  d.cr('P-0101');
+  setSvc(d.g, 'P-0101', s => { s.nd = 1; s.ar = 1; });
+  admP(d.g, 900, 'admin.ttn', { num: 'P-0101', ttn: '20450000000777' });
+  const sd = svcB(d.g, 'P-0101');
+  ok(sd.nd === undefined && sd.ar === undefined && sd.ttn === '20450000000777', 'исправление номера сбрасывает nd и ar: отслеживание возобновится');
+  // гонка: создание идёт (tp) — удаление отказывает
+  const r = mk();
+  r.cr('P-0101', { quiet: true });
+  setSvc(r.g, 'P-0101', s => { s.tp = Date.now(); });
+  const rr = r.del('P-0101');
+  ok(rr.error === 'busy' && npOf(r.st, 'delete').length === 0, 'пока стоит метка tp (создание идёт): удаление отказывает, вызова НП нет');
+  setSvc(r.g, 'P-0101', s => { s.tp = Date.now() - 6 * 60000; });
+  ok(r.del('P-0101').ok === true, 'старая метка tp (больше 5 минут) не мешает');
+  // 4. orders.my: номер пробной клиенту не отдаётся
+  const m = mk();
+  m.cr('P-0101', { quiet: true });
+  m.cr('P-0102', { name: 'Петренко Іван' });
+  const my1 = m.g.post({ action: 'orders.my', initData: m.g.initData(U(501)) }), my2 = m.g.post({ action: 'orders.my', initData: m.g.initData(U(502)) });
+  const o1 = my1.orders.find(x => x.num === 'P-0101'), o2 = my2.orders.find(x => x.num === 'P-0102');
+  ok(my1.ok && o1.ttn === '' && JSON.stringify(my1).indexOf(TTN1) < 0, 'orders.my: у пробной накладной номера нет');
+  ok(my2.ok && /^\d{10,20}$/.test(o2.ttn), 'orders.my: у настоящей накладной номер есть');
+  ok(admP(m.g, 900, 'admin.orders').orders.find(x => x.num === 'P-0101').ttn === TTN1, 'админ номер пробной видит');
+  // 3. кэш отделений
+  const w = mk();
+  const cnt = () => w.st.calls.filter(x => x.calledMethod === 'getWarehouses').length;
+  admP(w.g, 900, 'admin.ttn.preview', { num: 'P-0101' });
+  const n1 = cnt();
+  w.cr('P-0101', { quiet: true });
+  admP(w.g, 900, 'admin.ttn.preview', { num: 'P-0101' });
+  ok(n1 >= 1 && cnt() === n1, 'отделение найдено один раз: превью, создание и повторное превью не делают новых запросов getWarehouses', { n1, n: cnt() });
+  w.g.call('npFindWarehouse_', NPC, 999, false);
+  const n2 = cnt();
+  const nf = w.g.call('npFindWarehouse_', NPC, 999, false);
+  ok(n2 > n1 && cnt() === n2 && nf.error === 'wh_unknown', '«не найдено» тоже кэшируется');
+  const wl = w.g.call('npFindWarehouse_', NPC, 12, true), wb = w.g.call('npFindWarehouse_', NPC, 12, false);
+  ok(wl.ref === NPL && wb.ref === NPW, 'кэш различает отделение и почтомат с одним номером');
+  const wn = mk({ apiDown: true }); const nn = () => wn.st.calls.filter(x => x.calledMethod === 'getWarehouses').length;
+  wn.g.call('npFindWarehouse_', NPC, 12, false); const k1 = nn(); wn.g.call('npFindWarehouse_', NPC, 12, false);
+  ok(nn() > k1, 'ошибка связи не кэшируется');
+  // 5. маскирование телефона и Ref-ов
+  const t = w.g.sandbox.npSafeReason_('a +38 067 111 22 33 b 067-111-22-33 c 0671112233 d 380671112233 e +38(067)1112233 f 067 111 22 33 ' + SENDER.NP_SENDER_REF.toLowerCase() + ' ' + SENDER.NP_SENDER_CONTACT.toUpperCase() + ' ' + SENDER.NP_SENDER_CITY.toUpperCase() + ' g 050 123 45 67', NPK, 400);
+  ok(!/067|1112233|111 22|REF-SECRET|CONTACT-SECRET|DDDDDDDD/i.test(t) && /050 123 45 67/.test(t), 'npSafeReason_: телефон в любой записи и Ref-ы в любом регистре скрыты, чужой номер остался', t);
+  // 6. габариты 1…120
+  const dm = mk();
+  ok(dm.cr('P-0101', { width: 121, length: 5, height: 5 }).error === 'bad_dims' && dm.cr('P-0101', { width: 5, length: 5, height: 300 }).error === 'bad_dims' && npOf(dm.st, 'save').length === 0, 'сторона больше 120 см: bad_dims');
+  const bd = dm.cr('P-0101', { width: 121, length: 5, height: 5 });
+  ok(/120/.test(bd.msg.ua) && /120/.test(bd.msg.ru) && !/300/.test(bd.msg.ua + bd.msg.ru), 'текст bad_dims: предел 120, UA и RU');
+  ok(dm.cr('P-0101', { width: 120, length: 1, height: 1, quiet: true }).ok === true && npOf(dm.st, 'save').pop().methodProperties.VolumeGeneral === '0.00012', 'сторона ровно 120 см допустима');
+  ok(admP(dm.g, 900, 'admin.ttn.preview', { num: 'P-0102', width: 130, length: 5, height: 5 }).error === 'bad_dims', 'preview: больше 120 — bad_dims');
+  ok(noSecrets(JSON.stringify([rb, rr, my1, my2]) + npAll(a.g) + npAll(w.g)), 'секреты не в ответах и логах');
+}
+
 console.log('Доработка НП: отслеживание по официальным кодам');
 {
   const orders = [
