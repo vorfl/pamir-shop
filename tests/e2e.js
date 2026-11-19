@@ -1918,7 +1918,7 @@ const smallTargets = page => page.evaluate(() => {
           calls.whall++;
           if (o.whall === 'error') return send({ ok: false });
           if (o.whall === 'hang') return send({ ok: true, list: WH }, 6500);
-          if (o.whall === 'slow') return send({ ok: true, list: WH }, 8000);
+          if (o.whall === 'slow') { Promise.resolve(o.gate).then(() => send({ ok: true, list: WH })); return; } // ответ держим до команды теста (не по таймеру: иначе гонка с медленным прогоном)
           return send({ ok: true, list: WH });
         }
         if (action === 'np.wh') { calls.wh++; return send({ ok: true, list: [{ n: 'Відділення №12: вул. Стара, 1', num: '12' }] }); }
@@ -2089,15 +2089,17 @@ const smallTargets = page => page.evaluate(() => {
     // ответ np.whall приходит через 8 с: через 5 с доступен ручной ввод, после ответа работает новая схема
     const stS = await mk(8846);
     const sl = await toNpCheckout(stS, 911);
-    const cS = await stubNp(sl.page, { whall: 'slow' });
+    let releaseWhall; const gateWhall = new Promise(r => { releaseWhall = r; });
+    const cS = await stubNp(sl.page, { whall: 'slow', gate: gateWhall });
     await pickNp(sl.page);
     await sl.page.locator('#cityChips .chip', { hasText: 'Київ' }).click();
     await sl.page.waitForSelector('#whBusy:not([hidden])');
     await sl.page.waitForTimeout(5400);
     ok(await sl.page.locator('#whBusy').isHidden(), 'np.whall отвечает долго: через 5 с «Шукаю…» исчезло, ввод доступен');
     await sl.page.fill('#f-branch', '12');
-    await sl.page.waitForSelector('#whSugg button');
+    await sl.page.waitForFunction(() => /Стара/.test((document.querySelector('#whSugg button') || {}).textContent || ''));
     ok(cS.wh >= 1 && /Стара/.test((await sugg(sl.page, 'whSugg'))[0]), 'пока список грузится — подсказки по-старому через np.wh', await sugg(sl.page, 'whSugg'));
+    releaseWhall(); // теперь «приходит» ответ np.whall (позже 5 с)
     await sl.page.waitForFunction(() => /^№12,/.test((document.querySelector('#whSugg button') || {}).textContent || ''), null, { timeout: 6000 });
     const whBefore = cS.wh;
     await sl.page.fill('#f-branch', '777');
@@ -4165,17 +4167,19 @@ const smallTargets = page => page.evaluate(() => {
             a.ttn = '';
             if (o.items) a.items = o.items;
             const withTtn = Object.assign({}, a, { num: 'P-0098', ttn: '20450000999999' });
+            if (o.ttnDel) withTtn.ttnDel = 1;
             const pick = Object.assign({}, a, { num: 'P-0099', delivery: 'Самовивіз', city: '', branch: '' });
             j.orders.push(withTtn, pick);
             return fulfill(j);
           }
           if (/"action":"admin\.ttn\.preview"/.test(body)) { calls.preview.push(JSON.parse(body)); return fulfill(typeof o.preview === 'function' ? o.preview() : o.preview); }
           if (/"action":"admin\.ttn\.create"/.test(body)) { calls.create.push(JSON.parse(body)); return fulfill(typeof o.create === 'function' ? o.create() : o.create, o.delay || 0); }
+          if (/"action":"admin\.ttn\.delete"/.test(body)) { calls.del.push(JSON.parse(body)); return fulfill(typeof o.del === 'function' ? o.del() : o.del, o.delDelay || 0); }
           return route.continue();
         });
       };
       const openAdmin = async (stx, o, extra) => {
-        const calls = { preview: [], create: [] };
+        const calls = { preview: [], create: [], del: [] };
         const A = await open(browser, stx.url, Object.assign({ uid: 900, query: '?admin=1', before: adminSetup(o, calls) }, extra || {}));
         await A.page.waitForSelector('[data-ord="P-0008"]');
         return { A, calls };
@@ -4390,6 +4394,204 @@ const smallTargets = page => page.evaluate(() => {
           ok(reTxt.test(sh) && (!withNum || (big && big[0] === NPX && big[1] >= 24 && big[2])) && await A.page.evaluate(() => window.__xss === undefined) && await count(A.page, '#sheet img') === 0, 'ТТН save_failed (' + lc + (withNum ? ', с номером' : ', без номера') + '): номер крупно как текст и просьба вписать вручную', [sh, big]);
           if (withNum && lc === 'uk') await A.page.screenshot({ path: OUT + '/b2f-ttn-save-failed.png' });
           ok(await count(A.page, '#sheet [data-action="cf-ok"]') === 0 && await A.page.locator('#sheet [data-action="cf-cancel"]').isVisible(), 'ТТН save_failed: повторно «Створити» не предлагается, шторку закрывает админ');
+          await A.ctx.close();
+        }
+      }
+      {
+        // габариты и «пробная накладная»
+        const OKC = { ok: true, ttn: '20450000333333', told: null, quiet: true };
+        const sheetOk = p => p.locator('#sheet [data-action="cf-ok"]');
+        const openSheet = async (A) => { await openOrd(A.page, 'P-0008'); await A.page.click('[data-w1="ttn-make"]'); await A.page.waitForSelector('#ttnW'); };
+        for (const theme of ['light', 'dark']) {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, preview: PREV(), create: OKC }, { theme });
+          await openSheet(A);
+          const sh = NB(await text(A.page, '#sheet'));
+          ok(/Ширина, см/.test(sh) && /Довжина, см/.test(sh) && /Висота, см/.test(sh) && /Необов’язково\. Якщо заповнюєте — усі три, від 1 до 120 см/.test(sh) && /Пробна накладна: не надсилати номер клієнту/.test(sh) && /Пробну можна видалити з панелі протягом 24 годин\. Справжню — лише в кабінеті Нової пошти/.test(sh), 'ТТН габариты (' + theme + '): подписи полей, подсказка и переключатель «Пробна накладна»', sh);
+          ok(await A.page.locator('#ttnQuiet').isChecked() === false && await A.page.locator('#ttnDimPart').isHidden() && !(await sheetOk(A.page).isDisabled()), 'ТТН габариты (' + theme + '): переключатель по умолчанию выключен, поля пустые, «Створити» активна');
+          ok(await noOverflow(A.page) && (await smallTargets(A.page)).length === 0 && await A.page.evaluate(() => ['ttnDW', 'ttnDL', 'ttnDH'].every(id => document.getElementById(id).getBoundingClientRect().height >= 44) && document.getElementById('ttnQuiet').closest('.check').getBoundingClientRect().height >= 44), 'ТТН габариты (' + theme + '): без горизонтальной прокрутки, поля и переключатель ≥ 44 px', await smallTargets(A.page));
+          // частично заполнено: кнопка неактивна, подсказка
+          await A.page.fill('#ttnDW', '30');
+          ok(await sheetOk(A.page).isDisabled() && await A.page.locator('#ttnDimPart').isVisible() && /усі три розміри/.test(await text(A.page, '#ttnDimPart')), 'ТТН габариты (' + theme + '): заполнена только ширина — «Створити» неактивна, подсказка видна');
+          await A.page.fill('#ttnDL', '20');
+          ok(await sheetOk(A.page).isDisabled(), 'ТТН габариты (' + theme + '): заполнены два из трёх — кнопка по-прежнему неактивна');
+          await A.page.waitForTimeout(450); await A.page.screenshot({ path: OUT + '/b9-ttn-dims-partial-' + theme + '.png' });
+          await sheetOk(A.page).click({ force: true, timeout: 500 }).catch(() => {});
+          ok(calls.create.length === 0, 'ТТН габариты (' + theme + '): частично заполнено — запрос create не уходит');
+          await A.page.fill('#ttnDH', '10,5');
+          await A.page.locator('#ttnQuiet').check();
+          ok(!(await sheetOk(A.page).isDisabled()) && await A.page.locator('#ttnDimPart').isHidden(), 'ТТН габариты (' + theme + '): все три заполнены — кнопка активна, подсказка скрыта');
+          await A.page.screenshot({ path: OUT + '/b9-ttn-dims-' + theme + '.png' });
+          await sheetOk(A.page).click();
+          await A.page.waitForFunction(() => /20450000333333/.test(document.querySelector('.ord__body').innerText));
+          const cr = calls.create[0];
+          ok(calls.create.length === 1 && cr.width === 30 && cr.length === 20 && cr.height === 10.5 && cr.quiet === true && cr.confirm === true && cr.weight === 1500, 'ТТН габариты (' + theme + '): в create — width, length, height (числа) и quiet: true', cr);
+          ok(/Накладну створено: 20450000333333/.test(await text(A.page, '.toast')) && /Клієнту номер не надсилали/.test(await text(A.page, '.toast')) && !/Клієнту надіслано номер/.test(await text(A.page, '.toast')), 'ТТН quiet (' + theme + '): после успеха «Клієнту номер не надсилали»', await text(A.page, '.toast'));
+          ok(A.errors.length === 0, 'ТТН габариты (' + theme + '): в консоли нет ошибок', A.errors);
+          await A.ctx.close();
+        }
+        {
+          // пусто → полей габаритов и quiet в запросе нет; выход за 1…120 и не число — ошибка без запроса
+          const { A, calls } = await openAdmin(stA, { npTtn: true, preview: PREV(), create: { ok: true, ttn: '20450000222222', told: true } });
+          await openSheet(A);
+          await A.page.fill('#ttnDW', '0'); await A.page.fill('#ttnDL', '20'); await A.page.fill('#ttnDH', '10');
+          await sheetOk(A.page).click();
+          await A.page.waitForFunction(() => !document.getElementById('cfErr').hidden);
+          ok(calls.create.length === 0 && /від 1 до 120/.test(await text(A.page, '#cfErr')) && !(await sheetOk(A.page).isDisabled()), 'ТТН габариты: 0 см — понятная ошибка, запроса нет, кнопка снова активна', await text(A.page, '#cfErr'));
+          await A.page.fill('#ttnDW', '121');
+          await sheetOk(A.page).click();
+          await A.page.waitForFunction(() => /від 1 до 120/.test(document.getElementById('cfErr').textContent));
+          await A.page.fill('#ttnDW', 'abc');
+          await sheetOk(A.page).click();
+          await A.page.waitForTimeout(150);
+          ok(calls.create.length === 0, 'ТТН габариты: 121 и «abc» — запроса нет');
+          await A.page.fill('#ttnDW', ''); await A.page.fill('#ttnDL', ''); await A.page.fill('#ttnDH', '');
+          await sheetOk(A.page).click();
+          await A.page.waitForFunction(() => /20450000222222/.test(document.querySelector('.ord__body').innerText));
+          const cr = calls.create[0];
+          ok(calls.create.length === 1 && !('width' in cr) && !('length' in cr) && !('height' in cr) && !('quiet' in cr), 'ТТН габариты: все три пустые, переключатель выключен — width/length/height/quiet в запросе нет', cr);
+          ok(/Клієнту надіслано номер/.test(await text(A.page, '.toast')), 'ТТН без quiet: «Клієнту надіслано номер»');
+          await A.ctx.close();
+        }
+        {
+          // cityDiff вместе с габаритами: кнопка требует обе вещи
+          const { A } = await openAdmin(stA, { npTtn: true, preview: PREV({ cityDiff: 1, city: 'Харьков', npCity: 'Харків' }) });
+          await openOrd(A.page, 'P-0008'); await A.page.click('[data-w1="ttn-make"]'); await A.page.waitForSelector('#ttnCityOk');
+          await A.page.locator('#ttnCityOk').check();
+          ok(!(await sheetOk(A.page).isDisabled()), 'ТТН cityDiff + габариты: отметка города — кнопка активна');
+          await A.page.fill('#ttnDH', '5');
+          ok(await sheetOk(A.page).isDisabled(), 'ТТН cityDiff + габариты: частично заполненные габариты блокируют кнопку, даже когда город отмечен');
+          await A.page.fill('#ttnDH', '');
+          ok(!(await sheetOk(A.page).isDisabled()), 'ТТН cityDiff + габариты: очистили — кнопка снова активна');
+          await A.page.locator('#ttnCityOk').uncheck();
+          ok(await sheetOk(A.page).isDisabled(), 'ТТН cityDiff + габариты: снятая отметка города блокирует кнопку');
+          await A.ctx.close();
+        }
+        {
+          // ошибки с step, bad_dims, HTML в msg/np; RU
+          const MSG = (ua, ru) => ({ ua, ru });
+          const cases = [
+            ['step 1 np_api', 'uk', { ok: false, error: 'np_api', step: 1, msg: MSG('Нова пошта відхилила запит', 'Новая почта отклонила запрос'), np: 'PhoneNumber is invalid' }, /^Не вдалося створити отримувача в Новій пошті\. Нова пошта відхилила запит: PhoneNumber is invalid$/],
+            ['step 1 np_error', 'uk', { ok: false, error: 'np_error', step: 1, msg: MSG('Нова пошта не відповіла', 'x') }, /^Не вдалося створити отримувача в Новій пошті\. Нова пошта не відповіла$/],
+            ['step 2 np_api', 'uk', { ok: false, error: 'np_api', step: 2, msg: MSG('Нова пошта відхилила запит', 'x'), np: 'Weight is bad' }, /^Не вдалося створити накладну\. Нова пошта відхилила запит: Weight is bad$/],
+            ['step 2 np_error', 'uk', { ok: false, error: 'np_error', step: 2, msg: MSG('Нова пошта не відповіла', 'x') }, /^Не вдалося створити накладну\. Нова пошта не відповіла$/],
+            ['bad_dims', 'uk', { ok: false, error: 'bad_dims', msg: MSG('Вкажіть ширину, довжину й висоту в сантиметрах (числа від 1 до 120) або залиште всі три поля порожніми', 'x') }, /^Вкажіть ширину, довжину й висоту/],
+            ['bad_dims без msg', 'uk', { ok: false, error: 'bad_dims' }, /^Розміри — числа від 1 до 120 см$/],
+            ['step 1 RU', 'ru', { ok: false, error: 'np_api', step: 1, msg: MSG('x', 'Новая почта отклонила запрос'), np: 'Err' }, /^Не удалось создать получателя в Новой почте\. Новая почта отклонила запрос: Err$/],
+            ['step 2 RU', 'ru', { ok: false, error: 'np_error', step: 2, msg: MSG('x', 'Новая почта не ответила') }, /^Не удалось создать накладную\. Новая почта не ответила$/],
+            ['HTML в msg и np', 'uk', { ok: false, error: 'np_api', step: 2, msg: MSG(XSSB, XSSB), np: XSSB }, /^Не вдалося створити накладну\. <img src=x onerror="window\.__xss=1">: <img src=x onerror="window\.__xss=1">$/]
+          ];
+          for (const [name, lc, cr, re] of cases) {
+            const { A, calls } = await openAdmin(stA, { npTtn: true, preview: PREV(), create: cr }, { lc });
+            await openSheet(A);
+            await sheetOk(A.page).click();
+            await A.page.waitForFunction(() => !document.getElementById('cfErr').hidden);
+            const er = await text(A.page, '#cfErr');
+            ok(re.test(er) && calls.create.length === 1 && !(await sheetOk(A.page).isDisabled()) && await count(A.page, '#cfErr img') === 0 && await A.page.evaluate(() => window.__xss === undefined), 'ТТН ошибка create (' + name + '): текст по шагу + msg + ответ НП, как текст; кнопка снова активна', er);
+            if (name === 'step 2 np_api') await A.page.screenshot({ path: OUT + '/b9-ttn-step2-error.png' });
+            await A.ctx.close();
+          }
+          const { A: R, calls: rc } = await openAdmin(stA, { npTtn: true, preview: PREV(), create: OKC }, { lc: 'ru', theme: 'dark' });
+          await openSheet(R);
+          const shr = NB(await text(R.page, '#sheet'));
+          ok(/Ширина, см/.test(shr) && /Длина, см/.test(shr) && /Высота, см/.test(shr) && /Необязательно\. Если заполняете — все три, от 1 до 120 см/.test(shr) && /Пробную можно удалить из панели в течение 24 часов\. Настоящую — только в кабинете Новой почты/.test(shr) && /Пробная накладная: не отправлять номер клиенту/.test(shr), 'ТТН габариты RU (тёмная тема): подписи на русском', shr);
+          await R.page.fill('#ttnDW', '10');
+          ok(/Заполните все три размера/.test(await text(R.page, '#ttnDimPart')), 'ТТН габариты RU: подсказка о неполных размерах на русском');
+          await R.page.screenshot({ path: OUT + '/b9-ttn-dims-ru-dark.png' });
+          await R.page.fill('#ttnDL', '10'); await R.page.fill('#ttnDH', '10');
+          await R.page.locator('#ttnQuiet').check();
+          await sheetOk(R.page).click();
+          await R.page.waitForFunction(() => /20450000333333/.test(document.querySelector('.ord__body').innerText));
+          ok(/Клиенту номер не отправляли/.test(await text(R.page, '.toast')) && rc.create.length === 1 && rc.create[0].quiet === true, 'ТТН quiet RU: «Клиенту номер не отправляли», quiet в запросе');
+          await R.ctx.close();
+        }
+      }
+      {
+        // удаление накладной
+        const DELOK = { ok: true };
+        const openDel = async (A, num) => { await openOrd(A.page, num || 'P-0098'); };
+        {
+          const { A } = await openAdmin(stA, { npTtn: true, ttnDel: true, preview: PREV(), del: DELOK });
+          await openOrd(A.page, 'P-0098');
+          ok(await count(A.page, '[data-w1="ttn-del"]') === 1 && /Видалити накладну/.test(await text(A.page, '[data-w1="ttn-del"]')) && await count(A.page, '[data-w1="ttn-del"].btn--danger') === 0 && await count(A.page, '[data-w1="ttn-make"]') === 0, 'удаление ТТН: у заказа с ttnDel:1 есть «Видалити накладну» (не красная), «Створити ТТН» нет');
+          await openOrd(A.page, 'P-0008');
+          ok(await count(A.page, '[data-w1="ttn-del"]') === 0, 'удаление ТТН: у заказа без ttnDel кнопки нет');
+          await A.ctx.close();
+          const O = await openAdmin(stA, { npTtn: true, preview: PREV(), del: DELOK });
+          await openOrd(O.A.page, 'P-0098');
+          ok(await count(O.A.page, '[data-w1="ttn-del"]') === 0 && await count(O.A.page, '.ttnrow') === 1, 'удаление ТТН: старый бэкенд (ttnDel нет) — кнопки нет, ручной ввод остался');
+          await O.A.ctx.close();
+        }
+        for (const theme of ['light', 'dark']) {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, ttnDel: true, preview: PREV(), del: DELOK, delDelay: 700 }, { theme });
+          await openDel(A);
+          const btnH = await A.page.evaluate(() => document.querySelector('[data-w1="ttn-del"]').getBoundingClientRect().height);
+          ok(btnH >= 44, 'удаление ТТН (' + theme + '): кнопка ≥ 44 px', btnH);
+          await A.page.click('[data-w1="ttn-del"]');
+          await A.page.waitForSelector('#sheet [data-action="cf-ok"]');
+          const sh = NB(await text(A.page, '#sheet'));
+          ok(/Пробну накладну № 20450000999999 буде видалено в Новій пошті, номер у замовленні — стерто\. Клієнту нічого не надсилається\./.test(sh) && calls.del.length === 0, 'удаление ТТН (' + theme + '): шторка подтверждения с номером; до подтверждения запроса нет', sh);
+          ok(await noOverflow(A.page) && (await smallTargets(A.page)).length === 0, 'удаление ТТН (' + theme + '): шторка без прокрутки, кнопки ≥ 44 px', await smallTargets(A.page));
+          await A.page.waitForTimeout(450); await A.page.screenshot({ path: OUT + '/b9-ttn-delete-confirm-' + theme + '.png' });
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.locator('#sheet [data-action="cf-ok"]').click({ force: true, timeout: 500 }).catch(() => {});
+          ok(await A.page.locator('#sheet [data-action="cf-ok"]').isDisabled(), 'удаление ТТН (' + theme + '): кнопка заблокирована до ответа');
+          await A.page.waitForFunction(() => !/20450000999999/.test(document.querySelector('.ord__body').innerText));
+          ok(calls.del.length === 1 && calls.del[0].num === 'P-0098' && calls.del[0].confirm === true && calls.del[0].initData, 'удаление ТТН (' + theme + '): двойное нажатие — один запрос, в нём num и confirm:true', calls.del);
+          ok(await A.page.locator('#sheet').isHidden() && /Накладну видалено/.test(await text(A.page, '.toast')), 'удаление ТТН (' + theme + '): успех — шторка закрыта, сообщение');
+          ok(await count(A.page, '[data-w1="ttn-del"]') === 0 && await count(A.page, '[data-w1="ttn-make"]') === 1 && await A.page.inputValue('#ttn-P-0098') === '', 'удаление ТТН (' + theme + '): карточка обновлена — ТТН пусто, снова есть «Створити ТТН», «Видалити» нет');
+          if (theme === 'light') await A.page.screenshot({ path: OUT + '/b9-ttn-delete-done-light.png' });
+          ok(A.errors.length === 0, 'удаление ТТН (' + theme + '): в консоли нет ошибок', A.errors);
+          await A.ctx.close();
+        }
+        const M = (ua, ru) => ({ ua, ru });
+        const delCases = [
+          ['del_old', { ok: false, error: 'del_old', msg: M('Минуло понад 24 години після створення. Видаліть накладну в кабінеті Нової пошти', 'x') }, /^Минуло понад 24 години/],
+          ['del_no', { ok: false, error: 'del_no', msg: M('Цю накладну не можна видалити звідси', 'x') }, /^Цю накладну не можна видалити звідси$/],
+          ['del_real', { ok: false, error: 'del_real', msg: M('Видалити з панелі можна лише пробну накладну. Справжню — у кабінеті Нової пошти', 'x') }, /^Видалити з панелі можна лише пробну накладну/],
+          ['busy', { ok: false, error: 'busy', msg: M('Створення ще триває, спробуйте за кілька хвилин', 'x') }, /^Створення ще триває, спробуйте за кілька хвилин$/],
+          ['np_api', { ok: false, error: 'np_api', msg: M('Нова пошта відхилила запит', 'x'), np: 'Doc not found' }, /^Нова пошта відхилила запит: Doc not found$/],
+          ['np_error', { ok: false, error: 'np_error', msg: M('Нова пошта не відповіла', 'x') }, /^Нова пошта не відповіла$/],
+          ['HTML в msg', { ok: false, error: 'del_old', msg: M(XSSB, XSSB) }, /^<img src=x onerror="window\.__xss=1">$/],
+          ['без msg', { ok: false, error: 'zzz' }, /^Не вдалося зберегти/]
+        ];
+        for (const [name, dr, re] of delCases) {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, ttnDel: true, preview: PREV(), del: dr });
+          await openDel(A);
+          await A.page.click('[data-w1="ttn-del"]');
+          await A.page.waitForSelector('#sheet [data-action="cf-ok"]');
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.waitForFunction(() => !document.getElementById('cfErr').hidden);
+          const er = await text(A.page, '#cfErr');
+          ok(re.test(er) && calls.del.length === 1 && !(await A.page.locator('#sheet [data-action="cf-ok"]').isDisabled()) && await count(A.page, '#cfErr img') === 0 && await A.page.evaluate(() => window.__xss === undefined), 'удаление ТТН ошибка (' + name + '): текст сервера как текст, шторка открыта, кнопка снова активна', er);
+          ok(/20450000999999/.test(await text(A.page, '.ord__body')), 'удаление ТТН ошибка (' + name + '): номер в карточке остался');
+          if (name === 'del_old') await A.page.screenshot({ path: OUT + '/b9-ttn-delete-error.png' });
+          await A.ctx.close();
+        }
+        {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, ttnDel: true, preview: PREV(), del: { ok: false, error: 'del_partial', msg: M('Накладну видалено в Нової пошти, але номер у замовленні не стерся. Очистіть колонку «ТТН» і службову комірку вручну', 'x') } });
+          await openDel(A);
+          await A.page.click('[data-w1="ttn-del"]');
+          await A.page.waitForSelector('#sheet [data-action="cf-ok"]');
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.waitForFunction(() => /зітріть його вручну/.test(document.getElementById('sheet').innerText));
+          const sh = await text(A.page, '#sheet');
+          ok(/У Новій пошті видалено, але номер у замовленні лишився — зітріть його вручну/.test(sh) && /Накладну видалено в Нової пошти/.test(sh) && await count(A.page, '#sheet [data-action="cf-ok"]') === 0 && await count(A.page, '#sheet .note--out') === 1, 'удаление ТТН del_partial: заметный текст «У Новій пошті видалено, але номер … зітріть його вручну» и текст сервера, повтор не предлагается', sh);
+          await A.page.screenshot({ path: OUT + '/b9-ttn-delete-partial.png' });
+          await A.page.click('#sheet [data-action="cf-cancel"]');
+          ok(calls.del.length === 1 && /20450000999999/.test(await text(A.page, '.ord__body')) && await count(A.page, '[data-w1="ttn-del"]') === 0, 'удаление ТТН del_partial: номер в карточке остался (стирает админ), повторная «Видалити» не показывается');
+          await A.ctx.close();
+        }
+        {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, ttnDel: true, preview: PREV(), del: DELOK }, { lc: 'ru', theme: 'dark' });
+          await openDel(A);
+          ok(/Удалить накладную/.test(await text(A.page, '[data-w1="ttn-del"]')), 'удаление ТТН RU: кнопка «Удалить накладную»');
+          await A.page.click('[data-w1="ttn-del"]');
+          await A.page.waitForSelector('#sheet [data-action="cf-ok"]');
+          ok(/Пробная накладная № 20450000999999 будет удалена в Новой почте, номер в заказе — стёрт\. Клиенту ничего не отправляется\./.test(NB(await text(A.page, '#sheet'))), 'удаление ТТН RU: текст подтверждения на русском');
+          await A.page.waitForTimeout(450); await A.page.screenshot({ path: OUT + '/b9-ttn-delete-confirm-ru-dark.png' });
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.waitForFunction(() => !/20450000999999/.test(document.querySelector('.ord__body').innerText));
+          ok(/Накладная удалена/.test(await text(A.page, '.toast')) && calls.del.length === 1, 'удаление ТТН RU: успех — «Накладная удалена»');
           await A.ctx.close();
         }
       }

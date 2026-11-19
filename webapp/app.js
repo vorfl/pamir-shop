@@ -4804,6 +4804,7 @@
     var html = o.ttn ? '<p>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b></p>' : '';
     if (can('st')) {
       if (adm.npTtn === 1 && !o.ttn) html += '<button type="button" class="btn btn--block" data-w1="ttn-make" data-num="' + esc(o.num) + '">' + esc(t('ttnMake')) + '</button>'; // только если бэкенд включил (ключ и данные отправителя) и ТТН ещё нет
+      if (o.ttnDel === 1 && o.ttn) html += '<button type="button" class="btn btn--block" data-w1="ttn-del" data-num="' + esc(o.num) + '">' + esc(t('ttnDel')) + '</button>'; // бэкенд сам решает, можно ли (создана магазином, моложе 24 ч); старый бэкенд поля не шлёт
       html += '<div class="ttnrow"><input class="input" type="text" inputmode="numeric" maxlength="24" autocomplete="off" placeholder="' + esc(t('ttnPh')) + '" aria-label="' + esc(t('ttnPh')) + '" id="ttn-' + esc(o.num) + '" value="' + esc(o.ttn || '') + '">' +
         '<button type="button" class="btn" data-w1="ttn" data-num="' + esc(o.num) + '">' + esc(t('ttnSave')) + '</button></div>';
     }
@@ -4996,6 +4997,8 @@
       }).catch(function () { adm.busy = false; toast(t('admFail')); renderAdminList(); });
     } else if (kind === 'ttn-make') {
       ttnMake(b);
+    } else if (kind === 'ttn-del') {
+      ttnDelAsk(b.getAttribute('data-num'));
     } else if (kind === 'ttn') {
       var num = b.getAttribute('data-num');
       var input = document.getElementById('ttn-' + num);
@@ -6132,11 +6135,6 @@
       (o.ok ? '<button type="button" class="btn btn--wrap ' + (o.danger ? 'btn--danger' : 'btn--primary') + '" data-action="cf-ok">' + esc(o.ok) + '</button>' : '') +
       '<button type="button" class="btn" data-action="cf-cancel">' + esc(t('cfCancel')) + '</button></div>';
   }
-  el.sheet.addEventListener('change', function (e) {
-    if (e.target.id !== 'ttnCityOk') return;
-    var okb = el.sheet.querySelector('[data-action="cf-ok"]');
-    if (okb) okb.disabled = !e.target.checked;
-  });
   el.sheet.addEventListener('click', function (e) {
     if (!state.sheet || state.sheet.kind !== 'confirm') return;
     var act = e.target.closest('[data-action]');
@@ -6920,7 +6918,14 @@
       ttnMade: 'Накладну створено: {n}.', ttnTold: 'Клієнту надіслано номер.',
       ttnCityDiff: 'Місто в замовленні («{a}») не збігається з містом Нової пошти («{b}»). Перевірте перед створенням.', ttnCityOk: 'Місто правильне',
       ttnSaveFailed: 'Накладну створено: {n}. Номер не записався в таблицю — впишіть його вручну.', ttnSaveFailedNoNum: 'Накладну, можливо, створено, але номер не записався в таблицю. Перевірте кабінет Нової пошти й впишіть номер вручну.',
-      ttnBusy: 'Перевірте кабінет Нової пошти: накладну могло бути створено. Не створюйте її повторно зараз.', ttnUnknown: 'Відповідь Нової пошти не отримано. Перевірте кабінет Нової пошти й не створюйте накладну повторно зараз.', ttnMadeTitle: 'Накладну створено'
+      ttnBusy: 'Перевірте кабінет Нової пошти: накладну могло бути створено. Не створюйте її повторно зараз.', ttnUnknown: 'Відповідь Нової пошти не отримано. Перевірте кабінет Нової пошти й не створюйте накладну повторно зараз.', ttnMadeTitle: 'Накладну створено',
+      ttnDimW: 'Ширина, см', ttnDimL: 'Довжина, см', ttnDimH: 'Висота, см', ttnDimHint: 'Необов’язково. Якщо заповнюєте — усі три, від 1 до 120 см.',
+      ttnDimPart: 'Заповніть усі три розміри або очистіть усі.', ttnBadDims: 'Розміри — числа від 1 до 120 см',
+      ttnQuiet: 'Пробна накладна: не надсилати номер клієнту', ttnQuietDone: 'Клієнту номер не надсилали.', ttnQuietNote: 'Пробну можна видалити з панелі протягом 24 годин. Справжню — лише в кабінеті Нової пошти.',
+      ttnStep1: 'Не вдалося створити отримувача в Новій пошті', ttnStep2: 'Не вдалося створити накладну',
+      ttnDel: 'Видалити накладну', ttnDelTitle: 'Видалити накладну', ttnDelText: 'Пробну накладну № {n} буде видалено в Новій пошті, номер у замовленні — стерто. Клієнту нічого не надсилається.',
+      ttnDelDone: 'Накладну видалено. Номер у замовленні стерто.', ttnDelErrTitle: 'Накладну не видалено',
+      ttnDelPartial: 'У Новій пошті видалено, але номер у замовленні лишився — зітріть його вручну'
     },
     ru: {
       npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'В сумму заказа не входит. Точную сумму считает перевозчик.',
@@ -6935,7 +6940,14 @@
       ttnMade: 'Накладная создана: {n}.', ttnTold: 'Клиенту отправлен номер.',
       ttnCityDiff: 'Город в заказе («{a}») не совпадает с городом Новой почты («{b}»). Проверьте перед созданием.', ttnCityOk: 'Город правильный',
       ttnSaveFailed: 'Накладная создана: {n}. Номер не записался в таблицу — впишите его вручную.', ttnSaveFailedNoNum: 'Накладная, возможно, создана, но номер не записался в таблицу. Проверьте кабинет Новой почты и впишите номер вручную.',
-      ttnBusy: 'Проверьте кабинет Новой почты: накладная могла быть создана. Не создавайте её повторно сейчас.', ttnUnknown: 'Ответ Новой почты не получен. Проверьте кабинет Новой почты и не создавайте накладную повторно сейчас.', ttnMadeTitle: 'Накладная создана'
+      ttnBusy: 'Проверьте кабинет Новой почты: накладная могла быть создана. Не создавайте её повторно сейчас.', ttnUnknown: 'Ответ Новой почты не получен. Проверьте кабинет Новой почты и не создавайте накладную повторно сейчас.', ttnMadeTitle: 'Накладная создана',
+      ttnDimW: 'Ширина, см', ttnDimL: 'Длина, см', ttnDimH: 'Высота, см', ttnDimHint: 'Необязательно. Если заполняете — все три, от 1 до 120 см.',
+      ttnDimPart: 'Заполните все три размера или очистите все.', ttnBadDims: 'Размеры — числа от 1 до 120 см',
+      ttnQuiet: 'Пробная накладная: не отправлять номер клиенту', ttnQuietDone: 'Клиенту номер не отправляли.', ttnQuietNote: 'Пробную можно удалить из панели в течение 24 часов. Настоящую — только в кабинете Новой почты.',
+      ttnStep1: 'Не удалось создать получателя в Новой почте', ttnStep2: 'Не удалось создать накладную',
+      ttnDel: 'Удалить накладную', ttnDelTitle: 'Удалить накладную', ttnDelText: 'Пробная накладная № {n} будет удалена в Новой почте, номер в заказе — стёрт. Клиенту ничего не отправляется.',
+      ttnDelDone: 'Накладная удалена. Номер в заказе стёрт.', ttnDelErrTitle: 'Накладная не удалена',
+      ttnDelPartial: 'В Новой почте удалено, но номер в заказе остался — сотрите его вручную'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
@@ -6943,11 +6955,26 @@
   });
 
   /** Текст ошибки из ответа сервера (msg.ua / msg.ru); неизвестный код — общий текст. Выводится только через textContent. */
-  function ttnMsg(res) {
+  function ttnSrvMsg(res) {
     var m = res && res.msg;
-    var s = m && typeof m === 'object' ? String((state.lang === 'ru' ? (m.ru || m.ua) : (m.ua || m.ru)) || '') : '';
-    return s || t('ttnMkFail');
+    return m && typeof m === 'object' ? String((state.lang === 'ru' ? (m.ru || m.ua) : (m.ua || m.ru)) || '') : '';
   }
+  function ttnMsg(res) { return ttnSrvMsg(res) || t('ttnMkFail'); }
+  /** Габариты: все три пустые — null; все три числа 1…300 — [ш, д, в]; иначе 'part' (не все заполнены) или 'bad' (не числа). */
+  function ttnDims(vals) {
+    var f = vals.filter(function (v) { return String(v).trim() !== ''; });
+    if (!f.length) return null;
+    if (f.length < 3) return 'part';
+    var n = vals.map(function (v) { var s = String(v).trim().replace(',', '.'); return /^\d+(\.\d+)?$/.test(s) ? Number(s) : NaN; });
+    return n.some(function (x) { return !(x >= 1 && x <= 120); }) ? 'bad' : n;
+  }
+  /** Нажатия внутри шторки подтверждения: o.sync() пересчитывает доступность «ОК» и подсказки. */
+  function sheetSync(e) {
+    var o = state.sheet && state.sheet.kind === 'confirm' && state.sheet.o;
+    if (o && o.sync && e.target && e.target.closest && e.target.closest('.ttnc')) o.sync();
+  }
+  el.sheet.addEventListener('input', sheetSync);
+  el.sheet.addEventListener('change', sheetSync);
   var ttnFlight = false;
   /** «Створити ТТН»: сначала admin.ttn.preview (ничего не меняет), потом шторка подтверждения. */
   function ttnMake(btn) {
@@ -6987,14 +7014,35 @@
       (d.nameOk ? '' : '<div class="field"><label class="label" for="ttnN">' + esc(t('ttnName')) + '</label><input class="input" id="ttnN" type="text" autocomplete="off" maxlength="80" value="' + esc(d.name) + '"><p class="ttnc__hint">' + esc(t('ttnNameHint')) + '</p></div>') +
       '<div class="field"><label class="label" for="ttnW">' + esc(t('ttnWeight')) + '</label><input class="input" id="ttnW" type="text" inputmode="numeric" autocomplete="off" maxlength="6" value="' + esc(wg) + '">' +
       '<p class="ttnc__hint">' + esc(wg === '' ? t('ttnWeightAsk') + ' ' : '') + esc(tf('ttnWeightHint', { a: minG, b: maxG })) + '</p></div>' +
-      '<div class="field"><label class="label" for="ttnD">' + esc(t('ttnDesc')) + '</label><input class="input" id="ttnD" type="text" autocomplete="off" maxlength="100" value="' + esc(d.desc || '') + '"></div></div>';
+      '<div class="field"><label class="label" for="ttnD">' + esc(t('ttnDesc')) + '</label><input class="input" id="ttnD" type="text" autocomplete="off" maxlength="100" value="' + esc(d.desc || '') + '"></div>' +
+      '<div class="ttnc__dims">' + [['ttnDW', 'ttnDimW'], ['ttnDL', 'ttnDimL'], ['ttnDH', 'ttnDimH']].map(function (x) {
+        return '<div class="field"><label class="label" for="' + x[0] + '">' + esc(t(x[1])) + '</label><input class="input" id="' + x[0] + '" type="text" inputmode="decimal" autocomplete="off" maxlength="6"></div>';
+      }).join('') + '</div>' +
+      '<p class="ttnc__hint">' + esc(t('ttnDimHint')) + '</p><p class="ttnc__hint ttnc__hint--warn" id="ttnDimPart" role="status" hidden>' + esc(t('ttnDimPart')) + '</p>' +
+      '<label class="check"><input type="checkbox" id="ttnQuiet"><span>' + esc(t('ttnQuiet')) + '</span></label><p class="ttnc__hint">' + esc(t('ttnQuietNote')) + '</p></div>';
+    var val = function (id) { var n = document.getElementById(id); return n ? String(n.value || '').trim() : ''; };
+    var dimVals = function () { return [val('ttnDW'), val('ttnDL'), val('ttnDH')]; };
     askConfirm({
       title: t('ttnMkTitle') + ' ' + d.num, html: html, ok: t('ttnCreate'), lock: diff,
+      sync: function () {
+        var cb = document.getElementById('ttnCityOk'), okb = el.sheet.querySelector('[data-action="cf-ok"]');
+        var part = ttnDims(dimVals()) === 'part', hint = document.getElementById('ttnDimPart');
+        if (hint) {
+          var was = hint.hidden; hint.hidden = !part;
+          if (part && was) try { hint.scrollIntoView({ block: 'nearest' }); } catch (e) { /* старый браузер */ } // подсказка не должна остаться под кнопками
+        }
+        if (okb && !okb.classList.contains('is-busy')) okb.disabled = part || (diff && !(cb && cb.checked));
+      },
       run: function (done) {
-        var val = function (id) { var n = document.getElementById(id); return n ? String(n.value || '').trim() : ''; };
         var w = Math.round(Number(val('ttnW').replace(/\s+/g, '')));
         if (!(w >= minG && w <= maxG)) { done(tf('ttnBadW', { a: minG, b: maxG })); return; }
+        var dm = ttnDims(dimVals());
+        if (dm === 'part') { done(t('ttnDimPart')); return; }
+        if (dm === 'bad') { done(t('ttnBadDims')); return; }
         var body = { num: d.num, weight: w, confirm: true, cod: cod };
+        if (dm) { body.width = dm[0]; body.length = dm[1]; body.height = dm[2]; }
+        var quiet = !!(document.getElementById('ttnQuiet') || {}).checked;
+        if (quiet) body.quiet = true;
         if (diff) {
           var cb = document.getElementById('ttnCityOk');
           if (!cb || !cb.checked) { done(t('ttnCityOk')); return; }
@@ -7012,7 +7060,7 @@
             done();
             renderAdminList();
             haptic('success');
-            toast(tf('ttnMade', { n: res.ttn }) + ' ' + (res.told === false ? t('admNotTold') : t('ttnTold')));
+            toast(tf('ttnMade', { n: res.ttn }) + ' ' + (res.quiet === true || (quiet && res.told !== true) ? t('ttnQuietDone') : res.told === false ? t('admNotTold') : t('ttnTold')));
             return;
           }
           var code = res && res.error, tn = res && res.ttn ? String(res.ttn).slice(0, 40) : '';
@@ -7025,7 +7073,41 @@
             renderAdminList();
             return;
           }
-          var msg = code === 'no_perm' ? t('admNoPerm') : code === 'busy' ? t('ttnBusy') : code === 'np_unknown' ? t('ttnUnknown') : ttnMsg(res);
+          var step = Number(res && res.step), msg;
+          if ((code === 'np_api' || code === 'np_error') && (step === 1 || step === 2)) {
+            msg = t(step === 1 ? 'ttnStep1' : 'ttnStep2') + (ttnSrvMsg(res) ? '. ' + ttnSrvMsg(res) : '');
+          } else {
+            msg = code === 'no_perm' ? t('admNoPerm') : code === 'busy' ? t('ttnBusy') : code === 'np_unknown' ? t('ttnUnknown') : code === 'bad_dims' ? (ttnSrvMsg(res) || t('ttnBadDims')) : ttnMsg(res);
+          }
+          if (code === 'np_api' && res.np) msg += ': ' + String(res.np).slice(0, 300);
+          done(msg);
+        }).catch(function () { done(t('admFail')); });
+      }
+    });
+  }
+
+  /** «Видалити накладну»: подтверждение шторкой, потом admin.ttn.delete с confirm:true. Клиенту ничего не уходит. */
+  function ttnDelAsk(num) {
+    var ord = (adm.orders || []).filter(function (x) { return x.num === num; })[0];
+    if (!ord || adm.busy) return;
+    askConfirm({
+      title: t('ttnDelTitle') + ' ' + num, text: tf('ttnDelText', { n: ord.ttn || '' }), ok: t('ttnDel'), danger: true,
+      run: function (done) {
+        api('admin.ttn.delete', { num: num, confirm: true }).then(function (res) {
+          if (res && res.ok) {
+            ord.ttn = ''; delete ord.ttnDel;
+            done(); renderAdminList(); haptic('success'); toast(t('ttnDelDone'));
+            return;
+          }
+          var code = res && res.error;
+          if (code === 'del_partial') {
+            // В НП накладной уже нет: повторять нельзя, номер админ стирает вручную.
+            delete ord.ttnDel;
+            done(); renderAdminList(); haptic('error');
+            askConfirm({ title: t('ttnDelErrTitle'), text: ttnSrvMsg(res), warn: t('ttnDelPartial') });
+            return;
+          }
+          var msg = code === 'no_perm' ? t('admNoPerm') : ttnSrvMsg(res) || t('admFail');
           if (code === 'np_api' && res.np) msg += ': ' + String(res.np).slice(0, 300);
           done(msg);
         }).catch(function () { done(t('admFail')); });
