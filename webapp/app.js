@@ -717,7 +717,7 @@
     hapticLight();
     if (on) track('fav', id);
     renderTabbar();
-    if (state.view === 'fav' && !state.sheet) renderPage();
+    if (state.view === 'fav') { if (state.sheet) stale.fav = true; else renderPage(); }
   }
 
   function favBtn(p) {
@@ -1496,6 +1496,16 @@
     document.body.classList.remove('is-locked');
     updateChrome();
     swipes(state.view !== 'checkout');
+    flushStale();
+  }
+  /** Ответ пришёл, пока была открыта шторка: экран под ней не перерисовывался. Перерисовываем при закрытии, если он всё ещё актуален. */
+  var stale = { main: '', fav: false, admin: false };
+  function flushStale() {
+    var s = stale; stale = { main: '', fav: false, admin: false };
+    if (state.sheet) { stale = s; return; }
+    if (s.main && state.view === 'catalog' && state.status === 'ready' && (s.main === 'force' || (isHome() && (window.scrollY || 0) < 200))) renderMain();
+    if (s.fav && state.view === 'fav') renderPage();
+    if (s.admin && state.view === 'admin' && !adm.loading && !adm.busy && !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !adm.mailEdit) renderAdminList();
   }
 
   /** Пока открыта шторка или форма заказа, жест «потянуть вниз» не должен сворачивать весь магазин. */
@@ -2626,7 +2636,10 @@
       store.set(HASORD_KEY, my.list.length ? '1' : '0');
       if (state.view === 'orders') renderPage();
       // Подборка «Купити знову» появляется на главной, если человек ещё не начал её листать.
-      else if (state.view === 'catalog' && !state.sheet && state.status === 'ready' && isHome() && my.bought.join() !== had && (window.scrollY || 0) < 200) renderMain();
+      else if (state.view === 'catalog' && state.status === 'ready' && isHome() && my.bought.join() !== had && (window.scrollY || 0) < 200) {
+        if (state.sheet) { if (!stale.main) stale.main = 'usual'; } // шторка открыта: перерисуем при закрытии
+        else renderMain();
+      }
     }).catch(function () {
       my.loading = false; my.error = 'myErr';
       if (state.view === 'orders') renderPage();
@@ -2846,7 +2859,7 @@
     if (kind === 'settings' || admFlight[kind] || adm.busy || Date.now() - (admAt[kind] || 0) < ADMIN_FRESH_MS) return;
     fetchAdmin(kind).then(function (res) {
       if (res && res.ok && state.view === 'admin' && adminKind() === kind && !adm.loading && !adm.busy &&
-          !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !adm.mailEdit && !state.sheet) renderAdminList();
+          !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !adm.mailEdit) { if (state.sheet) stale.admin = true; else renderAdminList(); }
     }).catch(function () { /* останется прежний список */ });
   }
 
@@ -4801,7 +4814,7 @@
   /** ТТН в карточке заказа админ-панели (только для Новой почты). */
   function ttnAdminHtml(o) {
     if (String(o.delivery).toLowerCase().indexOf('пошта') < 0) return '';
-    var html = o.ttn ? '<p>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b></p>' : '';
+    var html = o.ttn ? '<p>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b>' + (Number(o.ttnTrial) === 1 ? ' <span class="badge badge--opt">' + esc(t('ttnTrial')) + '</span>' : '') + '</p>' : '';
     if (can('st')) {
       if (adm.npTtn === 1 && !o.ttn) html += '<button type="button" class="btn btn--block" data-w1="ttn-make" data-num="' + esc(o.num) + '">' + esc(t('ttnMake')) + '</button>'; // только если бэкенд включил (ключ и данные отправителя) и ТТН ещё нет
       if (o.ttnDel === 1 && o.ttn) html += '<button type="button" class="btn btn--block" data-w1="ttn-del" data-num="' + esc(o.num) + '">' + esc(t('ttnDel')) + '</button>'; // бэкенд сам решает, можно ли (создана магазином, моложе 24 ч); старый бэкенд поля не шлёт
@@ -5706,7 +5719,7 @@
       if (state.view === 'biz' || state.view === 'cart' || state.view === 'orders') renderPage();
       if (was !== wh.on) { // стал или перестал быть оптовиком: строка «для бізнесу» на главной и цены в открытой карточке обновляются
         updateChrome();
-        if (state.view === 'catalog' && state.status === 'ready' && !state.sheet) renderMain();
+        if (state.view === 'catalog' && state.status === 'ready') { if (state.sheet) stale.main = 'force'; else renderMain(); }
         if (state.sheet) renderSheet();
       }
     }).catch(function () { wh.loading = false; if (state.view === 'biz') renderPage(); });
@@ -6451,14 +6464,23 @@
     adm.busy = true; adm.stPending = { num: order.num, code: stCode };
     order.status = stNext;
     renderAdminList();
+    var finished = false, guard = 0;
+    // Один раз и всегда: блокировка снимается, даже если отрисовка или тост упали. Сервер не ответил за 45 с — тоже снимается.
     var stDone = function (text, back) {
+      if (finished) return;
+      finished = true; clearTimeout(guard);
       adm.busy = false; adm.stPending = null;
-      if (back) { order.status = stWas; haptic('error'); }
-      toast(text);
-      if (state.view === 'admin') renderAdminList();
-      fetchToday(true);
+      if (back) order.status = stWas;
+      try {
+        if (back) haptic('error');
+        toast(text);
+        if (state.view === 'admin') renderAdminList();
+        fetchToday(true);
+      } catch (e) { /* блокировка уже снята */ }
     };
+    guard = setTimeout(function () { stDone(t('admStBack'), true); }, 45000);
     api('admin.status', { num: order.num, code: stCode }).then(function (res) {
+      if (finished) return;
       if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
       if (!res || !res.ok) throw new Error('fail');
       order.status = res.status;
@@ -6925,7 +6947,8 @@
       ttnStep1: 'Не вдалося створити отримувача в Новій пошті', ttnStep2: 'Не вдалося створити накладну',
       ttnDel: 'Видалити накладну', ttnDelTitle: 'Видалити накладну', ttnDelText: 'Пробну накладну № {n} буде видалено в Новій пошті, номер у замовленні — стерто. Клієнту нічого не надсилається.',
       ttnDelDone: 'Накладну видалено. Номер у замовленні стерто.', ttnDelErrTitle: 'Накладну не видалено',
-      ttnDelPartial: 'У Новій пошті видалено, але номер у замовленні лишився — зітріть його вручну'
+      ttnDelPartial: 'У Новій пошті накладну видалено, але номер у замовленні лишився. Зітріть номер у колонці „ТТН“ цього замовлення; інші комірки не чіпайте.',
+      ttnDelInfoTitle: 'Номер не змінено', ttnTrial: 'пробна'
     },
     ru: {
       npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'В сумму заказа не входит. Точную сумму считает перевозчик.',
@@ -6947,7 +6970,8 @@
       ttnStep1: 'Не удалось создать получателя в Новой почте', ttnStep2: 'Не удалось создать накладную',
       ttnDel: 'Удалить накладную', ttnDelTitle: 'Удалить накладную', ttnDelText: 'Пробная накладная № {n} будет удалена в Новой почте, номер в заказе — стёрт. Клиенту ничего не отправляется.',
       ttnDelDone: 'Накладная удалена. Номер в заказе стёрт.', ttnDelErrTitle: 'Накладная не удалена',
-      ttnDelPartial: 'В Новой почте удалено, но номер в заказе остался — сотрите его вручную'
+      ttnDelPartial: 'В Новой почте накладная удалена, но номер в заказе остался. Сотрите номер в колонке «ТТН» этого заказа; другие ячейки не трогайте.',
+      ttnDelInfoTitle: 'Номер не изменён', ttnTrial: 'пробная'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
@@ -7095,16 +7119,24 @@
       run: function (done) {
         api('admin.ttn.delete', { num: num, confirm: true }).then(function (res) {
           if (res && res.ok) {
-            ord.ttn = ''; delete ord.ttnDel;
+            ord.ttn = ''; delete ord.ttnDel; delete ord.ttnTrial;
             done(); renderAdminList(); haptic('success'); toast(t('ttnDelDone'));
             return;
           }
           var code = res && res.error;
+          if (code === 'del_other') {
+            // В заказе уже другой номер, его не трогали: это сообщение, а не тревога. Карточку обновляем с сервера.
+            delete ord.ttnDel;
+            done(); renderAdminList(); haptic('warning');
+            askConfirm({ title: t('ttnDelInfoTitle'), text: ttnSrvMsg(res) });
+            fetchAdmin('orders').then(function () { if (state.view === 'admin' && adm.tab === 'orders') renderAdminList(); }).catch(function () { /* останется прежняя карточка */ });
+            return;
+          }
           if (code === 'del_partial') {
-            // В НП накладной уже нет: повторять нельзя, номер админ стирает вручную.
+            // В НП накладной уже нет: повторять нельзя, номер админ стирает вручную. Текст — с сервера, запасной — для старого ответа.
             delete ord.ttnDel;
             done(); renderAdminList(); haptic('error');
-            askConfirm({ title: t('ttnDelErrTitle'), text: ttnSrvMsg(res), warn: t('ttnDelPartial') });
+            askConfirm({ title: t('ttnDelErrTitle'), warn: ttnSrvMsg(res) || t('ttnDelPartial') });
             return;
           }
           var msg = code === 'no_perm' ? t('admNoPerm') : ttnSrvMsg(res) || t('admFail');
