@@ -36,7 +36,9 @@ var NP_CACHE_HEAD = ['Ключ', 'Частина', 'Частин', 'Діє до'
 var NP_CELL = 45000;               // знаков данных в одной ячейке (лимит Таблиц — 50 000)
 var NP_CACHE_MAX_PARTS = 12;       // значение больше этого в лист не пишем (до 540 000 знаков; быстрый слой всё равно держит его 6 часов)
 var NP_PEND_KEY = 'np_pend';       // очередь «надо сохранить в лист»: [[ключ, срок до (мс)], …]
-var NP_PEND_MAX = 60;              // не больше ключей в очереди (лишние просто не сохраняются в лист)
+var NP_PEND_MAX = 100;             // не больше ключей в очереди (≈ 8 КБ из 100 КБ значения CacheService); лишние просто не сохраняются в лист
+var NP_PEND_HINTS_MAX = 40;        // из них не больше стольких подсказок городов (npc2_…): списки отделений, поиск отделения и стоимость не вытесняются
+var NP_HINT_LONG_MIN = 4;          // подсказка города короче этого числа знаков — только быстрый слой
 var NP_FLUSH_BUDGET_MS = 25000;    // сколько фоновая задача пишет в лист за один запуск
 var NP_FLUSH_MAX_PARTS = 40;       // и сколько ячеек максимум за запуск
 var NP_CACHE_MAX_ROWS = 400;       // строк в листе не больше: старые записи вытесняются
@@ -126,8 +128,38 @@ function npPauseUntilText_() {
 /** Строка состояния для меню: пауза до ГГ:ХХ или «обмежень немає», плюс сколько раз пауза срабатывала за сутки. */
 function npLimitStatusLine_() {
   var until = npPauseUntilText_(), n = npLimitHits_().length;
-  var line = until ? 'Пауза через обмеження НП: до ' + until : 'Обмежень зараз немає';
-  return line + (n > 0 ? ' (за останню добу пауза спрацювала ' + n + ' разів)' : '');
+  var line = until ? 'Пауза через ліміт запитів Нової пошти: до ' + until : 'Обмежень від Нової пошти зараз немає';
+  return line + (n > 0 ? ' (за останню добу пауза спрацювала ' + npTimesText_(n, 'ua') + ')' : '');
+}
+
+/** «n раз/рази/разів» (UA) или «n раз/раза/раз» (RU): 1 раз, 2–4 рази/раза, 5+ разів/раз, 11–14 разів/раз, 21 раз, 22 рази/раза. */
+function npTimesText_(n, lang) {
+  n = Math.floor(Number(n)) || 0;
+  var a = n % 10, b = n % 100, ru = lang === 'ru';
+  if (a === 1 && b !== 11) return n + ' раз';
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return n + (ru ? ' раза' : ' рази');
+  return n + (ru ? ' раз' : ' разів');
+}
+
+/** Строки для меню проверки НП: есть ли часовое задание и что в очереди и листе долгого кэша. Каждая проверка в try/catch. */
+function npLongStatusLines_() {
+  var out = [], on = null;
+  try {
+    on = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'hourlyJob'; });
+  } catch (e0) { on = null; }
+  if (on === true) out.push('Щогодинне завдання: увімкнено');
+  else if (on === false) out.push('Щогодинне завдання: НЕ увімкнено — без нього кеш Нової пошти живе 6 годин замість доби, а дані відправника не оновлюються. Увімкнути: PAMIR → Увімкнути щоденні повідомлення клієнтам');
+  var pend = '?', rows = '?';
+  try {
+    var l = JSON.parse(CacheService.getScriptCache().get(NP_PEND_KEY) || '[]');
+    pend = String(Array.isArray(l) ? l.length : 0);
+  } catch (e1) { /* не критично */ }
+  try {
+    var sh = npLongSheet_(false);
+    rows = String(sh ? Math.max(0, sh.getLastRow() - 1) : 0);
+  } catch (e2) { /* не критично */ }
+  out.push('Довгий кеш Нової пошти: у черзі на запис — ' + pend + ', рядків у листі «' + NP_CACHE_SHEET + '» — ' + rows);
+  return out;
 }
 
 /**
@@ -138,8 +170,8 @@ function npLimitAlert_() {
   if (typeof npAlertAdmins_ !== 'function') return;
   var n = npPauseMin_(), hits = npLimitHits_().length, uaMore = '', ruMore = '';
   if (hits > 1) {
-    uaMore = ' За останню добу пауза спрацювала ' + hits + ' разів: можливо, запитів до Нової пошти забагато.';
-    ruMore = ' За последние сутки пауза срабатывала ' + hits + ' раз: возможно, запросов к Новой почте слишком много.';
+    uaMore = ' За останню добу пауза спрацювала ' + npTimesText_(hits, 'ua') + ': імовірно, запитів до Нової пошти забагато.';
+    ruMore = ' За последние сутки пауза срабатывала ' + npTimesText_(hits, 'ru') + ': возможно, запросов к Новой почте слишком много.';
   }
   npAlertAdmins_(
     'Нова пошта тимчасово обмежила запити (занадто багато звернень). Підказки міст і відділень та розрахунок вартості доставки призупинено приблизно на ' + n +
@@ -153,6 +185,16 @@ function npLimitAlert_() {
 function npRetry_(out, eo) {
   if (eo && eo.paused === true && eo.retryAfter > 0) out.retryAfter = eo.retryAfter;
   return out;
+}
+
+/**
+ * Ответ витрине при неудаче запроса к НП. Дубль уже в пути (eo.busy) или сработал собственный счётчик сервера (eo.ownLimit, секунд до конца часа):
+ * {ok:false, error:'busy'} (для счётчика ещё retryAfter, не больше 600 с). Лимит НП — как раньше (retryAfter паузы); прочее — out как есть.
+ */
+function npFailOut_(out, eo) {
+  if (eo && eo.busy === true) return { ok: false, error: 'busy' };
+  if (eo && eo.ownLimit > 0) return { ok: false, error: 'busy', retryAfter: Math.min(600, Math.max(1, Math.ceil(eo.ownLimit))) };
+  return npRetry_(out, eo);
 }
 
 /* ---------- Быстрый слой (CacheService) ---------- */
@@ -322,7 +364,16 @@ function npPendAdd_(key, expMs) {
     try { list = JSON.parse(cache.get(NP_PEND_KEY) || '[]'); } catch (e0) { list = []; }
     if (!Array.isArray(list)) list = [];
     list = list.filter(function (x) { return x && x[0] !== key; });
-    if (list.length >= NP_PEND_MAX) return;
+    var hint = key.indexOf('npc2_') === 0; // подсказка города: низкий приоритет, её много
+    var hints = list.filter(function (x) { return String(x[0]).indexOf('npc2_') === 0; }).length;
+    if (hint) {
+      if (hints >= NP_PEND_HINTS_MAX || list.length >= NP_PEND_MAX) return; // подсказки не занимают место остальных ключей
+    } else if (list.length >= NP_PEND_MAX) {
+      var at = -1;
+      for (var i = 0; i < list.length; i++) { if (String(list[i][0]).indexOf('npc2_') === 0) { at = i; break; } } // вытесняем самую старую подсказку
+      if (at < 0) return;
+      list.splice(at, 1);
+    }
     list.push([key, expMs]);
     cache.put(NP_PEND_KEY, JSON.stringify(list), NP_FAST_MAX);
   } catch (err) { /* не критично */ }
@@ -455,7 +506,7 @@ function npWhLoad_(cityRef, admin, eo, noLong) {
   if (have) return have;
   var key = npWhKey_(cityRef), lead = npLead_(key, 24, function () { return npCacheGet_(key, true); });
   if (lead.value !== undefined) { have = npWhPeek_(cityRef); if (have) return have; }
-  if (!lead.lead) return null; // занято: чужая загрузка идёт, дубль не шлём
+  if (!lead.lead) { if (eo) eo.busy = true; return null; } // занято: чужая загрузка идёт, дубль не шлём
   try {
     var started = Date.now(), all = [], done = false, cityD = '', cityRu = '', want = String(cityRef).toLowerCase();
     for (var page = 1; page <= NP_WH_MAX_PAGES && Date.now() - started < NP_WH_MAX_MS; page++) {

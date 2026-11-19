@@ -1151,8 +1151,10 @@ function stage9b2CheckNp() {
   }
   lines.push('Ключ: є');
   lines.push(npLimitStatusLine_());
+  var longLines = npLongStatusLines_();
+  longLines.forEach(function (x) { lines.push(x); });
   if (npPauseLeftSec_() > 0) { // пауза после «To many requests»: сети нет вообще
-    var pm = npLimitStatusLine_() + '\n' + npSmsg_('paused', 'ua') + ' Запити до Нової пошти зараз не надсилаються; повторіть пункт меню після ' + npPauseUntilText_() + '.';
+    var pm = npLimitStatusLine_() + '\n' + longLines.join('\n') + '\n' + npSmsg_('paused', 'ua') + ' Запити до Нової пошти зараз не надсилаються; повторіть пункт меню після ' + npPauseUntilText_() + '.';
     s9Alert_(pm);
     return { ok: false, message: pm, paused: true, retryAfter: npPauseLeftSec_() };
   }
@@ -1242,7 +1244,7 @@ function npPrice_(city, w, sum) {
   var now = Date.now(), parts = String(cache.get('npp_calls') || '').split('|');
   var calls = parseInt(parts[0], 10) || 0, t0 = parseInt(parts[1], 10) || now;
   if (now - t0 > 3600000) { calls = 0; t0 = now; }
-  if (calls >= NP_PRICE_MAX_PER_HOUR) return { ok: false, error: 'busy' };
+  if (calls >= NP_PRICE_MAX_PER_HOUR) return { ok: false, error: 'busy', retryAfter: Math.min(600, Math.max(1, Math.ceil((t0 + 3600000 - now) / 1000))) }; // свой счётчик стоимости
   cache.put('npp_calls', (calls + 1) + '|' + t0, 3600);
   var eo = {};
   var data = npCall_('getDocumentPrice', {
@@ -1256,7 +1258,7 @@ function npPrice_(city, w, sum) {
       npAlertAdmins_('Нова пошта: не вдалося порахувати вартість доставки для покупців (Нова пошта відмовила у запиті). Покупці просто не бачать вартість доставки, замовлення працюють як раніше. Перевірте ключ NP_API_KEY у кабінеті Нової пошти і запустіть у таблиці меню PAMIR → «Етап 9Б2: перевірити Нову пошту».',
         'Новая почта: не удалось рассчитать стоимость доставки для покупателей (Новая почта отклонила запрос). Покупатели просто не видят стоимость доставки, заказы работают как раньше. Проверьте ключ NP_API_KEY в кабинете Новой почты и запустите в таблице меню PAMIR → «Етап 9Б2: перевірити Нову пошту».');
     }
-    return npRetry_({ ok: false, error: 'np_error' }, eo);
+    return npFailOut_({ ok: false, error: 'np_error' }, eo);
   }
   npCachePut_(ckey, String(price), NP_PRICE_TTL);
   return { ok: true, cost: price };

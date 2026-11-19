@@ -4980,7 +4980,10 @@ function npCall_(method, properties, opts) {
   var now = Date.now(), parts = String(cache.get(ckCalls) || '').split('|');
   var calls = parseInt(parts[0], 10) || 0, t0 = parseInt(parts[1], 10) || now;
   if (now - t0 > 3600000) { calls = 0; t0 = now; }
-  if (calls >= maxCalls) return fail('перевищено ліміт запитів на годину (' + maxCalls + ')', false, true);
+  if (calls >= maxCalls) {
+    if (eo) eo.ownLimit = Math.max(1, Math.ceil((t0 + 3600000 - now) / 1000)); // свой счётчик сервера: витрине отвечаем 'busy' (npBusy_, Stage9b3.gs)
+    return fail('перевищено ліміт запитів на годину (' + maxCalls + ')', false, true);
+  }
   cache.put(ckCalls, (calls + 1) + '|' + t0, 3600);
   try {
     var res = UrlFetchApp.fetch(NP_API_URL, { method: 'post', contentType: 'application/json', muteHttpExceptions: true,
@@ -5091,11 +5094,11 @@ function npCities_(q) {
   if (hit) return { ok: true, list: hit };
   var lead = npLead_(ck, 6, function () { return npCacheGet_(ck, true); });
   if (lead.value !== undefined) { hit = fromCache(); if (hit) return { ok: true, list: hit }; }
-  if (!lead.lead) return { ok: false };
+  if (!lead.lead) return { ok: false, error: 'busy' }; // такой же запрос уже в пути: дубль не шлём
   try {
     var eo = {};
     var data = npCall_('searchSettlements', { CityName: name, Limit: '30' }, { noCache: true, errOut: eo });
-    if (!data) return npRetry_({ ok: false }, eo);
+    if (!data) return npFailOut_({ ok: false }, eo);
     var towns = [], rest = [];
     ((data[0] && data[0].Addresses) || []).forEach(function (a) {
       if (!a || !a.DeliveryCity || !a.Present || !(Number(a.Warehouses) > 0)) return; // только пункты, куда есть кому доставить
@@ -5103,7 +5106,7 @@ function npCities_(q) {
       (/^м\./.test(item.n) || String(a.SettlementTypeCode || '') === 'м.' ? towns : rest).push(item);
     });
     var list = towns.concat(rest).slice(0, 10);
-    npCachePut_(ck, JSON.stringify(list), list.length ? NP_TTL_LONG : NP_TTL_EMPTY);
+    npCachePut_(ck, JSON.stringify(list), list.length ? NP_TTL_LONG : NP_TTL_EMPTY, npNormQ_(name).length < NP_HINT_LONG_MIN); // короткие начала слов — только быстрый слой
     return { ok: true, list: list };
   } finally {
     lead.done();
@@ -5121,7 +5124,7 @@ function npWarehousesAll_(cityRef) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cityRef)) return { ok: false };
   var eo = {};
   var rich = npWhLoad_(cityRef, false, eo);
-  if (!rich) return npRetry_({ ok: false }, eo);
+  if (!rich) return npFailOut_({ ok: false }, eo);
   return { ok: true, list: rich.l.map(function (x) { return [x[0], x[1], x[2]]; }) };
 }
 
@@ -5153,11 +5156,11 @@ function npWarehouses_(cityRef, q, type) {
   if (hit) return view(hit);
   var lead = npLead_(ck, 6, function () { return npCacheGet_(ck, true); });
   if (lead.value !== undefined) { hit = fromCache(); if (hit) return view(hit); }
-  if (!lead.lead) return { ok: false, error: 'np_error' };
+  if (!lead.lead) return { ok: false, error: 'busy' };
   try {
     var eo = {};
     var data = npCall_('getWarehouses', { CityRef: cityRef, FindByString: q, Limit: '30' }, { noCache: true, errOut: eo });
-    if (!data) return npRetry_({ ok: false, error: 'np_error' }, eo);
+    if (!data) return npFailOut_({ ok: false, error: 'np_error' }, eo);
     var raw = [];
     data.forEach(function (w) {
       if (!w || !w.Description) return;

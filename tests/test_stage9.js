@@ -653,9 +653,9 @@ function fuWorld(o) {
   }
   if (o.recipes) s.sheets['Рецепти'] = [['ID', 'Назва (UA)', 'Название (RU)', 'Фото', 'Текст (UA)', 'Текст (RU)', 'Товари', 'Показувати']].concat(o.recipes);
   if (o.stops) s.sheets['Підписки'] = [['Дата', 'Telegram user id', 'Товар', 'Мова', 'Статус']].concat(o.stops.map(u => [new Date(), String(u), 'REMIND', '', 'стоп']));
-  return createGas(CODE, s);
+  return createGas(o.code || CODE, s);
 }
-const svcB = (g, num) => JSON.parse(g.sheets['Замовлення'].rows.find(r => r[0] === num)[16] || '{}');
+const svcB =(g, num) => JSON.parse(g.sheets['Замовлення'].rows.find(r => r[0] === num)[16] || '{}');
 const clientB = (g, uid) => { const t = g.sheets['Клієнти']; if (!t) return null; const r = t.rows.slice(1).find(x => String(x[0]) === String(uid)); return r ? { r, h: t.rows[0] } : null; };
 const F1_UA = 'Як вам замовлення? Якщо щось не так — напишіть нам, виправимо. А якщо сподобалося — будемо вдячні за кілька слів.';
 const F1_RU = 'Как вам заказ? Если что-то не так — напишите нам, исправим. А если понравилось — будем благодарны за пару слов.';
@@ -2612,12 +2612,47 @@ console.log('Выпуск 9Б3: один запрос в пути, блокир�
   const { g, st } = lw({});
   g.cache['npfl_npc2_харків'] = '1'; // «этот запрос уже в пути»
   const r = g.get({ action: 'np.city', q: 'Харків' });
-  ok(r.ok === false && !('retryAfter' in r) && st.calls.length === 0, 'такой же запрос уже в пути: дубль не уходит, ответ {ok:false}');
+  ok(JSON.stringify(r) === '{"ok":false,"error":"busy"}' && st.calls.length === 0, 'такой же запрос уже в пути: дубль не уходит, ответ {ok:false,error:busy} без retryAfter', r);
   g.cache['npfl_npwl_' + NPC] = '1';
-  ok(g.get({ action: 'np.whall', city: NPC }).ok === false && st.calls.length === 0, 'список отделений города уже грузится: дубль не уходит');
-  delete g.cache['npfl_npc2_харків']; delete g.cache['npfl_npwl_' + NPC];
+  const rw = g.get({ action: 'np.whall', city: NPC });
+  ok(JSON.stringify(rw) === '{"ok":false,"error":"busy"}' && st.calls.length === 0, 'список отделений города уже грузится: дубль не уходит, busy', rw);
+  g.cache['npfl_npwq_' + NPC.toLowerCase() + '_12'] = '1';
+  const rq = g.get({ action: 'np.wh', city: NPC, q: '12' });
+  ok(JSON.stringify(rq) === '{"ok":false,"error":"busy"}' && st.calls.length === 0, 'np.wh: такой же запрос в пути — busy', rq);
+  g.cache['npfl_npp_' + NPC + '_1_500_' + g.call('npSenderTag_')] = '1';
+  const rp = g.get({ action: 'np.price', city: NPC, w: 1000, sum: 500 });
+  ok(JSON.stringify(rp) === '{"ok":false,"error":"busy"}' && st.calls.length === 0, 'np.price: такой же расчёт в пути — busy', rp);
+  delete g.cache['npfl_npp_' + NPC + '_1_500_' + g.call('npSenderTag_')];
+  delete g.cache['npfl_npc2_харків']; delete g.cache['npfl_npwl_' + NPC]; delete g.cache['npfl_npwq_' + NPC.toLowerCase() + '_12'];
   ok(g.get({ action: 'np.city', q: 'Харків' }).ok === true && g.get({ action: 'np.whall', city: NPC }).ok === true && st.calls.length === 2, 'отметка снята — запросы проходят');
   ok(!Object.keys(g.cache).some(k => /^npfl_/.test(k)), 'отметки «в пути» снимаются после ответа');
+}
+{
+  // собственный счётчик сервера (400/ч публичных): busy + retryAfter до конца часа, не больше 600 с; сети нет, пауза НП не ставится
+  const own = (left) => ({ city: ['np.city', { q: 'Харків' }], whall: ['np.whall', { city: NPC }], wh: ['np.wh', { city: NPC, q: '12' }], price: ['np.price', { city: NPC, w: 1000, sum: 500 }] }[left]);
+  ['city', 'whall', 'wh', 'price'].forEach(k => {
+    const { g, st } = lw({});
+    g.cache['np_calls'] = '400|' + (Date.now() - 3500000); // окно кончится через ~100 с
+    const [a, p] = own(k); const r = g.get(Object.assign({ action: a }, p));
+    ok(r.ok === false && r.error === 'busy' && r.retryAfter > 90 && r.retryAfter <= 100 && Object.keys(r).sort().join() === 'error,ok,retryAfter' && st.calls.length === 0 && !g.props.NP_PAUSE_UNTIL, a + ': свой счётчик исчерпан — {ok:false,error:busy,retryAfter:~100}, сети нет, паузы нет', r);
+    const { g: g2 } = lw({});
+    g2.cache['np_calls'] = '400|' + Date.now(); // окно только началось: до конца часа 3600 с, отдаём не больше 600
+    const r2 = g2.get(Object.assign({ action: a }, p));
+    ok(r2.error === 'busy' && r2.retryAfter === 600, a + ': retryAfter не больше 600 с', r2);
+  });
+  { // свой счётчик расчёта стоимости (npp_calls): тоже busy с retryAfter
+    const { g, st } = lw({});
+    g.cache['npp_calls'] = '9999|' + (Date.now() - 3500000);
+    const r = g.get({ action: 'np.price', city: NPC, w: 1000, sum: 500 });
+    ok(r.error === 'busy' && r.retryAfter > 90 && r.retryAfter <= 100 && st.calls.length === 0, 'np.price: счётчик расчётов исчерпан — busy + retryAfter', r);
+  }
+  // настоящая ошибка НП — как было (np_error / {ok:false}), без busy; лимит НП — retryAfter паузы, без busy
+  const { g, st } = lw({ apiDown: true });
+  const e1 = g.get({ action: 'np.city', q: 'Харків' }), e2 = g.get({ action: 'np.whall', city: NPC }), e3 = g.get({ action: 'np.wh', city: NPC, q: '12' }), e4 = g.get({ action: 'np.price', city: NPC, w: 1000, sum: 500 });
+  ok(JSON.stringify(e1) === '{"ok":false}' && JSON.stringify(e2) === '{"ok":false}' && e3.error === 'np_error' && e4.error === 'np_error' && ![e1, e2, e3, e4].some(x => 'retryAfter' in x), 'настоящая ошибка НП: ответы прежние, не busy', [e1, e2, e3, e4]);
+  const { g: gl } = lw({ limit: true });
+  const l1 = gl.get({ action: 'np.city', q: 'Харків' }), l2 = gl.get({ action: 'np.whall', city: NPC }), l3 = gl.get({ action: 'np.price', city: NPC, w: 1000, sum: 500 });
+  ok(l1.error === undefined && l1.retryAfter > 0 && l2.error === undefined && l2.retryAfter > 0 && l3.error === 'np_error' && l3.retryAfter > 0, 'лимит НП: как раньше (retryAfter паузы, не busy)', [l1, l2, l3]);
 }
 {
   const { g, st } = lw({});
@@ -2675,8 +2710,54 @@ console.log('Выпуск 9Б3: сколько запросов к НП на о�
   admP(gb, 900, 'admin.ttn.preview', { num: 'P-0101' }); admP(gb, 900, 'admin.ttn.create', { num: 'P-0101', weight: 1000, confirm: true });
   const admAfterBuyer = sb.calls.length - nb;
   console.log('  [запросов к НП на один заказ, новый код] покупатель (2 подсказки города + отделения + стоимость): холодный кэш ' + cold + ', тёплый <6 ч ' + warm + ', тёплый через 7 ч ' + warm7 + '; админ preview+create: ' + admCold + ' / второй заказ в тот же город через 7 ч: ' + admWarm + ' / город уже загружен покупателем: ' + admAfterBuyer);
-  ok(cold === 6 && warm === 0 && warm7 === 0, 'покупатель: 6 запросов на холодном кэше, 0 на тёплом (в том числе через 7 часов)', { cold, warm, warm7 });
+  ok(cold === 6 && warm === 0 && warm7 === 1, 'покупатель: 6 запросов на холодном кэше, 0 на тёплом; через 7 часов 1 (короткая подсказка «Хар» живёт только в быстром слое 6 ч, остальное — сутки)', { cold, warm, warm7 });
   ok(admCold === 3 && admWarm === 2 && admAfterBuyer === 2, 'админ: preview+create — 3 запроса (отделение, получатель, накладная); второй заказ в тот же город — 2; если список города уже загружен покупателем — 2', { admCold, admWarm, admAfterBuyer });
+}
+
+console.log('Выпуск 9Б3: запросов к НП «было / стало» (измерено на старом коде из git main)');
+{
+  // «Было» — apps-script/*.gs из ветки main (выпуск Б2), выгружено во временную папку и запущено в том же стенде и на тех же сценариях.
+  const fs = require('fs'), os = require('os'), cp = require('child_process');
+  let oldCode = null, tmp = null;
+  try {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pamir-old-'));
+    const root = path.join(__dirname, '..');
+    cp.execSync('git ls-tree --name-only main apps-script/', { cwd: root }).toString().split(/\r?\n/).filter(n => /\.gs$/.test(n)).forEach(n => {
+      fs.writeFileSync(path.join(tmp, path.basename(n)), cp.execSync('git show main:' + n, { cwd: root, maxBuffer: 64 * 1024 * 1024 }));
+    });
+    oldCode = path.join(tmp, 'Code.gs');
+    if (!fs.existsSync(oldCode)) oldCode = null;
+  } catch (e) { oldCode = null; }
+  if (!oldCode) console.log('  (ветка main недоступна: сравнение «было» пропущено)');
+  else {
+    const flush = (g) => { try { if (typeof g.sandbox.npLongFlush_ === 'function') g.call('npLongFlush_'); } catch (e) { /* в старом коде нет */ } };
+    const mk = (code) => { const g = npWorld(code ? { code } : {}); g.setCacheStrict(true); const st = npStub9(g, {}); st.whN = 1200; return { g, st }; };
+    const buyerOf = (g) => () => { g.get({ action: 'np.city', q: 'Хар' }); g.get({ action: 'np.city', q: 'Харків' }); g.get({ action: 'np.whall', city: NPC }); g.get({ action: 'np.price', city: NPC, w: 1000, sum: 1000 }); };
+    const buyerAt = (code, hours) => {
+      const { g, st } = mk(code); const b = buyerOf(g); b(); flush(g);
+      if (hours) g.advance(hours * HR);
+      const n = st.calls.length; b(); return st.calls.length - n;
+    };
+    const buyerCold = (code) => { const { g, st } = mk(code); buyerOf(g)(); return st.calls.length; };
+    const adminAt = (code) => { const { g, st } = mk(code); withTtnCol(g); admP(g, 900, 'admin.ttn.preview', { num: 'P-0101' }); admP(g, 900, 'admin.ttn.create', { num: 'P-0101', weight: 1000, confirm: true }); return st.calls.length; };
+    const bgDay = (code) => {
+      const g = sndWorld({}, code ? { code } : {}); g.setCacheStrict(true); const st = sndStub(g, { apiDown: true });
+      for (let h = 0; h < 24; h++) { g.advance(HR); try { g.call('npSenderJob_'); } catch (e) { /* ошибки задачи не важны для счёта */ } flush(g); }
+      return st.calls.length;
+    };
+    const rows = [
+      ['покупатель, холодный кэш', buyerCold(oldCode), buyerCold(null)],
+      ['тот же покупатель через 1 час', buyerAt(oldCode, 1), buyerAt(null, 1)],
+      ['тот же покупатель через 7 часов', buyerAt(oldCode, 7), buyerAt(null, 7)],
+      ['тот же покупатель через 23 часа', buyerAt(oldCode, 23), buyerAt(null, 23)],
+      ['админ preview+create (холодный кэш)', adminAt(oldCode), adminAt(null)],
+      ['фон за сутки, отправитель не находится (ошибка API)', bgDay(oldCode), bgDay(null)]
+    ];
+    console.log('  [запросов к НП: было (main) / стало (эта ветка), измерено в стенде: 1200 отделений = 3 страницы]');
+    rows.forEach(r => console.log('    ' + r[0].padEnd(54) + String(r[1]).padStart(4) + ' / ' + String(r[2]).padStart(3)));
+    ok(rows.every(r => Number.isInteger(r[1]) && Number.isInteger(r[2]) && r[2] <= r[1]), 'стало не больше, чем было, во всех шести сценариях', rows);
+  }
+  try { if (tmp) fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) { /* не критично */ }
 }
 
 console.log('Выпуск 9Б3: контракт и утечки');
@@ -2712,7 +2793,7 @@ console.log('Выпуск 9Б3 (приёмка): кэш в лист пишет �
   g.setUserLockBusy(0); FL(g);
   ok(cacheSheetText(g) !== sheetBefore && !g.cache['np_pend'], 'блокировка свободна: запись дописана');
   g.setUserLockNull(true);
-  g.get({ action: 'np.city', q: 'Хар' });
+  g.get({ action: 'np.city', q: 'Харко' });
   ok(FL(g) === 1, 'нет UserLock (getUserLock вернул null): запасная отметка в кэше, запись проходит');
   ok(!g.cache['np_wlock'], 'запасная отметка снимается');
 }
@@ -2863,17 +2944,56 @@ console.log('Выпуск 9Б3 (приёмка): тревога о лимите 
   ok(LIMALERT(g).length === 1 && st.calls.length === 3, 'повторное срабатывание в те же сутки: второго сообщения нет');
   g.advance(24 * HR - 22 * MIN + MIN); g.get({ action: 'np.city', q: 'Хар4' });
   const a2 = LIMALERT(g);
-  ok(a2.length === 2 && /спрацювала 3 разів/.test(a2[1].payload.text) && /срабатывала 3 раз/.test(a2[1].payload.text), 'суточное сообщение на следующие сутки: сколько раз за прошедшие сутки срабатывала пауза', a2[1] && a2[1].payload.text);
+  ok(a2.length === 2 && /спрацювала 3 рази/.test(a2[1].payload.text) && /срабатывала 3 раза/.test(a2[1].payload.text), 'суточное сообщение на следующие сутки: сколько раз за прошедшие сутки срабатывала пауза', a2[1] && a2[1].payload.text);
   ok(noSecrets(a2[1].payload.text + npAll(g)) && !g.props.NP_LIMIT_HITS.includes('NPKEY'), 'в сообщении и свойстве счётчика нет ключа');
 }
 {
   const { g } = lw({ limit: true });
   g.get({ action: 'np.city', q: 'Харків' });
   const r = g.call('stage9b2CheckNp');
-  ok(r.paused === true && /Пауза через обмеження НП: до \d\d:\d\d/.test(r.message) && /спрацювала 1 разів/.test(r.message) && /повторіть пункт меню після \d\d:\d\d/.test(r.message) && g.fetched.length === 0, 'меню при паузе: «Пауза через обмеження НП: до ГГ:ХХ», счётчик, когда повторить; запросов к НП нет', r.message);
+  ok(r.paused === true && /Пауза через ліміт запитів Нової пошти: до \d\d:\d\d/.test(r.message) && /спрацювала 1 раз\)/.test(r.message) && /повторіть пункт меню після \d\d:\d\d/.test(r.message) && g.fetched.length === 0, 'меню при паузе: «Пауза через ліміт запитів Нової пошти: до ГГ:ХХ», счётчик, когда повторить; запросов к НП нет', r.message);
   const { g: g2 } = lw({}); sndStub(g2);
   const r2 = g2.call('stage9b2CheckNp');
-  ok(/Обмежень зараз немає/.test(r2.message) && !/Пауза через/.test(r2.message), 'меню без паузы: «Обмежень зараз немає»', r2.message.slice(0, 200));
+  ok(/Обмежень від Нової пошти зараз немає/.test(r2.message) && !/Пауза через/.test(r2.message), 'меню без паузы: «Обмежень від Нової пошти зараз немає»', r2.message.slice(0, 200));
+}
+{
+  // словоформы
+  const g = npWorld(); const T = (n, l) => g.sandbox.npTimesText_(n, l);
+  const ua = { 1: '1 раз', 2: '2 рази', 4: '4 рази', 5: '5 разів', 11: '11 разів', 12: '12 разів', 14: '14 разів', 21: '21 раз', 22: '22 рази', 25: '25 разів', 111: '111 разів' };
+  const ru = { 1: '1 раз', 2: '2 раза', 4: '4 раза', 5: '5 раз', 11: '11 раз', 12: '12 раз', 14: '14 раз', 21: '21 раз', 22: '22 раза', 25: '25 раз', 111: '111 раз' };
+  ok(Object.keys(ua).every(n => T(+n, 'ua') === ua[n]) && Object.keys(ru).every(n => T(+n, 'ru') === ru[n]), 'словоформы «раз»: UA 1 раз/2–4 рази/5+ разів/11–14 разів/21 раз, RU 1 раз/2–4 раза/5+ раз/11–14 раз/21 раз');
+}
+{
+  // строка состояния часового задания и очереди в меню «перевірити Нову пошту»
+  const { g } = lw({});
+  g.get({ action: 'np.city', q: 'Харків' }); sndStub(g);
+  const r = g.call('stage9b2CheckNp');
+  ok(/Щогодинне завдання: НЕ увімкнено — без нього кеш Нової пошти живе 6 годин замість доби, а дані відправника не оновлюються\. Увімкнути: PAMIR → Увімкнути щоденні повідомлення клієнтам/.test(r.message) && /у черзі на запис — 1, рядків у листі «Кеш НП» — 0/.test(r.message), 'меню: часового задания нет — предупреждение, в очереди 1, в листе 0', r.message.slice(0, 400));
+  g.call('menuDailyOn'); FL(g);
+  const r2 = g.call('stage9b2CheckNp');
+  ok(g.triggers.includes('hourlyJob') && /Щогодинне завдання: увімкнено/.test(r2.message) && !/НЕ увімкнено/.test(r2.message) && /у черзі на запис — 0, рядків у листі «Кеш НП» — [1-9]/.test(r2.message), 'меню: после включения задания — «увімкнено», очередь записана в лист', r2.message.slice(0, 400));
+}
+{
+  // очередь записи: 200 разных подсказок города не вытесняют ключ списка отделений, поиска отделения и стоимости
+  const { g } = lw({});
+  g.call('npCachePut_', 'npwl_' + NPC, JSON.stringify({ c: 'Х', u: 'Х', l: [] }), 86400);
+  for (let i = 0; i < 200; i++) g.call('npCachePut_', 'npc2_подсказка' + i, '[]', 86400);
+  g.call('npCachePut_', 'npp_' + NPC + '_1_500_x', '95', 86400);
+  g.call('npCachePut_', 'npwf_' + NPC + '_12_0', '{"ref":"x"}', 86400);
+  const keys = JSON.parse(g.cache['np_pend']).map(x => x[0]);
+  ok(keys.includes('npwl_' + NPC) && keys.includes('npp_' + NPC + '_1_500_x') && keys.includes('npwf_' + NPC + '_12_0') && keys.length <= 100 && keys.filter(k => k.indexOf('npc2_') === 0).length <= 40, '200 подсказок города не вытесняют списки отделений, поиск отделения и стоимость; подсказок в очереди не больше 40', keys.length);
+  // очередь заполнена приоритетными ключами сверху: новый приоритетный вытесняет самую старую подсказку
+  const { g: g2 } = lw({});
+  for (let i = 0; i < 40; i++) g2.call('npCachePut_', 'npc2_подсказка' + i, '[]', 86400);
+  for (let i = 0; i < 60; i++) g2.call('npCachePut_', 'npp_k' + i, '1', 86400);
+  g2.call('npCachePut_', 'npwl_late', '{}', 86400);
+  const k2 = JSON.parse(g2.cache['np_pend']).map(x => x[0]);
+  ok(k2.length === 100 && k2.includes('npwl_late') && !k2.includes('npc2_подсказка0') && k2.includes('npc2_подсказка1'), 'очередь полна: приоритетный ключ занимает место самой старой подсказки', k2.length);
+  // короткие начала слов — только быстрый слой
+  const { g: g3 } = lw({});
+  g3.get({ action: 'np.city', q: 'Хар' }); g3.get({ action: 'np.city', q: 'Харк' });
+  const k3 = JSON.parse(g3.cache['np_pend'] || '[]').map(x => x[0]);
+  ok(k3.length === 1 && k3[0] === 'npc2_харк', 'подсказка «Хар» (3 знака) в очередь на лист не ставится, «Харк» (4) — ставится', k3);
 }
 {
   const g = npWorld();
