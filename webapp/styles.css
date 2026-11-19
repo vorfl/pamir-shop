@@ -1199,3 +1199,13 @@ body:not([data-view="catalog"]) .snow, body.is-locked .snow { display: none; }
 .chint { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-md); background: var(--surface-sunken); border: 1px solid var(--line); }
 .chint__text { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
 .chint .btn { align-self: stretch; }
+
+/* Волна Б2, блок 4: стоимость доставки Новой почты и экран «Створити ТТН» */
+.np-cost { margin: 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--surface-sunken); border: 1px solid var(--line); }
+.np-cost[hidden] { display: none; }
+.np-cost__v { margin: 0; font-size: 15px; line-height: 22px; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+.np-cost__n { margin: var(--space-1) 0 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
+.ttnc { display: flex; flex-direction: column; gap: var(--space-3); }
+.ttnc__row { margin: 0; display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 20px; color: var(--ink); overflow-wrap: anywhere; }
+.ttnc__row span { font-size: 13px; line-height: 18px; font-weight: 600; color: var(--ink-muted); }
+.ttnc__hint { margin: var(--space-1) 0 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }

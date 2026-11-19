@@ -450,7 +450,7 @@
     view: 'catalog',   // catalog | cart | checkout | done | admin | orders
     scrollY: 0,
     cart: { t: 0, i: [] }, // i: [{ id, g (граммы, 0 = штука/упаковка), q, pr (цена за единицу), was? }]
-    form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', giftNote: '', npType: 'branch', point: '', ifOut: 'call' },
+    form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', giftNote: '', npType: 'branch', point: '', ifOut: 'call', cityRef: '', cityRefFor: '' },
     done: null,
     cartNotice: '',
     rid: loadRid(),    // id попытки заказа: повторная отправка не создаст второй заказ (переживает перезагрузку страницы)
@@ -2080,7 +2080,7 @@
   }
 
   function renderPage() {
-    if (state.view === 'cart') { el.page.innerHTML = cartHtml(); tweenCartSum(); }
+    if (state.view === 'cart') { el.page.innerHTML = cartHtml(); tweenCartSum(); npCostSync(); }
     else if (state.view === 'checkout') { el.page.innerHTML = checkoutHtml(); syncCheckout(); }
     else if (state.view === 'done') el.page.innerHTML = doneHtml();
     else if (state.view === 'admin') { el.page.innerHTML = adminHtml(); lockAdminForm(); }
@@ -2235,6 +2235,7 @@
     if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
     html += nyUntilHtml() + whCartHtml() + refCartHtml() + cartPerksHtml();
     html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
+    if (state.form.delivery === 'np') html += npCostHtml(); // нет shop.npp — пустая строка, корзина как раньше
     html += railHtml(t('cartMore'), '', crossSell(), true);
     html += '<button type="button" class="btn btn--ghost btn--block" data-action="clear-cart">' + icon('trash-2') + esc(t('clearCart')) + '</button>';
     return html;
@@ -2255,7 +2256,9 @@
   function saveForm() {
     var f = state.form;
     // Комментарий и подпись к подарку тоже хранятся на устройстве (не в облаке): сбой отправки или перезагрузка не стирают текст.
-    store.set(FORM_KEY, JSON.stringify({ name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point, comment: f.comment, giftNote: f.giftNote, ifOut: f.ifOut }));
+    var saved = { name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point, comment: f.comment, giftNote: f.giftNote, ifOut: f.ifOut };
+    if (f.cityRef && f.cityRefFor === f.city) { saved.cityRef = f.cityRef; saved.cityRefFor = f.cityRefFor; } // Ref города из подсказки Новой почты: только пока совпадает с текстом города
+    store.set(FORM_KEY, JSON.stringify(saved));
   }
 
   /** Маска +380 XX XXX XX XX. Понимает ввод с 0, 80 и 380 в начале. */
@@ -2320,7 +2323,7 @@
       '<fieldset class="group"><legend class="label">' + esc(t('delivery')) + '</legend><div class="opts">' +
       option('delivery', 'pickup', 'store', t('pickup')) + option('delivery', 'np', 'truck', t('np')) + '</div>' +
       '<div id="pickupInfo" class="stack">' + pickupHtml(addr, hours) + '</div>' +
-      '<div id="npFields" class="stack">' + npFieldsHtml() + '</div></fieldset>' +
+      '<div id="npFields" class="stack">' + npFieldsHtml() + npCostHtml() + '</div></fieldset>' +
 
       '<fieldset class="group"><legend class="label">' + esc(t('payment')) + '</legend><div class="opts opts--col">' +
       payMethods().map(function (k) { return option('pay', k, '', payName(k)); }).join('') + '</div>' +
@@ -2353,10 +2356,12 @@
       saveForm();
     }
     document.getElementById('cardNote').hidden = state.form.pay !== 'card';
+    npCostSync();
   }
 
   function updateCheckoutSum() {
     Array.prototype.forEach.call(el.page.querySelectorAll('.js-sum'), function (sum) { sum.textContent = money(cartTotal()); });
+    npCostSync();
     if (!(cartTotal() > 0)) go('cart');
   }
 
@@ -2367,6 +2372,7 @@
     f.name = form.elements.name.value.trim();
     f.phone = form.elements.phone.value.trim();
     f.city = form.elements.city.value.trim();
+    var ref = npRefNow(f.city); f.cityRef = ref; f.cityRefFor = ref ? f.city : '';
     f.branch = form.elements.branch.value.trim();
     f.comment = form.elements.comment.value.trim();
     if (form.elements.giftNote) f.giftNote = form.elements.giftNote.value.replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -2423,6 +2429,8 @@
       initData: inTelegram ? tg.initData : '', test: DEBUG
     };
     if (ifoOn()) order.ifOut = f.ifOut === 'replace' || f.ifOut === 'remove' ? f.ifOut : 'call'; // нет флага shop.ifo (старый бэкенд) — поля нет
+    var cref = f.delivery === 'np' ? npRefNow(f.city) : '';
+    if (cref) order.cityRef = cref; // город выбран из подсказки Новой почты (введён руками — поля нет); сервер на цену и сумму его не использует
     return order;
   }
 
@@ -2804,7 +2812,7 @@
         store.set(ADMIN_KEY, '1');
         admAt[kind] = Date.now();
         if (res.me) adm.me = res.me;
-        if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; adm.replies = Array.isArray(res.replies) ? res.replies : []; adm.canMsg = Array.isArray(res.replies); fetchToday(); }
+        if (kind === 'orders') { adm.npTtn = res.npTtn === 1 ? 1 : 0; adm.orders = res.orders || []; adm.stats = res.stats || null; adm.replies = Array.isArray(res.replies) ? res.replies : []; adm.canMsg = Array.isArray(res.replies); fetchToday(); }
         else if (kind === 'settings') adm.settings = res.fields || [];
         else if (kind === 'reviews') adm.reviews = res.reviews || [];
         else if (kind === 'admins') { adm.admins = res.admins || []; adm.invites = res.invites || []; adm.permList = res.permList || []; }
@@ -4412,6 +4420,74 @@
   var NP_CITIES = [['Харків', 'Харьков'], ['Київ', 'Киев'], ['Дніпро', 'Днепр'], ['Львів', 'Львов'], ['Одеса', 'Одесса'], ['Запоріжжя', 'Запорожье'], ['Вінниця', 'Винница'], ['Полтава', 'Полтава']];
   var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0, resolving: false, whAt: {}, whPending: {} };
   var NP_TIMEOUT = 5000;
+  var NP_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  /** Ref города Новой почты для текста города city: выбран из подсказки (np.ref) или восстановлен из сохранённой формы; введён руками — пусто. */
+  function npRefNow(city) {
+    var f = state.form;
+    if (np.ref && NP_UUID.test(np.ref)) return np.ref;
+    return f.cityRef && f.cityRefFor === city && NP_UUID.test(f.cityRef) ? f.cityRef : '';
+  }
+
+  /* --- стоимость доставки «≈ 85 ₴ за тарифом Нової пошти» (только при shop.npp = 1; в сумму заказа не входит) --- */
+  var npc = { cache: {}, failAt: {}, timer: null, want: '' };
+  var NPC_DEBOUNCE = 400, NPC_RETRY_MS = 60000;
+  function npCostOn() { return Number(shopInfo().npp) === 1 && !!cfg.API_URL; }
+  /** Что спрашивать у сервера сейчас: город, вес корзины, сумма. null — не хватает данных (нет города с ref, не наш вид доставки, вес хоть одной позиции неизвестен). */
+  function npCostTarget() {
+    if (!npCostOn() || state.form.delivery !== 'np' || !state.catalog) return null;
+    var cityEl = document.getElementById('f-city');
+    var city = cityEl && state.view === 'checkout' ? cityEl.value.trim() : state.form.city;
+    var ref = npRefNow(city);
+    if (!ref) return null;
+    var grams = 0, n = 0;
+    for (var i = 0; i < state.cart.i.length; i++) {
+      var l = state.cart.i[i];
+      if (!lineInfo(l).ok) continue; // позиции, которых нет, в заказ не попадают
+      if (!(l.g > 0)) return null;   // штучный товар: вес неизвестен, цифру не выдумываем
+      grams += l.g * l.q; n++;
+    }
+    if (!n || !(grams > 0)) return null;
+    var step = Math.ceil(grams / 500);
+    return { key: ref.toLowerCase() + '|' + step, ref: ref, grams: grams, sum: Math.round(cartTotal()) };
+  }
+  function npCostText() {
+    var w = npCostTarget();
+    if (!w) return '';
+    var c = npc.cache[w.key];
+    if (typeof c === 'number') return tf('npCost', { n: money(c) });
+    if (c === undefined || (c === 'fail' && Date.now() - (npc.failAt[w.key] || 0) >= NPC_RETRY_MS)) npCostAsk(w); // после ошибки повтор не раньше чем через минуту
+    return '';
+  }
+  function npCostAsk(w) {
+    if (npc.want === w.key) return;          // этот запрос уже ждёт своей очереди или в пути
+    npc.want = w.key;
+    clearTimeout(npc.timer);
+    npc.timer = setTimeout(function () {
+      var c0 = npc.cache[w.key];
+      if (c0 === 'loading' || typeof c0 === 'number') return;
+      npc.cache[w.key] = 'loading';
+      apiGetTimed('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
+        var c = res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0;
+        if (c) npc.cache[w.key] = c; else { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); }
+      }).catch(function () { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); })
+        .then(function () { if (npc.want === w.key) npc.want = ''; npCostSync(); }); // устаревший ответ только ложится в кэш: показывается то, что нужно сейчас
+    }, NPC_DEBOUNCE);
+  }
+  /** Обновляет строки стоимости на экране (корзина и оформление). Нет данных, ошибка или таймаут — строка скрыта. */
+  function npCostSync() {
+    var nodes = el.page.querySelectorAll('.js-npcost');
+    if (!nodes.length) return;
+    var text = npCostText();
+    Array.prototype.forEach.call(nodes, function (n) {
+      n.hidden = !text;
+      var v = n.querySelector('.np-cost__v');
+      if (v) v.textContent = text;
+    });
+  }
+  function npCostHtml() {
+    if (!npCostOn()) return '';
+    return '<div class="np-cost js-npcost" role="status" hidden><p class="np-cost__v"></p><p class="np-cost__n">' + esc(t('npCostNote')) + '</p></div>';
+  }
   function npFieldsHtml() {
     var f = state.form;
     if (!{ branch: 1, locker: 1, courier: 1 }[f.npType]) f.npType = 'branch';
@@ -4468,7 +4544,7 @@
   function npCityTyped(input) {
     clearTimeout(np.timer);
     np.ref = ''; np.seq++; np.resolving = false;
-    npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], '');
+    npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], ''); npCostSync();
     var q = input.value.trim(), key = q.toLowerCase(), seq = np.seq;
     if (q.length < 2) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
     if (np.cities[key]) { npBusy('cityBusy', false); suggShow('citySugg', np.cities[key], 'np-city'); return; }
@@ -4513,7 +4589,7 @@
     city.value = String(x.s).slice(0, 60);
     np.ref = String(x.ref || ''); np.seq++;
     npBusy('cityPick', false); npBusy('cityBusy', false);
-    setError('city', ''); suggShow('citySugg', [], ''); readForm();
+    setError('city', ''); suggShow('citySugg', [], ''); readForm(); npCostSync();
     if (!auto) hapticSelect();
     npLoadWh();
     var br = document.getElementById('f-branch');
@@ -4709,6 +4785,7 @@
     if (String(o.delivery).toLowerCase().indexOf('пошта') < 0) return '';
     var html = o.ttn ? '<p>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b></p>' : '';
     if (can('st')) {
+      if (adm.npTtn === 1 && !o.ttn) html += '<button type="button" class="btn btn--block" data-w1="ttn-make" data-num="' + esc(o.num) + '">' + esc(t('ttnMake')) + '</button>'; // только если бэкенд включил (ключ и данные отправителя) и ТТН ещё нет
       html += '<div class="ttnrow"><input class="input" type="text" inputmode="numeric" maxlength="24" autocomplete="off" placeholder="' + esc(t('ttnPh')) + '" aria-label="' + esc(t('ttnPh')) + '" id="ttn-' + esc(o.num) + '" value="' + esc(o.ttn || '') + '">' +
         '<button type="button" class="btn" data-w1="ttn" data-num="' + esc(o.num) + '">' + esc(t('ttnSave')) + '</button></div>';
     }
@@ -4810,7 +4887,9 @@
     if (!cloudOk()) return;
     var f = state.form;
     try {
-      tg.CloudStorage.setItem('form', JSON.stringify({ name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point }).slice(0, 4000), function () {});
+      var cloud = { name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point };
+      if (f.cityRef && f.cityRefFor === f.city) { cloud.cityRef = f.cityRef; cloud.cityRefFor = f.cityRefFor; }
+      tg.CloudStorage.setItem('form', JSON.stringify(cloud).slice(0, 4000), function () {});
     } catch (e) { /* облако недоступно */ }
   }
   function loadFormCloud() {
@@ -4831,6 +4910,7 @@
     if (f.pay === 'cash' || f.pay === 'card' || f.pay === 'cod') state.form.pay = f.pay;
     if (f.npType === 'branch' || f.npType === 'locker' || f.npType === 'courier') state.form.npType = f.npType;
     if (f.ifOut === 'call' || f.ifOut === 'replace' || f.ifOut === 'remove') state.form.ifOut = f.ifOut;
+    if (NP_UUID.test(String(f.cityRef || '')) && typeof f.cityRefFor === 'string' && f.cityRefFor) { state.form.cityRef = f.cityRef; state.form.cityRefFor = f.cityRefFor.slice(0, 120); }
   }
   function deliveryText(d) {
     if (d.delivery === 'np') return t('np') + (d.npType && d.npType !== 'branch' ? ' · ' + t(d.npType === 'locker' ? 'npLocker' : 'npCourier').toLowerCase() : '');
@@ -4879,7 +4959,7 @@
       else if (city) { // чип с крупным городом: ref неизвестен — спрашиваем сервер и выбираем точное совпадение
         city.value = b.getAttribute('data-city');
         np.ref = ''; np.seq++; np.resolving = false; suggShow('citySugg', [], ''); npBusy('cityPick', false); suggShow('whSugg', [], '');
-        setError('city', ''); readForm(); hapticSelect();
+        setError('city', ''); readForm(); npCostSync(); hapticSelect();
         npCityResolve(city.value, true);
       }
     } else if (kind === 'np-wh') {
@@ -4896,6 +4976,8 @@
         toast(t('admSaved'));
         renderAdminList();
       }).catch(function () { adm.busy = false; toast(t('admFail')); renderAdminList(); });
+    } else if (kind === 'ttn-make') {
+      ttnMake(b);
     } else if (kind === 'ttn') {
       var num = b.getAttribute('data-num');
       var input = document.getElementById('ttn-' + num);
@@ -6046,7 +6128,7 @@
       btnFree(act);
       haptic('error');
       var box = document.getElementById('cfErr');
-      if (box) { box.textContent = err; box.hidden = false; }
+      if (box) { box.textContent = err; box.hidden = false; try { box.scrollIntoView({ block: 'nearest' }); } catch (e2) { /* старый браузер */ } } // длинная шторка: ошибка не должна остаться за краем
     });
   });
   /** Текст ошибки по ответу сервера. */
@@ -6798,6 +6880,103 @@
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_B5[lang]).forEach(function (k) { I18N[lang][k] = I18N_B5[lang][k]; });
   });
+
+  /* Волна Б2, блок 4: Нова пошта — стоимость доставки и «Створити ТТН». */
+  var I18N_B6 = {
+    ua: {
+      npCost: '≈ {n} за тарифом Нової пошти', npCostNote: 'Доставку сплачує отримувач перевізнику. У суму замовлення не входить.',
+      ttnMake: 'Створити ТТН', ttnMkTitle: 'Створити накладну Нової пошти', ttnMkErrTitle: 'Накладну не створено',
+      ttnMkManual: 'Можна створити ТТН вручну в кабінеті Нової пошти й ввести номер у поле «Номер ТТН» у замовленні.',
+      ttnMkFail: 'Не вдалося створити накладну. Спробуйте пізніше або введіть ТТН вручну.',
+      ttnRecv: 'Отримувач', ttnPhone: 'Телефон', ttnCity: 'Місто', ttnBranchW: 'Відділення', ttnBranchP: 'Поштомат', ttnCod: 'Накладений платіж', ttnNoCod: 'без накладеного платежу',
+      ttnWeight: 'Вага посилки, г', ttnWeightHint: 'Від {a} до {b} г', ttnWeightAsk: 'Вагу в замовленні не збережено: вкажіть її.',
+      ttnName: 'Прізвище та ім’я отримувача', ttnNameHint: 'У замовленні вказано не повне ім’я. Нова пошта вимагає прізвище та ім’я.',
+      ttnDesc: 'Опис вантажу', ttnCreate: 'Створити накладну',
+      ttnBadW: 'Вкажіть вагу від {a} до {b} г', ttnBadName: 'Вкажіть прізвище та ім’я (два-три слова)',
+      ttnMade: 'Накладну створено: {n}.', ttnTold: 'Клієнту надіслано номер.'
+    },
+    ru: {
+      npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'Доставку оплачивает получатель перевозчику. В сумму заказа не входит.',
+      ttnMake: 'Создать ТТН', ttnMkTitle: 'Создать накладную Новой почты', ttnMkErrTitle: 'Накладная не создана',
+      ttnMkManual: 'Можно создать ТТН вручную в кабинете Новой почты и ввести номер в поле «Номер ТТН» в заказе.',
+      ttnMkFail: 'Не удалось создать накладную. Попробуйте позже или введите ТТН вручную.',
+      ttnRecv: 'Получатель', ttnPhone: 'Телефон', ttnCity: 'Город', ttnBranchW: 'Отделение', ttnBranchP: 'Почтомат', ttnCod: 'Наложенный платёж', ttnNoCod: 'без наложенного платежа',
+      ttnWeight: 'Вес посылки, г', ttnWeightHint: 'От {a} до {b} г', ttnWeightAsk: 'Вес в заказе не сохранён: укажите его.',
+      ttnName: 'Фамилия и имя получателя', ttnNameHint: 'В заказе указано неполное имя. Новая почта требует фамилию и имя.',
+      ttnDesc: 'Описание груза', ttnCreate: 'Создать накладную',
+      ttnBadW: 'Укажите вес от {a} до {b} г', ttnBadName: 'Укажите фамилию и имя (два-три слова)',
+      ttnMade: 'Накладная создана: {n}.', ttnTold: 'Клиенту отправлен номер.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B6[lang]).forEach(function (k) { I18N[lang][k] = I18N_B6[lang][k]; });
+  });
+
+  /** Текст ошибки из ответа сервера (msg.ua / msg.ru); неизвестный код — общий текст. Выводится только через textContent. */
+  function ttnMsg(res) {
+    var m = res && res.msg;
+    var s = m && typeof m === 'object' ? String((state.lang === 'ru' ? (m.ru || m.ua) : (m.ua || m.ru)) || '') : '';
+    return s || t('ttnMkFail');
+  }
+  var ttnFlight = false;
+  /** «Створити ТТН»: сначала admin.ttn.preview (ничего не меняет), потом шторка подтверждения. */
+  function ttnMake(btn) {
+    if (ttnFlight || adm.busy) return;
+    var num = btn.getAttribute('data-num');
+    ttnFlight = true; btnBusy(btn);
+    api('admin.ttn.preview', { num: num }).then(function (res) {
+      ttnFlight = false; btnFree(btn);
+      if (res && res.ok && res.ttn) { ttnConfirm(res.ttn); return; }
+      haptic('error');
+      if (res && res.error === 'no_perm') { toast(t('admNoPerm')); return; }
+      askConfirm({ title: t('ttnMkErrTitle'), text: ttnMsg(res), warn: t('ttnMkManual') });
+    }).catch(function () { ttnFlight = false; btnFree(btn); haptic('error'); toast(t('admFail')); });
+  }
+  function ttnRow(label, value) {
+    return '<p class="ttnc__row"><span>' + esc(label) + '</span><b>' + esc(value) + '</b></p>';
+  }
+  function ttnConfirm(d) {
+    var minG = Number(d.minG) || 100, maxG = Number(d.maxG) || 30000;
+    var wg = Number(d.weightG) > 0 ? Math.round(Number(d.weightG)) : '';
+    var cod = Math.round(Number(d.cod) || 0);
+    var html = '<div class="ttnc">' +
+      (d.nameOk ? ttnRow(t('ttnRecv'), d.name) : '') + ttnRow(t('ttnPhone'), d.phone) + ttnRow(t('ttnCity'), d.city) +
+      ttnRow(t(d.type === 'locker' ? 'ttnBranchP' : 'ttnBranchW'), d.npWarehouse || d.branch) +
+      ttnRow(t('ttnCod'), cod > 0 ? money(cod) : t('ttnNoCod')) +
+      (d.nameOk ? '' : '<div class="field"><label class="label" for="ttnN">' + esc(t('ttnName')) + '</label><input class="input" id="ttnN" type="text" autocomplete="off" maxlength="80" value="' + esc(d.name) + '"><p class="ttnc__hint">' + esc(t('ttnNameHint')) + '</p></div>') +
+      '<div class="field"><label class="label" for="ttnW">' + esc(t('ttnWeight')) + '</label><input class="input" id="ttnW" type="text" inputmode="numeric" autocomplete="off" maxlength="6" value="' + esc(wg) + '">' +
+      '<p class="ttnc__hint">' + esc(wg === '' ? t('ttnWeightAsk') + ' ' : '') + esc(tf('ttnWeightHint', { a: minG, b: maxG })) + '</p></div>' +
+      '<div class="field"><label class="label" for="ttnD">' + esc(t('ttnDesc')) + '</label><input class="input" id="ttnD" type="text" autocomplete="off" maxlength="100" value="' + esc(d.desc || '') + '"></div></div>';
+    askConfirm({
+      title: t('ttnMkTitle') + ' ' + d.num, html: html, ok: t('ttnCreate'),
+      run: function (done) {
+        var val = function (id) { var n = document.getElementById(id); return n ? String(n.value || '').trim() : ''; };
+        var w = Math.round(Number(val('ttnW').replace(/\s+/g, '')));
+        if (!(w >= minG && w <= maxG)) { done(tf('ttnBadW', { a: minG, b: maxG })); return; }
+        var body = { num: d.num, weight: w, confirm: true, cod: cod };
+        if (!d.nameOk) {
+          var nm = val('ttnN').replace(/\s+/g, ' '), words = nm ? nm.split(' ') : [];
+          if (words.length < 2 || words.length > 3) { done(t('ttnBadName')); return; }
+          body.name = nm;
+        }
+        var ds = val('ttnD'); if (ds) body.desc = ds.slice(0, 100);
+        api('admin.ttn.create', body).then(function (res) {
+          if (res && res.ok && res.ttn) {
+            (adm.orders || []).forEach(function (o) { if (o.num === d.num) o.ttn = String(res.ttn); });
+            done();
+            renderAdminList();
+            haptic('success');
+            toast(tf('ttnMade', { n: res.ttn }) + ' ' + (res.told === false ? t('admNotTold') : t('ttnTold')));
+            return;
+          }
+          var msg = res && res.error === 'no_perm' ? t('admNoPerm') : ttnMsg(res);
+          if (res && res.error === 'np_api' && res.np) msg += ': ' + String(res.np).slice(0, 300);
+          if (res && res.ttn) msg += ' ' + String(res.ttn);
+          done(msg);
+        }).catch(function () { done(t('admFail')); });
+      }
+    });
+  }
 
   // Шторка «Написати»: счётчик знаков и нажатия внутри шторки.
   el.sheet.addEventListener('input', function (e) { if (e.target.id === 'msgText') msgCount(); });
