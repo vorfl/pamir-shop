@@ -12,5 +12,5 @@ window.PAMIR_CONFIG = {
   // 'https://pamir-bot.ИМЯ.workers.dev/catalog'. Пусто — каталог берётся из Apps Script, как раньше.
   // Если Worker не ответил за 6 секунд или ответил не так, витрина сама идёт в Apps Script.
   // Заказы, цены и всё остальное в любом случае идут только в Apps Script.
-  CATALOG_URL: ''
+  CATALOG_URL: 'https://pamir-bot.pochoev2306.workers.dev/catalog'
 };

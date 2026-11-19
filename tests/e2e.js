@@ -2393,7 +2393,7 @@ const smallTargets = page => page.evaluate(() => {
     const before = async page => {
       await page.route(/\/img\/products\//, r => {
         const u = r.request().url(); reqs.push(u);
-        if (/\/s\/DRY-001\.webp\?v=27$/.test(u) || /DRY-002\.webp\?v=27$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
+        if (/\/s\/DRY-001\.webp\?v=28$/.test(u) || /DRY-002\.webp\?v=28$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
         r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg });
       });
       await page.route('https://drive.google.com/**', r => { reqs.push(r.request().url()); r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg }); });
@@ -2403,21 +2403,21 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForTimeout(700);
     const src = id => page.evaluate(i => { const im = document.querySelector('#grid .card[data-id="' + i + '"] .card__img img'); return im ? im.getAttribute('src') : null; }, id);
     const has = re => reqs.some(u => re.test(u));
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=27$/) && !has(/\/img\/products\/DRY-039\.webp\?v=27$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
-    ok(/\/img\/products\/DRY-001\.webp\?v=27$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=27$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
-    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=27$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=27$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=28$/) && !has(/\/img\/products\/DRY-039\.webp\?v=28$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
+    ok(/\/img\/products\/DRY-001\.webp\?v=28$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=28$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
+    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=28$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=28$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
     const catImg = st.gas.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-003').img;
     ok(/drive\.google\.com/.test(catImg) && await src('DRY-003') === catImg && !/\/s\//.test(await src('DRY-003')), 'адрес Google Drive не меняется', [catImg, await src('DRY-003')]);
     const miniSrc = await page.evaluate(() => { const im = document.querySelector('.mini[data-id="DRY-039"] img'); return im ? im.getAttribute('src') : ''; });
-    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=27$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
+    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=28$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
     await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
     await page.waitForSelector('.sheet__img img');
     await page.waitForTimeout(300);
-    ok(/\/img\/products\/DRY-039\.webp\?v=27$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=27$/), 'шторка товара берёт большое фото');
+    ok(/\/img\/products\/DRY-039\.webp\?v=28$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=28$/), 'шторка товара берёт большое фото');
     await page.click('[data-action="add"]');
     await page.click('#toastBtn');
     await page.waitForSelector('.line__img img');
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await ctx.close(); st.server.close();
     // файлы: у каждого большого фото есть копия не тяжелее 30 КБ
@@ -2457,7 +2457,7 @@ const smallTargets = page => page.evaluate(() => {
       await page.waitForSelector('#grid .card');
       const tag = ' (' + theme + ')';
       const cardSrc = await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-039"] .card__img img').getAttribute('src'));
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
       await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
       await page.waitForSelector('.sheet__strip');
       await page.waitForTimeout(400);
@@ -2467,7 +2467,7 @@ const smallTargets = page => page.evaluate(() => {
         return { first: sl[0].getAttribute('src'), second: sl[1].getAttribute('src'), lazy: sl[1].getAttribute('loading'), cur: d.map(x => x.classList.contains('is-on')), tag: d.map(x => x.tagName), hidden: document.querySelector('.sheet__dots').getAttribute('aria-hidden'),
           gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), dist: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().left), snap: getComputedStyle(document.querySelector('.sheet__strip')).scrollSnapType };
       });
-      ok(/\/img\/products\/DRY-039\.webp\?v=27$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=27$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
+      ok(/\/img\/products\/DRY-039\.webp\?v=28$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=28$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
       ok(info.cur[0] === true && info.cur[1] === false && /x mandatory/.test(info.snap), 'активна первая точка; у ленты scroll-snap' + tag, info);
       const dots = await page.evaluate(() => { const b = document.querySelector('.sheet__dots'), r = b.getBoundingClientRect(), d = [].slice.call(b.querySelectorAll('.sheet__dot')); return { tag: b.tagName, label: b.getAttribute('aria-label'), w: Math.round(r.width), h: Math.round(r.height), n: d.length, gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), hid: d.every(x => x.getAttribute('aria-hidden') === 'true') }; });
       ok(dots.tag === 'BUTTON' && dots.label === 'Наступне фото' && dots.w >= 44 && dots.h >= 44 && dots.n === 2 && dots.gap >= 8 && dots.gap <= 10 && dots.hid, 'полоска точек — одна кнопка ≥ 44×44 с подписью «Наступне фото», точки внутри на расстоянии 8–10 px' + tag, dots);
@@ -2498,7 +2498,7 @@ const smallTargets = page => page.evaluate(() => {
       // корзина — только первое фото (маленькая копия)
       await page.click('[data-action="add"]'); await page.click('#toastBtn');
       await page.waitForSelector('.line__img img');
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
       ok(!reqs.some(u => /\/s\/p\//.test(u)), 'маленькой копии второго фото не запрашивали' + tag, reqs.filter(u => /\/p\//.test(u)));
       await ctx.close();
 
@@ -3346,11 +3346,12 @@ const smallTargets = page => page.evaluate(() => {
     await run('Worker ответил не JSON: Apps Script', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<html>не json</html>' }), false);
     await run('Worker ответил JSON без ok/products: Apps Script', json('{"ok":true}'), false);
     await run('Worker молчит дольше 6 секунд: Apps Script', () => { /* не отвечаем */ }, false);
-    // без CATALOG_URL (config.js стенда и боевой) — поведение прежнее
+    // без CATALOG_URL (config.js стенда: в serve.js он пустой явно) — прямой режим, поведение прежнее; боевой config.js проверяется в блоке «9Б-5» ниже
     st.log.length = 0;
     const c0 = await open(browser, st.url, { uid: 721 });
     await c0.page.waitForSelector('#grid .card');
-    ok(st.log.filter(x => x.action === 'GET catalog').length === 1 && /CATALOG_URL:\s*''/.test(fs.readFileSync(path.join(__dirname, '..', 'webapp', 'config.js'), 'utf8')), 'CATALOG_URL по умолчанию пустой: каталог из Apps Script, как раньше');
+    const standCfg = await (await fetch(st.url + '/config.js')).text();
+    ok(st.log.filter(x => x.action === 'GET catalog').length === 1 && /CATALOG_URL:\s*''/.test(standCfg) && await c0.page.evaluate(() => window.PAMIR_CONFIG.CATALOG_URL === ''), 'config.js стенда: CATALOG_URL пустой явно — каталог из Apps Script, как раньше');
     await c0.ctx.close(); st.server.close();
   }
 
@@ -3369,7 +3370,7 @@ const smallTargets = page => page.evaluate(() => {
     const e1 = items();
     ok(e1.length === 1 && /boom1/.test(e1[0].m) && !/123 45 67|\+380 50/.test(e1[0].m) && e1[0].m.length <= 200, 'ошибка скрипта уходит записью err; телефон из текста вычищен', e1);
     const body1 = JSON.stringify(errReqs[0]);
-    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '27' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (27); без initData и данных покупателя', body1);
+    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '28' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (28); без initData и данных покупателя', body1);
     ok(await c.page.evaluate(() => /^[a-z0-9]{8,32}$/.test(localStorage.getItem('pamir_did'))), 'did — случайная строка в хранилище устройства');
     // одинаковые подряд не дублируются
     await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');
@@ -5377,6 +5378,143 @@ const smallTargets = page => page.evaluate(() => {
     }
     st.server.close();
   }
+
+  console.log('Выпуск 9Б-5: боевой config.js (CATALOG_URL на Worker), Worker подменён заглушкой, настоящий не вызывается');
+  {
+    // Боевой config.js читается из webapp/ как есть; подменяется только API_URL (на стенд). CATALOG_URL остаётся боевым.
+    const realCfgText = fs.readFileSync(path.join(__dirname, '..', 'webapp', 'config.js'), 'utf8');
+    const WORKER = (/CATALOG_URL:\s*'([^']*)'/.exec(realCfgText) || [])[1] || '';
+    ok(/^https:\/\/pamir-bot\.pochoev2306\.workers\.dev\/catalog$/.test(WORKER), 'боевой config.js: CATALOG_URL = https://pamir-bot.pochoev2306.workers.dev/catalog', WORKER);
+    const html = fs.readFileSync(path.join(__dirname, '..', 'webapp', 'index.html'), 'utf8');
+    const vCfg = (/config\.js\?v=(\d+)/.exec(html) || [])[1], vApp = (/app\.js\?v=(\d+)/.exec(html) || [])[1], vCss = (/styles\.css\?v=(\d+)/.exec(html) || [])[1];
+    ok(vCfg === '28' && vApp === '28' && vCss === '28', 'index.html: config.js, app.js, styles.css — все с ?v=28 (телефоны не оставят старый config)', [vCfg, vApp, vCss]);
+    const st = await start(8990, undefined, s => { withPhotos(s); });
+    const cat = (notice) => () => { const j = JSON.parse(JSON.stringify(st.gas.get({ action: 'catalog' }))); j.shop.notice = { ua: notice, ru: notice }; return j; };
+    const wOk = (notice, cacheState) => r => r.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Cache-Control': 'no-store', 'X-Pamir-Cache': cacheState || 'HIT' }, body: JSON.stringify(cat(notice)()) });
+    const w502 = r => r.fulfill({ status: 502, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }, body: JSON.stringify({ ok: false, error: 'upstream' }) });
+    // Открывает витрину с боевым config.js. wh.fn — текущая заглушка Worker (можно менять между перезагрузками).
+    const mk = async (uid, wh, o = {}) => {
+      const wreq = [], errs = [];
+      const c = await open(browser, st.url, Object.assign({ uid, w: 360, h: 640, until: 'domcontentloaded', before: async page => { // не networkidle: ответ 502 с Cache-Control: no-store в Playwright мешает «тишине сети», сама витрина при этом грузится
+        await page.route('**/config.js*', r => r.fulfill({ contentType: 'application/javascript', body: realCfgText + "\nwindow.PAMIR_CONFIG.API_URL = location.origin + '/api';" }));
+        await page.route(/^https:\/\/pamir-bot\.pochoev2306\.workers\.dev\//, r => { const q = r.request(); wreq.push({ method: q.method(), url: q.url(), headers: q.headers(), body: q.postData() }); return wh.fn(r); });
+        page.on('request', r => { if (r.method() === 'POST' && /\/api$/.test(r.url())) { try { const b = JSON.parse(r.postData()); if (b.action === 'err') errs.push(...(b.items || [])); } catch (e) { /* не JSON */ } } });
+        if (o.before) await o.before(page);
+      } }, o.open || {}));
+      return { c, wreq, errs };
+    };
+    const apiCat = () => st.log.filter(x => x.action === 'GET catalog').length;
+    const notice = async page => (await page.locator('#notice').isVisible()) ? text(page, '#notice') : '';
+    const wh = { fn: wOk('З воркера v1') };
+
+    // а) Worker отвечает
+    st.log.length = 0;
+    const t0 = Date.now();
+    const A = await mk(7001, wh);
+    await A.c.page.waitForSelector('#grid .card');
+    const tWorker = Date.now() - t0;
+    await A.c.page.waitForTimeout(3600);
+    ok(A.wreq.length === 1 && A.wreq[0].method === 'GET' && A.wreq[0].url === WORKER && apiCat() === 0 && A.errs.length === 0 && /З воркера v1/.test(await notice(A.c.page)) && await count(A.c.page, '#grid .card') === 20,
+      'а) Worker отвечает: один GET ровно на адрес Worker (без параметров), каталог из него, GET catalog в Apps Script нет, записей об ошибке нет', { w: A.wreq.length, url: A.wreq[0] && A.wreq[0].url, api: apiCat(), errs: A.errs });
+    const hk = Object.keys(A.wreq[0].headers).map(k => k.toLowerCase());
+    ok(!hk.some(k => /authorization|cookie|x-pamir|x-telegram|init/.test(k)) && !A.wreq[0].body && !/initData|hash=|user=|\?/.test(A.wreq[0].url), 'а) в запросе к Worker нет заголовков авторизации, cookie, тела и параметров с данными покупателя', hk);
+    await A.c.page.screenshot({ path: OUT + '/9b5-worker-catalog.png' });
+
+    // д) заказ идёт в Apps Script, Worker получает только GET /catalog
+    {
+      await toCard(A.c.page, 'NUT-007');
+      await A.c.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+      await A.c.page.click('.tabbar [data-go="cart"]');
+      await A.c.page.waitForSelector('.line');
+      await A.c.page.evaluate(() => window.__tg.main.cb());
+      await A.c.page.waitForSelector('#f-phone');
+      await A.c.page.fill('#f-phone', '0501234567');
+      await A.c.page.evaluate(() => window.__tg.main.cb());
+      await A.c.page.waitForSelector('.done', { timeout: 15000 });
+      const orders = st.log.filter(x => x.action === 'order');
+      ok(orders.length === 1 && A.wreq.length === 1 && A.wreq.every(q => q.method === 'GET' && q.url === WORKER) && Array.isArray(orders[0].items) && orders[0].items.every(l => Object.keys(l).sort().join() === 'g,id,q'),
+        'д) заказ ушёл одним POST в Apps Script; Worker за весь сценарий получил только тот же один GET /catalog; позиции заказа — id/вес/количество, цены считает сервер', { orders: orders.length, w: A.wreq.map(q => q.method + ' ' + q.url) });
+    }
+    await A.c.ctx.close();
+
+    // е) свежесть: Worker начал отдавать новую версию — при следующей загрузке она видна
+    wh.fn = wOk('З воркера v2', 'MISS');
+    const E = await mk(7002, wh);
+    await E.c.page.waitForSelector('#grid .card');
+    await E.c.page.waitForTimeout(300);
+    ok(/З воркера v2/.test(await notice(E.c.page)) && E.wreq.length === 1, 'е) Worker отдал новую версию — следующая загрузка витрины показывает её', await notice(E.c.page));
+    // прямой режим: Worker держит старое, Apps Script новое — после «ціни змінилися» витрина берёт Apps Script (отдельный тест выше, блок «changed»); здесь — старое из Worker при обычной загрузке
+    wh.fn = wOk('З воркера v1 (старое)', 'STALE');
+    await E.c.page.reload({ waitUntil: 'networkidle' });
+    await E.c.page.waitForSelector('#grid .card');
+    ok(/старое/.test(await notice(E.c.page)) && apiCat() === 0, 'е) обычная загрузка доверяет Worker (даже STALE): прямой режим включается только после «ціни змінилися»', await notice(E.c.page));
+    await E.c.ctx.close();
+
+    // б) Worker недоступен — разные виды сбоя; каталог из Apps Script
+    const modes = [
+      ['обрыв', r => r.abort()], ['502 {ok:false,error:upstream}', w502],
+      ['мусор (HTML)', r => r.fulfill({ status: 200, contentType: 'text/html', body: '<html>x</html>' })],
+      ['пустое тело', r => r.fulfill({ status: 200, contentType: 'application/json', body: '' })],
+      ['молчит дольше 6 с', () => { /* не отвечаем */ }]
+    ];
+    let tFall = 0;
+    for (const [name, fn] of modes) {
+      st.log.length = 0;
+      const w0 = Date.now();
+      const B = await mk(7010 + modes.findIndex(m => m[0] === name), { fn });
+      await B.c.page.waitForSelector('#grid .card', { timeout: 15000 });
+      if (name === 'обрыв') tFall = Date.now() - w0;
+      await B.c.page.waitForTimeout(3600);
+      const marks = B.errs.filter(x => x.m === 'worker_fallback');
+      ok(B.wreq.length === 1 && apiCat() === 1 && B.errs.every(x => !/^net catalog/.test(x.m)) && marks.length === 1 && marks[0].s === 'catalog' && !/воркера/.test(await notice(B.c.page)) && await count(B.c.page, '#grid .card') === 20,
+        'б) Worker: ' + name + ' — каталог из Apps Script, «net catalog» нет, одна метка worker_fallback', { w: B.wreq.length, api: apiCat(), errs: B.errs });
+      if (name === 'обрыв') { // метка не чаще раза в час, и Worker при следующей загрузке снова пробуется первым
+        await B.c.page.reload({ waitUntil: 'networkidle' });
+        await B.c.page.waitForSelector('#grid .card');
+        await B.c.page.waitForTimeout(3600);
+        ok(B.errs.filter(x => x.m === 'worker_fallback').length === 1 && B.wreq.length === 2, 'б) вторая загрузка при том же сбое: Worker пробуется снова, метка не повторяется (не чаще раза в час)', [B.errs.length, B.wreq.length]);
+      }
+      await B.c.ctx.close();
+    }
+
+    // в) оба недоступны: экран ошибки и одна запись net catalog (после автоповтора)
+    {
+      const C = await mk(7020, { fn: r => r.abort() }, { before: async page => { await page.route(/\/api\?action=catalog/, r => r.abort()); } });
+      await C.c.page.waitForSelector('[data-action="retry"]', { timeout: 15000 });
+      await C.c.page.waitForTimeout(3600);
+      ok(C.errs.length === 1 && /^net catalog: network$/.test(C.errs[0].m) && C.wreq.length === 1 && await count(C.c.page, '#grid .card') === 0, 'в) Worker и Apps Script недоступны: экран ошибки с кнопкой повтора, одна запись net catalog: network', C.errs);
+      await C.c.page.screenshot({ path: OUT + '/9b5-both-down.png' });
+      await C.c.ctx.close();
+    }
+
+    // г) сохранённая копия: постоянный покупатель при двух недоступных источниках видит каталог
+    {
+      let down = false;
+      wh.fn = r => (down ? r.abort() : wOk('З воркера v1')(r));
+      const G = await mk(7030, wh, { before: async page => { await page.route(/\/api\?action=catalog/, r => (down ? r.abort() : r.fallback())); } });
+      await G.c.page.waitForSelector('#grid .card');
+      down = true;
+      await G.c.page.reload({ waitUntil: 'domcontentloaded' });
+      await G.c.page.waitForSelector('#grid .card', { timeout: 15000 });
+      await G.c.page.waitForTimeout(9000);
+      ok(await count(G.c.page, '#grid .card') === 20 && await count(G.c.page, '[data-action="retry"]') === 0 && /Немає з/.test(await G.c.page.evaluate(() => document.body.innerText)), 'г) оба источника недоступны: показан сохранённый каталог (20 карточек) с пометкой об отсутствии связи, без экрана ошибки');
+      await G.c.page.screenshot({ path: OUT + '/9b5-saved-copy.png' });
+      await G.c.ctx.close();
+    }
+    { // сама защита работает: неперехваченный запрос на *.workers.dev обрывается и записывается (запись затем снимается, чтобы не провалить прогон)
+      const P = await open(browser, st.url, { uid: 7040, w: 360, h: 640 });
+      const r = await P.page.evaluate(() => fetch('https://pamir-bot.pochoev2306.workers.dev/catalog').then(() => 'reached', () => 'blocked'));
+      const leaked = (globalThis.__realHostLeaks || []).length;
+      globalThis.__realHostLeaks = [];
+      ok(r === 'blocked' && leaked === 1, 'защита стенда: неперехваченный запрос на *.workers.dev обрывается и записывается', [r, leaked]);
+      await P.ctx.close();
+    }
+    console.log('  времена на стенде (для справки): каталог через Worker ' + tWorker + ' мс; при обрыве Worker и откате на Apps Script ' + tFall + ' мс');
+    st.server.close();
+  }
+
+  // Защита: ни один тест не должен был дойти до настоящего Worker или Apps Script
+  ok((globalThis.__realHostLeaks || []).length === 0, 'тесты не обращались к настоящему Worker (*.workers.dev) и Apps Script (script.google.com)', globalThis.__realHostLeaks);
 
   await browser.close();
   console.log('\nИтог: ' + pass + ' пройдено, ' + fail + ' не пройдено');
