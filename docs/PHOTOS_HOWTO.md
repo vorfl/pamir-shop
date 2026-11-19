@@ -11,9 +11,11 @@
 Второе фото (page) не делается для: DRY-039, DRY-089, DRY-090, DRY-068, DRY-086, NEW-yabluka-sushka, NEW-sochevytsya-chervona, NUT-048, NEW-garbuzove-golonasinne. Скрипт сам их пропустит и напишет `skip (no page)`.
 
 ## 2. Проверка без записи
+Скрипту нужна библиотека sharp. В проект она не ставится. Если она уже есть в другом вашем проекте (папка `node_modules\sharp`), укажите путь к ней. Если нет, один раз установите её в отдельную папку: `mkdir $HOME\sharp-tools; cd $HOME\sharp-tools; npm install sharp` (путь тогда `$HOME/sharp-tools/node_modules/sharp`).
+
 Откройте PowerShell в папке проекта и выполните (путь к папке с картинками подставьте свой):
 
-    $env:SHARP_PATH = 'C:/Users/Islombek/Documents/gradino-site/node_modules/sharp'
+    $env:SHARP_PATH = "$HOME/sharp-tools/node_modules/sharp"
     node tools/photos.js --src "C:\путь\к\папке" --only page
 
 Вы увидите список: какой файл во что превратится, и строку `SUMMARY: would write N`. Ничего не записано.

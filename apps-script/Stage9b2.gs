@@ -162,6 +162,7 @@ function stage9b2Photos() {
     if (idCol < 0) throw new Error('Немає колонки ID');
     if (p2 < 0) {
       p2 = head.length;
+      s9Room_(sheet, sheet.getLastRow(), p2 + 1);
       sheet.getRange(1, p2 + 1).setValue('Фото 2').setFontWeight('bold');
       created = true;
     }
@@ -199,7 +200,7 @@ function stage9b2Photos() {
 /* Волна Б2, блок 3: сообщения после заказа (followup1 / followup2)                                          */
 /* ======================================================================================================== */
 /*
- * followup1_days — «Як вам замовлення?» через N дней после статуса «виконано» (svc.dn; нет — после даты заказа).
+ * followup1_days — «Як вам замовлення?» через N дней после статуса «виконано» (svc.dn); без статуса не шлётся.
  * followup2_days — рецепт к купленному (или короткий текст из настроек) и кнопка «Повторити замовлення».
  * 0 или пусто — выключено. Отметки в «Службове» заказа: f1, f2 (один раз на заказ). Запуск из dailyJob.
  * Правила: не шлём, если срок наступил больше FU_WINDOW_DAYS назад (старые заказы не заваливаем), клиент отписался («Відписка»),
@@ -616,8 +617,8 @@ function digestJob_() {
 /* ---------- шаги меню «Етап 9Б2: налаштувати» для блока 3 и 12 ---------- */
 
 var S9B2_SETTINGS_B3 = ['followup1_days', 'followup2_days', 'followup2_text_ua', 'followup2_text_ru', 'digest_hour', 'np_track_hours'];
-/** Значения, которые шаг записывает вместо «0 — выключено» (только если ключа в листе ещё нет). */
-var S9B2_SETTING_VALUES = { followup1_days: '3', followup2_days: '21', np_track_hours: '3' };
+/** Значения шага: всё выключено (0), включает владелец сам; пишется только если ключа в листе ещё нет. */
+var S9B2_SETTING_VALUES = { followup1_days: '0', followup2_days: '0', np_track_hours: '0' };
 
 /** Лист «Синоніми» с заголовками и тремя примерами — только если листа ещё нет. */
 function s9b2StepSyn_(ss) {
@@ -687,6 +688,7 @@ var NP_MSG = {
   bad_status: ['Для цього статусу замовлення ТТН не створюється', 'Для этого статуса заказа ТТН не создаётся'],
   not_np: ['Це замовлення не на Нову пошту', 'Этот заказ не на Новую почту'],
   courier: ['Кур’єрська доставка: ТТН створіть вручну в кабінеті Нової пошти й введіть номер', 'Курьерская доставка: создайте ТТН вручную в кабинете Новой почты и введите номер'],
+  locker: ['Для поштомата накладну створіть у кабінеті НП і впишіть номер вручну', 'Для почтомата накладную создайте в кабинете НП и впишите номер вручную'],
   has_ttn: ['У замовлення вже є ТТН', 'У заказа уже есть ТТН'],
   no_ref: ['У замовлення немає коду міста Нової пошти (зроблене до оновлення). Створіть ТТН вручну й введіть номер', 'У заказа нет кода города Новой почты (сделан до обновления). Создайте ТТН вручную и введите номер'],
   wh_unknown: ['Не вдалося однозначно знайти відділення за номером. Створіть ТТН вручну й введіть номер', 'Не удалось однозначно найти отделение по номеру. Создайте ТТН вручную и введите номер'],
@@ -816,6 +818,7 @@ function npTtnPrepare_(num) {
   if (o.status === 'скасовано' || o.status === STATUS_BY_CODE.n) return npFail_('bad_status');
   if (o.delivery !== 'np') return npFail_('not_np');
   if (o.npType === 'courier') return npFail_('courier');
+  if (o.npType === 'locker') return npFail_('locker');
   var svc = {};
   try { svc = JSON.parse(o.svc || '{}') || {}; } catch (err) { svc = {}; }
   if (svc.ttn) return npFail_('has_ttn');
@@ -841,7 +844,7 @@ function npTtnPreview_(num) {
   var out = { ok: true, ttn: {
     num: num, name: d.name, nameOk: !!npName_(d.name), phone: '+' + d.phone, city: o.city, branch: o.branch, type: o.npType === 'locker' ? 'locker' : 'branch',
     npCity: d.wh.city, npWarehouse: d.wh.desc, weightG: d.weightG, cost: d.cost, cod: d.cod, desc: d.desc,
-    minG: NP_W_MIN_G, maxG: NP_W_MAX_G
+    minG: NP_W_MIN_G, maxG: NP_W_MAX_G, payer: 'recipient'
   } };
   if (npCityDiffers_(o.city, d.wh)) out.ttn.cityDiff = 1;
   return out;
@@ -967,7 +970,8 @@ function npTrackJob_() {
     try { svc = JSON.parse(cell_(row, col.svc) || '{}') || {}; } catch (err) { return; }
     var ttn = String(svc.ttn || '');
     if (!/^\d{10,20}$/.test(ttn) || svc.ar || !/^\d+$/.test(cell_(row, col.uid))) return;
-    list.push({ r: r + 2, ttn: ttn, uid: cell_(row, col.uid), num: cell_(row, col.num), ru: cell_(row, col.lang) === 'ru', phone: npPhone_(cell_(row, col.phone)) });
+    list.push({ r: r + 2, ttn: ttn, uid: cell_(row, col.uid), num: cell_(row, col.num), ru: cell_(row, col.lang) === 'ru', phone: npPhone_(cell_(row, col.phone)),
+      type: col.delivery >= 0 && cell_(row, col.delivery) ? (function (p) { return p.delivery === 'np' ? (p.npType === 'locker' ? 'locker' : p.npType === 'branch' ? 'branch' : '') : ''; })(parseDelivery_(cell_(row, col.delivery))) : '' });
   });
   var sent = 0;
   for (var b = 0; b < NP_TRACK_MAX_BATCHES && b * NP_TRACK_BATCH < list.length; b++) {
@@ -982,8 +986,8 @@ function npTrackJob_() {
       if (!fuSetSvcMark_(sheet, col, x.r, 'ar', x.num)) return; // уже отмечено (или блокировка занята): второго сообщения не будет
       var res = tg_(token, 'sendMessage', {
         chat_id: x.uid,
-        text: x.ru ? 'Ваш заказ № ' + x.num + ' прибыл в отделение Новой почты. ТТН ' + x.ttn + '.'
-                   : 'Ваше замовлення № ' + x.num + ' прибуло у відділення Нової пошти. ТТН ' + x.ttn + '.',
+        text: x.ru ? 'Ваш заказ № ' + x.num + ' прибыл ' + (x.type === 'locker' ? 'в почтомат Новой почты' : x.type === 'branch' ? 'в отделение Новой почты' : 'на Новую почту, можно забирать') + '. ТТН ' + x.ttn + '.'
+                   : 'Ваше замовлення № ' + x.num + ' прибуло ' + (x.type === 'locker' ? 'у поштомат Нової пошти' : x.type === 'branch' ? 'у відділення Нової пошти' : 'на Нову пошту, можна забирати') + '. ТТН ' + x.ttn + '.',
         reply_markup: { inline_keyboard: [[{ text: x.ru ? 'Отследить' : 'Відстежити', url: TTN_TRACK_URL + x.ttn }]] }
       });
       if (res && res.ok) sent++;
