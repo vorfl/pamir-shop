@@ -797,7 +797,8 @@ var NP_MSG = {
   bad_phone: ['Телефон отримувача не українського формату (+380…). Створіть ТТН вручну', 'Телефон получателя не украинского формата (+380…). Создайте ТТН вручную'],
   bad_name: ['Вкажіть отримувача: прізвище та ім’я (два-три слова)', 'Укажите получателя: фамилия и имя (два-три слова)'],
   bad_weight: ['Вкажіть вагу від 100 г до 30 кг', 'Укажите вес от 100 г до 30 кг'],
-  bad_dims: ['Вкажіть ширину, довжину й висоту в сантиметрах (числа від 1 до 120) або залиште всі три поля порожніми', 'Укажите ширину, длину и высоту в сантиметрах (числа от 1 до 120) или оставьте все три поля пустыми'],
+  bad_dims: ['Вкажіть ширину, довжину й висоту посилки в сантиметрах (числа від 1 до 120)', 'Укажите ширину, длину и высоту посылки в сантиметрах (числа от 1 до 120)'],
+  dims_small: ['Посилка замала: мінімальний об\'єм 0,0004 м³ (наприклад 10×10×4 см)', 'Посылка слишком маленькая: минимальный объём 0,0004 м³ (например 10×10×4 см)'],
   bad_amount: ['Сума не збігається із замовленням. Відкрийте підтвердження ще раз', 'Сумма не совпадает с заказом. Откройте подтверждение ещё раз'],
   not_confirmed: ['Потрібне підтвердження', 'Нужно подтверждение'],
   city_diff: ['Місто в замовленні не збігається з містом Нової пошти за кодом. Перевірте адресу й підтвердіть створення ще раз', 'Город в заказе не совпадает с городом Новой почты по коду. Проверьте адрес и подтвердите создание ещё раз'],
@@ -813,6 +814,12 @@ var NP_MSG = {
 function npDelDone_() {
   var m = NP_MSG.del_done;
   return { ok: true, done: 'del_done', msg: { ua: m[0], ru: m[1] } };
+}
+
+/** Ошибка габаритов: код всегда bad_dims; текст зависит от причины (слишком малый объём — свой текст). */
+function npDimsFail_(vol) {
+  var m = NP_MSG[vol && vol.small ? 'dims_small' : 'bad_dims'];
+  return { ok: false, error: 'bad_dims', msg: { ua: m[0], ru: m[1] } };
 }
 
 function npFail_(code, extra) {
@@ -902,12 +909,12 @@ var NP_SMSG = {
   api: ['Нова пошта відхилила запит', 'Новая почта отклонила запрос'],
   net: ['Нова пошта не відповіла', 'Новая почта не ответила'],
   city_none: ['Місто відправника не знайдено у Нової пошти. Перевірте NP_SENDER_CITY_NAME або впишіть код міста в NP_SENDER_CITY', 'Город отправителя не найден в Новой почте. Проверьте NP_SENDER_CITY_NAME или впишите код города в NP_SENDER_CITY'],
-  city_many: ['Знайдено кілька міст з такою назвою. Впишіть код потрібного міста в NP_SENDER_CITY', 'Найдено несколько городов с таким названием. Впишите код нужного города в NP_SENDER_CITY'],
+  city_many: ['Знайдено кілька міст з такою назвою. Впишіть код потрібного міста в NP_SENDER_CITY (список кодів покаже пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)', 'Найдено несколько городов с таким названием. Впишите код нужного города в NP_SENDER_CITY (список кодов покажет пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)'],
   wh_none: ['Відділення з номером із NP_SENDER_WAREHOUSE не знайдено в цьому місті (або їх кілька). Перевірте номер або впишіть код відділення в NP_SENDER_ADDRESS', 'Отделение с номером из NP_SENDER_WAREHOUSE не найдено в этом городе (или их несколько). Проверьте номер или впишите код отделения в NP_SENDER_ADDRESS'],
   cp_none: ['У кабінеті Нової пошти немає контрагента-відправника. Впишіть його код у NP_SENDER_REF', 'В кабинете Новой почты нет контрагента-отправителя. Впишите его код в NP_SENDER_REF'],
-  cp_many: ['У кабінеті кілька відправників: який саме — невідомо. Впишіть код потрібного в NP_SENDER_REF', 'В кабинете несколько отправителей: какой именно — неизвестно. Впишите код нужного в NP_SENDER_REF'],
+  cp_many: ['У кабінеті кілька відправників: який саме — невідомо. Впишіть код потрібного в NP_SENDER_REF (список кодів покаже пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)', 'В кабинете несколько отправителей: какой именно — неизвестно. Впишите код нужного в NP_SENDER_REF (список кодов покажет пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)'],
   ct_none: ['У відправника немає контактної особи. Впишіть її код у NP_SENDER_CONTACT', 'У отправителя нет контактного лица. Впишите её код в NP_SENDER_CONTACT'],
-  ct_many: ['Контактних осіб кілька, а телефон із NP_SENDER_PHONE не підійшов ні до однієї. Перевірте телефон або впишіть код контакту в NP_SENDER_CONTACT', 'Контактных лиц несколько, а телефон из NP_SENDER_PHONE не подошёл ни к одной. Проверьте телефон или впишите код контакта в NP_SENDER_CONTACT'],
+  ct_many: ['Контактних осіб кілька, а телефон із NP_SENDER_PHONE не підійшов ні до однієї. Перевірте телефон або впишіть код контакту в NP_SENDER_CONTACT (список кодів покаже пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)', 'Контактных лиц несколько, а телефон из NP_SENDER_PHONE не подошёл ни к одной. Проверьте телефон или впишите код контакта в NP_SENDER_CONTACT (список кодов покажет пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)'],
   phone_bad: ['NP_SENDER_PHONE має неправильний формат (потрібно 380XXXXXXXXX, +380XXXXXXXXX або 0XXXXXXXXX)', 'NP_SENDER_PHONE в неправильном формате (нужно 380XXXXXXXXX, +380XXXXXXXXX или 0XXXXXXXXX)'],
   bad_resp: ['Відповідь Нової пошти має незвичний вигляд', 'Ответ Новой почты имеет необычный вид']
 };
@@ -928,7 +935,8 @@ function npStepErr_(err) { return { code: err.api ? 'api' : 'net', text: err.tex
  * Что нашлось — сохраняется, даже если другие шаги не удались (город уже позволяет считать стоимость).
  */
 function npSenderResolve_() {
-  var res = { ok: true, errs: [], steps: {}, sender: null };
+  // cands — варианты при неоднозначности (с Ref-ами) ТОЛЬКО для окна меню владельца; не попадает в ответы API, Telegram и логи.
+  var res = { ok: true, errs: [], steps: {}, sender: null, cands: {} };
   if (!npKey_()) { res.ok = false; res.errs.push({ code: 'no_key' }); return res; }
   var fp = npSenderFp_(), now = Date.now(), old = npSenderCacheRead_();
   var out = { city: '', address: '', ref: '', contact: '' };
@@ -952,7 +960,7 @@ function npSenderResolve_() {
     else {
       var cm = rc.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')) && (npCityNorm_(c.Description) === want || npCityNorm_(c.DescriptionRu) === want); });
       if (cm.length === 0) bad('city', 'city_none');
-      else if (cm.length > 1) bad('city', 'city_many');
+      else if (cm.length > 1) { bad('city', 'city_many'); res.cands.city = cm.slice(0, 10).map(function (c) { return { name: String(c.Description || ''), area: String(c.AreaDescription || ''), ref: String(c.Ref) }; }); }
       else { cityRef = String(cm[0].Ref); out.city = cityRef; res.steps.city = { state: 'ok', name: String(cm[0].Description || name).slice(0, 60) }; }
     }
     if (res.steps.city.state === 'err') { keep('city', 'city'); cityRef = out.city; }
@@ -977,7 +985,7 @@ function npSenderResolve_() {
     else {
       var cps = rp.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')); });
       if (cps.length === 0) bad('cp', 'cp_none');
-      else if (cps.length > 1) bad('cp', 'cp_many');
+      else if (cps.length > 1) { bad('cp', 'cp_many'); res.cands.cp = cps.slice(0, 10).map(function (c) { return { name: String(c.Description || ''), ref: String(c.Ref) }; }); }
       else { cpRef = String(cps[0].Ref); out.ref = cpRef; res.steps.cp = { state: 'ok', name: String(cps[0].Description || '').slice(0, 60) }; }
     }
     if (res.steps.cp.state === 'err') { keep('ref', 'cp'); cpRef = out.ref; }
@@ -999,7 +1007,10 @@ function npSenderResolve_() {
       }
       if (!picked && cts.length === 1) picked = cts[0];
       if (picked) { out.contact = String(picked.Ref); res.steps.ct = { state: 'ok', name: String(picked.Description || '').slice(0, 60) }; }
-      else { bad('ct', cts.length ? 'ct_many' : 'ct_none'); keep('contact', 'ct'); }
+      else {
+        bad('ct', cts.length ? 'ct_many' : 'ct_none'); keep('contact', 'ct');
+        if (cts.length) res.cands.ct = cts.slice(0, 10).map(function (c) { return { name: String(c.Description || ''), ref: String(c.Ref) }; }); // телефоны не берём
+      }
     }
   }
 
@@ -1096,6 +1107,23 @@ function stage9b2CheckNp() {
   lines.push('Відправник: ' + (st.cp.state === 'override' ? 'задано вручну (NP_SENDER_REF)' : st.cp.state === 'ok' ? 'знайдено' + nm(st.cp) : st.cp.state === 'kept' ? 'використано збережене значення (запит не вдався)' + errOf('cp') : 'не визначено' + errOf('cp')));
   lines.push('Контакт: ' + (st.ct.state === 'override' ? 'задано вручну (NP_SENDER_CONTACT)' : st.ct.state === 'ok' ? 'знайдено' : st.ct.state === 'kept' ? 'використано збережене значення (запит не вдався)' + errOf('ct') : st.ct.state === 'skip' ? 'не перевірено: немає відправника' : 'не визначено' + errOf('ct')));
   lines.push('Телефон відправника: ' + (st.phone.state === 'ok' ? 'задано' : st.phone.state === 'err' ? 'неправильний формат (NP_SENDER_PHONE)' : 'не задано (NP_SENDER_PHONE): «Створити ТТН» вимкнено'));
+  // Неоднозначность: пронумерованный список с кодами (Ref) — только в этом окне владельца. Телефоны контактов не показываются.
+  function listBlock(title, arr, prop, fmt) {
+    if (!arr || !arr.length) return;
+    lines.push('');
+    lines.push(title);
+    arr.forEach(function (c, i) { lines.push((i + 1) + '. ' + fmt(c) + ' — ' + c.ref); });
+    lines.push('Скопіюйте код потрібного рядка в Script Properties → ' + prop + ' (Розширення → Apps Script → Налаштування проєкту → Властивості скрипта)');
+  }
+  var sf = function (v, n) { return npSafeReason_(String(v || ''), key, n || 90); };
+  listBlock('Знайдено кілька міст «' + cityName + '»:', res.cands.city, 'NP_SENDER_CITY', function (c) { return sf(c.name) + (c.area ? ' (' + sf(c.area) + ')' : ''); });
+  listBlock('У кабінеті кілька відправників:', res.cands.cp, 'NP_SENDER_REF', function (c) { return sf(c.name) || 'без назви'; });
+  listBlock('Контактних осіб кілька:', res.cands.ct, 'NP_SENDER_CONTACT', function (c) { return sf(c.name) || 'без імені'; });
+  var codes = {};
+  res.errs.forEach(function (e) { codes[e.code] = true; });
+  if (codes.city_none) { lines.push(''); lines.push('Місто не знайдено: перевірте написання в NP_SENDER_CITY_NAME (за замовчуванням «Харків») або впишіть код міста в NP_SENDER_CITY.'); }
+  if (codes.cp_none) { lines.push(''); lines.push('Відправників не знайдено: перевірте в кабінеті Нової пошти, що ключ NP_API_KEY активний і що в кабінеті є контрагент-відправник.'); }
+  if (codes.ct_none) { lines.push(''); lines.push('Контактних осіб не знайдено: перевірте в кабінеті Нової пошти, що у відправника є контактна особа.'); }
   // Пробная стоимость: Харьков → Киев, 1 кг (читающий запрос)
   var s = res.sender || npSenderState_();
   if (!s.city) lines.push('Вартість доставки 1 кг до Києва: не перевірено, бо невідоме місто відправника');
@@ -1147,12 +1175,20 @@ function npPrice_(city, w, sum) {
   if (now - t0 > 3600000) { calls = 0; t0 = now; }
   if (calls >= NP_PRICE_MAX_PER_HOUR) return { ok: false, error: 'busy' };
   cache.put('npp_calls', (calls + 1) + '|' + t0, 3600);
+  var eo = {};
   var data = npCall_('getDocumentPrice', {
     CitySender: npSenderState_().city, CityRecipient: city, Weight: String(kg), ServiceType: 'WarehouseWarehouse',
     Cost: String(cost), CargoType: 'Parcel', SeatsAmount: '1'
-  }, { model: 'InternetDocument', noCache: true, quiet: true });
+  }, { model: 'InternetDocument', noCache: true, quiet: true, errOut: eo });
   var price = data && data[0] ? Math.round(Number(data[0].Cost)) : 0;
-  if (!(price > 0) || price > 100000) return { ok: false, error: 'np_error' };
+  if (!(price > 0) || price > 100000) {
+    // Отказ самого API (не лимит запросов и не обрыв связи): админам одно простое сообщение в сутки (общая отметка NP_ALERT_LAST). Покупатель просто не видит строку.
+    if (!data && eo.api === true && eo.nocall !== true) {
+      npAlertAdmins_('Нова пошта: не вдалося порахувати вартість доставки для покупців (Нова пошта відмовила у запиті). Покупці просто не бачать вартість доставки, замовлення працюють як раніше. Перевірте ключ NP_API_KEY у кабінеті Нової пошти і запустіть у таблиці меню PAMIR → «Етап 9Б2: перевірити Нову пошту».',
+        'Новая почта: не удалось рассчитать стоимость доставки для покупателей (Новая почта отклонила запрос). Покупатели просто не видят стоимость доставки, заказы работают как раньше. Проверьте ключ NP_API_KEY в кабинете Новой почты и запустите в таблице меню PAMIR → «Етап 9Б2: перевірити Нову пошту».');
+    }
+    return { ok: false, error: 'np_error' };
+  }
   cache.put(ckey, String(price), NP_PRICE_TTL);
   return { ok: true, cost: price };
 }
@@ -1180,21 +1216,42 @@ function npName_(v) {
   return s;
 }
 
+/** Часть имени (фамилия, имя, отчество): кириллица/латиница, апостроф, дефис; 2…40 знаков. Неверно — ''. */
+function npNamePart_(v) {
+  var s = String(v === null || v === undefined ? '' : v).replace(/\s+/g, ' ').trim();
+  return /^[A-Za-zА-Яа-яІіЇїЄєҐґ'’ʼ`-]{2,40}$/.test(s) ? s : '';
+}
+
+/** Подсказка разбора имени покупателя: первое слово — фамилия (только догадка для предзаполнения; админ обязан проверить). */
+function npNameParts_(name) {
+  var w = String(name || '').replace(/\s+/g, ' ').trim().split(' ');
+  return { last: npNamePart_(w[0]), first: npNamePart_(w[1]), middle: npNamePart_(w[2]) };
+}
+
+/** Номер отделения взят из свободного текста (не просто «34», «№34», «відділення №34»): витрина просит проверить отделение. */
+function npWhGuess_(branchText) {
+  return !/^\s*(?:(?:відділення|отделение|відд\.?|№|#)\s*)*\d{1,5}\s*$/i.test(String(branchText || ''));
+}
+
 /**
- * Габариты места из тела запроса (необязательные width, length, height в см). Ничего не передано — {m3: null} (VolumeGeneral не шлём, ничего не выдумываем).
- * Передано что-то одно или не число 1…120 (защита от опечатки) — {error:'bad_dims'}. Иначе {m3: 'объём в м³ строкой'}.
+ * Габариты места из тела запроса (width, length, height в см). Не сверено с официальной документацией НП: обязательность габаритов
+ * и минимальный объём 0,0004 м³ (10×10×4 см) взяты из замечания ревьюера; если НП этого не требует — снять required и минимум.
+ * Ничего не передано — {m3: null}, при required — {error:'bad_dims'}. Передано что-то одно или не число 1…120 — {error:'bad_dims'}.
+ * Объём меньше 0,0004 м³ — {error:'bad_dims', small:true} (только при required). Иначе {m3: 'объём в м³ строкой'}.
  */
-function npVolume_(body) {
+function npVolume_(body, required) {
   var keys = ['width', 'length', 'height'], vals = [], given = 0;
   keys.forEach(function (k) {
     var v = body ? body[k] : undefined;
     if (v !== undefined && v !== null && String(v).trim() !== '') given++;
     vals.push(v);
   });
-  if (!given) return { m3: null };
+  if (!given) return required ? { error: 'bad_dims' } : { m3: null };
   var nums = vals.map(function (v) { return typeof v === 'string' && !/^\d+([.,]\d+)?$/.test(v.trim()) ? NaN : Number(String(v).replace(',', '.')); });
   if (given !== 3 || nums.some(function (n) { return !isFinite(n) || n < 1 || n > 120; })) return { error: 'bad_dims' };
-  var m3 = Math.round(nums[0] * nums[1] * nums[2]) / 1e6;
+  var cm3 = Math.round(nums[0] * nums[1] * nums[2]);
+  if (cm3 < 400) return { error: 'bad_dims', small: true };
+  var m3 = cm3 / 1e6;
   return { m3: m3.toFixed(6).replace(/0+$/, '').replace(/\.$/, '') };
 }
 
@@ -1249,7 +1306,7 @@ function npTtnPrepare_(num) {
   var total = Math.round(Number(o.total) || 0);
   return { ok: true, f: f, svc: svc, d: {
     name: String(o.name || '').replace(/\s+/g, ' ').trim().slice(0, 80), phone: phone, cityRef: cityRef, wh: wh,
-    weightG: npOrderWeightG_(svc), cost: total, cod: payRecv ? total : 0, desc: NP_DESC_DEFAULT
+    weightG: npOrderWeightG_(svc), cost: total, cod: payRecv ? total : 0, desc: NP_DESC_DEFAULT, whGuess: npWhGuess_(o.branch)
   } };
 }
 
@@ -1261,15 +1318,16 @@ function npTtnPreview_(num, body) {
   var p = npTtnPrepare_(num);
   if (!p.ok) return p;
   var vol = npVolume_(body);
-  if (vol.error) return npFail_(vol.error);
+  if (vol.error) return npDimsFail_(vol);
   var o = p.f.o, d = p.d;
   var out = { ok: true, ttn: {
-    num: num, name: d.name, nameOk: !!npName_(d.name), phone: '+' + d.phone, city: o.city, branch: o.branch, type: o.npType === 'locker' ? 'locker' : 'branch',
+    num: num, name: d.name, nameOk: !!npName_(d.name), nameParts: npNameParts_(d.name), dimsReq: 1, phone: '+' + d.phone, city: o.city, branch: o.branch, type: o.npType === 'locker' ? 'locker' : 'branch',
     npCity: d.wh.city, npWarehouse: d.wh.desc, weightG: d.weightG, cost: d.cost, cod: d.cod, desc: d.desc,
     minG: NP_W_MIN_G, maxG: NP_W_MAX_G, payer: 'recipient'
   } };
   if (vol.m3) out.ttn.volume = vol.m3;
   if (npCityDiffers_(o.city, d.wh)) out.ttn.cityDiff = 1;
+  if (d.whGuess) out.ttn.whGuess = 1; // номер отделения извлечён из свободного текста: витрина просит проверить (branch — что написал покупатель, npWarehouse — что найдено)
   return out;
   // cityDiff: 1 добавляется только при расхождении города заказа и города НП по Ref (необязательное поле).
 }
@@ -1298,11 +1356,10 @@ function npSvcEdit_(num, fn) {
  * Накладной это не создаёт и денег не стоит. Не сверено с документацией: поля запроса и ответа (ContactPerson.data[0].Ref) — по библиотекам.
  * Нет контакта в ответе — запрашиваем getCounterpartyContactPersons по Ref получателя.
  */
-function npRecipientSave_(d, name) {
-  var w = name.split(' ');
+function npRecipientSave_(d, parts) {
   var eo = {};
   var data = npCall_('save', { CounterpartyProperty: 'Recipient', CounterpartyType: 'PrivatePerson', CityRef: d.cityRef,
-    FirstName: w[1], MiddleName: w[2] || '', LastName: w[0], Phone: d.phone }, { model: 'Counterparty', noCache: true, quiet: true, admin: true, errOut: eo });
+    FirstName: parts.first, MiddleName: parts.middle || '', LastName: parts.last, Phone: d.phone }, { model: 'Counterparty', noCache: true, quiet: true, admin: true, errOut: eo });
   if (!data) return { err: eo.api === true ? { api: true, text: eo.text || '' } : { api: false } };
   var rec = data[0] || {}, ref = String(rec.Ref || ''), contact = '';
   if (!NP_UUID_RE.test(ref)) return { err: { api: false, bad: true } };
@@ -1319,8 +1376,8 @@ function npRecipientSave_(d, name) {
 }
 
 /**
- * admin.ttn.create: body {num, weight (граммы), confirm: true, cod?: число, name?: текст, desc?: текст, cityOk?: true,
- * width?/length?/height? (см, все три или ни одного), quiet?: true (клиенту номер не отправлять — для пробной накладной)}.
+ * admin.ttn.create: body {num, weight (граммы), confirm: true, cod?: число, name?: текст, lastName?/firstName?/middleName? (раздельно; если
+ * переданы — name игнорируется), desc?: текст, cityOk?: true, width/length/height (см, ОБЯЗАТЕЛЬНЫ все три), quiet?: true (клиенту номер не отправлять — для пробной накладной)}.
  * Сумма и наложенный платёж берутся из заказа на сервере; cod от клиента допускается только равным серверному значению.
  * Порядок: 1) Counterparty.save получателя, 2) InternetDocument.save с Ref-полями. Ошибка шага 1 накладной не создаёт.
  * Защита от дубля: ТТН уже есть → отказ; отметка «создание идёт» (svc.tp) на 5 минут ставится под блокировкой до запроса к API.
@@ -1334,12 +1391,22 @@ function npTtnCreate_(body, token) {
   if (npCityDiffers_(p.f.o.city, d.wh) && body.cityOk !== true) return npFail_('city_diff'); // город заказа ≠ город НП по Ref: нужно явное cityOk: true
   var wg = Math.round(Number(body.weight));
   if (!isFinite(wg) || wg < NP_W_MIN_G || wg > NP_W_MAX_G) return npFail_('bad_weight');
-  var vol = npVolume_(body);
-  if (vol.error) return npFail_(vol.error);
+  var vol = npVolume_(body, true); // габариты обязательны (не сверено с документацией НП)
+  if (vol.error) return npDimsFail_(vol);
   if (body.cod !== undefined && body.cod !== null && Math.round(Number(body.cod)) !== d.cod) return npFail_('bad_amount');
   if (!(d.cost > 0)) return npFail_('bad_amount');
-  var name = npName_(body.name !== undefined && body.name !== null && String(body.name).trim() ? body.name : d.name);
-  if (!name) return npFail_('bad_name');
+  // Имя получателя: раздельные lastName/firstName/middleName (если переданы — используются как есть, name игнорируется); иначе старое поле name по словам.
+  var parts;
+  function given(v) { return v !== undefined && v !== null && String(v).trim() !== ''; }
+  if (given(body.lastName) || given(body.firstName) || given(body.middleName)) {
+    parts = { last: npNamePart_(body.lastName), first: npNamePart_(body.firstName), middle: given(body.middleName) ? npNamePart_(body.middleName) : '' };
+    if (!parts.last || !parts.first || (given(body.middleName) && !parts.middle)) return npFail_('bad_name');
+  } else {
+    var name = npName_(given(body.name) ? body.name : d.name);
+    if (!name) return npFail_('bad_name');
+    var w = name.split(' ');
+    parts = { last: w[0], first: w[1], middle: w[2] || '' };
+  }
   var desc = clean_(body.desc, 100) || d.desc;
   var quiet = body.quiet === true;
   var sender = npSenderState_();
@@ -1354,7 +1421,7 @@ function npTtnCreate_(body, token) {
   if (bad) return npFail_(bad);
   function unmark() { npSvcEdit_(num, function (svc) { delete svc.tp; return ''; }); }
   // Шаг 1: получатель у НП (накладной ещё нет: при ошибке повтор безопасен)
-  var rec = npRecipientSave_(d, name);
+  var rec = npRecipientSave_(d, parts);
   if (rec.err) {
     unmark();
     return rec.err.api ? npFail_('np_api', { np: rec.err.text || '', step: 1 }) : npFail_('np_error', { step: 1 });
