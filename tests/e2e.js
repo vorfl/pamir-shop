@@ -7,6 +7,8 @@ const path = require('path');
 const { start } = require('./serve');
 const { open, OUT } = require('./shot');
 
+// Бэкенд выпуска А (до волны Б1): в main теперь уже бэкенд Б1, поэтому для проверок «без admin.message / без блоков источников» берём коммит слияния выпуска А.
+const OLD_REF_A = '185bff6';
 let pass = 0, fail = 0;
 function ok(cond, name, extra) {
   if (cond) { pass++; console.log('  ok   ' + name); }
@@ -2193,6 +2195,26 @@ const smallTargets = page => page.evaluate(() => {
     ok(await noOverflow(pg) && (await smallTargets(pg)).length === 0, 'главная: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(pg));
     ok(m.recsH > 0 && m.recsH <= m.railH, 'блок «Рецепти» не выше одной ленты карточек: ' + m.recsH + ' ≤ ' + m.railH, [m.recsH, m.railH]);
     ok(await count(pg, '.recs .rcard') === 2 && await count(pg, '.recs .rcard__img .ico') === 2 && await count(pg, '.recs__item') === 0, 'рецепты — горизонтальная лента карточек (без фото — иконка)');
+    // б16: ленту «Популярне» и последний блок главной можно прокрутить выше нижней панели вкладок (обе темы)
+    const tabbarClear = async (page, tag) => {
+      const geo = sel => page.evaluate(sel2 => { const r = document.querySelector(sel2).getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), tab: Math.round(document.querySelector('.tabbar').getBoundingClientRect().top) }; }, sel);
+      const popSel = '.main > .rail:not(.recs) .mini';
+      await page.evaluate(sel2 => document.querySelector(sel2).scrollIntoView({ block: 'end' }), popSel); // самый строгий случай: «прижать к низу окна»
+      await page.waitForTimeout(150);
+      const c1 = await geo(popSel);
+      ok(c1.bottom <= c1.tab, tag + ': первая карточка ленты «Популярне» после scrollIntoView целиком выше нижней панели: низ ' + c1.bottom + ' ≤ верх панели ' + c1.tab, c1);
+      await page.evaluate(sel2 => document.querySelector(sel2).scrollIntoView({ block: 'center' }), popSel);
+      await page.waitForTimeout(150);
+      const c1b = await geo(popSel);
+      ok(c1b.top >= 0 && c1b.bottom <= c1b.tab, tag + ': и при прокрутке «по центру» карточка видна целиком: ' + c1b.top + '…' + c1b.bottom + ' при панели ' + c1b.tab, c1b);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)); await page.waitForTimeout(150);
+      const c2 = await page.evaluate(() => { const last = [].slice.call(document.querySelectorAll('.main > *')).filter(n => n.getBoundingClientRect().height > 0).pop(), r = last.getBoundingClientRect(); return { bottom: Math.round(r.bottom), tab: Math.round(document.querySelector('.tabbar').getBoundingClientRect().top), cls: last.className }; });
+      ok(c2.bottom <= c2.tab, tag + ': последний блок главной (' + c2.cls + ') выше нижней панели: ' + c2.bottom + ' ≤ ' + c2.tab, c2);
+    };
+    await tabbarClear(pg, 'светлая тема');
+    await pg.evaluate(() => document.querySelector('.main > .rail:not(.recs) .mini').scrollIntoView({ block: 'end' })); await pg.waitForTimeout(150);
+    await pg.screenshot({ path: OUT + '/104a-b16-pop-light.png' });
+    await pg.evaluate(() => window.scrollTo(0, 0));
     await pg.screenshot({ path: OUT + '/104-b1-home-light-uk.png' });
     await pg.screenshot({ path: OUT + '/105-b1-home-light-uk-full.png', fullPage: true });
 
@@ -2260,6 +2282,10 @@ const smallTargets = page => page.evaluate(() => {
     ok(/^Ещё:/.test(await text(R.page, '.morerails')) && /Подарок от 500\s₴/.test(await text(R.page, '#homeGift')) && /Оптовые цены/.test(await text(R.page, '.plus__item[data-k="biz"]')) && /Все рецепты/.test(await text(R.page, '.recs__all')), 'RU: «Ещё:», «Подарок от 500 ₴», «Оптовые цены», «Все рецепты»', await text(R.page, '.morerails'));
     ok(await noOverflow(R.page) && (await smallTargets(R.page)).length === 0, 'RU, тёмная тема: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(R.page));
     await R.page.screenshot({ path: OUT + '/109-b1-home-dark-ru.png' });
+    await tabbarClear(R.page, 'тёмная тема');
+    await R.page.evaluate(() => document.querySelector('.main > .rail:not(.recs) .mini').scrollIntoView({ block: 'end' })); await R.page.waitForTimeout(150);
+    await R.page.screenshot({ path: OUT + '/109a-b16-pop-dark.png' });
+    await R.page.evaluate(() => window.scrollTo(0, 0));
     await R.page.screenshot({ path: OUT + '/110-b1-home-dark-ru-full.png', fullPage: true });
     await R.page.click('.plus__item[data-k="gift"]');
     await R.page.waitForSelector('#sheet .plus__text');
@@ -2302,7 +2328,7 @@ const smallTargets = page => page.evaluate(() => {
     const before = async page => {
       await page.route(/\/img\/products\//, r => {
         const u = r.request().url(); reqs.push(u);
-        if (/\/s\/DRY-001\.webp\?v=24$/.test(u) || /DRY-002\.webp\?v=24$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
+        if (/\/s\/DRY-001\.webp\?v=25$/.test(u) || /DRY-002\.webp\?v=25$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
         r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg });
       });
       await page.route('https://drive.google.com/**', r => { reqs.push(r.request().url()); r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg }); });
@@ -2312,21 +2338,21 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForTimeout(700);
     const src = id => page.evaluate(i => { const im = document.querySelector('#grid .card[data-id="' + i + '"] .card__img img'); return im ? im.getAttribute('src') : null; }, id);
     const has = re => reqs.some(u => re.test(u));
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=24$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=24$/) && !has(/\/img\/products\/DRY-039\.webp\?v=24$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
-    ok(/\/img\/products\/DRY-001\.webp\?v=24$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=24$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
-    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=24$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=24$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=25$/) && !has(/\/img\/products\/DRY-039\.webp\?v=25$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
+    ok(/\/img\/products\/DRY-001\.webp\?v=25$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=25$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
+    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=25$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=25$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
     const catImg = st.gas.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-003').img;
     ok(/drive\.google\.com/.test(catImg) && await src('DRY-003') === catImg && !/\/s\//.test(await src('DRY-003')), 'адрес Google Drive не меняется', [catImg, await src('DRY-003')]);
     const miniSrc = await page.evaluate(() => { const im = document.querySelector('.mini[data-id="DRY-039"] img'); return im ? im.getAttribute('src') : ''; });
-    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=24$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
+    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=25$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
     await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
     await page.waitForSelector('.sheet__img img');
     await page.waitForTimeout(300);
-    ok(/\/img\/products\/DRY-039\.webp\?v=24$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=24$/), 'шторка товара берёт большое фото');
+    ok(/\/img\/products\/DRY-039\.webp\?v=25$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=25$/), 'шторка товара берёт большое фото');
     await page.click('[data-action="add"]');
     await page.click('#toastBtn');
     await page.waitForSelector('.line__img img');
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=24$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await ctx.close(); st.server.close();
     // файлы: у каждого большого фото есть копия не тяжелее 30 КБ
@@ -2334,6 +2360,105 @@ const smallTargets = page => page.evaluate(() => {
     const bigs = fs.readdirSync(dir).filter(f => /\.webp$/i.test(f));
     const small = bigs.map(f => { const p = path.join(dir, 's', f); return fs.existsSync(p) ? fs.statSync(p).size : -1; });
     ok(bigs.length > 0 && small.every(x => x > 0 && x <= 30 * 1024), 'у каждого из ' + bigs.length + ' фото есть маленькая копия ≤ 30 КБ (самая тяжёлая ' + Math.round(Math.max.apply(null, small) / 1024) + ' КБ)', small.filter(x => x <= 0 || x > 30 * 1024));
+  }
+
+  /* ---------------- б15: второе фото на странице товара (необязательное поле i2) ---------------- */
+  console.log('Волна Б2 · блок 1: второе фото товара, 360 px');
+  {
+    const BIG = 'https://shop.test/img/products/';
+    const st = await start(8853, undefined, s => {
+      const rows = s.sheets['Товари'], pc = rows[0].indexOf('Фото (посилання)'), row = id => rows.find(r => r[0] === id);
+      ['DRY-039', 'DRY-001', 'DRY-003', 'DRY-004', 'DRY-005'].forEach(id => { row(id)[pc] = BIG + id + '.webp'; });
+    });
+    const svgA = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#d9a066"/></svg>';
+    const svgB = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#6a8f5a"/></svg>';
+    // DRY-039: два фото; DRY-001: второго файла нет (404); DRY-003/004: i2 не http(s) — отбрасывается; DRY-005: i2 нет
+    const i2 = { 'DRY-039': BIG + 'p/DRY-039.webp', 'DRY-001': BIG + 'p/DRY-001.webp', 'DRY-003': 'javascript:alert(1)', 'DRY-004': 'ftp://shop.test/x.webp' };
+    for (const theme of ['light', 'dark']) {
+      const reqs = [];
+      const before = async page => {
+        await page.route(/\/api\?.*action=catalog/, async route => { // новый бэкенд отдаёт i2; стенд подмешивает его в ответ
+          const res = await route.fetch(); const j = await res.json();
+          j.products.forEach(p => { if (i2[p.id]) p.i2 = i2[p.id]; });
+          await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(j) });
+        });
+        await page.route(/\/img\/products\//, r => {
+          const u = r.request().url(); reqs.push(u);
+          if (/\/p\/DRY-001\.webp/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
+          r.fulfill({ status: 200, contentType: 'image/svg+xml', body: /\/p\//.test(u) ? svgB : svgA });
+        });
+      };
+      const { page, ctx, errors } = await open(browser, st.url, { uid: 502, w: 360, h: 640, theme, before });
+      await page.waitForSelector('#grid .card');
+      const tag = ' (' + theme + ')';
+      const cardSrc = await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-039"] .card__img img').getAttribute('src'));
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
+      await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
+      await page.waitForSelector('.sheet__strip');
+      await page.waitForTimeout(400);
+      ok(await count(page, '.sheet__slide') === 2 && await count(page, '.sheet__slide img') === 2 && await count(page, '.sheet__dot') === 2, 'товар с i2: два слайда и две точки' + tag);
+      const info = await page.evaluate(() => {
+        const sl = [].slice.call(document.querySelectorAll('.sheet__slide img')), d = [].slice.call(document.querySelectorAll('.sheet__dot'));
+        return { first: sl[0].getAttribute('src'), second: sl[1].getAttribute('src'), lazy: sl[1].getAttribute('loading'), cur: d.map(x => x.getAttribute('aria-current')), lbl: d.map(x => x.getAttribute('aria-label')),
+          size: d.map(x => [Math.round(x.getBoundingClientRect().width), Math.round(x.getBoundingClientRect().height)]), snap: getComputedStyle(document.querySelector('.sheet__strip')).scrollSnapType };
+      });
+      ok(/\/img\/products\/DRY-039\.webp\?v=25$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=25$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
+      ok(info.cur[0] === 'true' && info.cur[1] === null && /x mandatory/.test(info.snap), 'активна первая точка; у ленты scroll-snap' + tag, info);
+      ok(info.lbl.join('|') === 'Фото 1 з 2|Фото 2 з 2' && info.size.every(z => z[0] >= 44 && z[1] >= 44), 'точки: подписи UA «Фото 1 з 2», зона нажатия ≥ 44 px' + tag, info);
+      ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'шторка с лентой: без горизонтальной прокрутки, кнопки ≥ 44 px' + tag, await smallTargets(page));
+      await page.screenshot({ path: OUT + '/120-b15-sheet-two-' + theme + '-1.png' });
+      // прокрутка ленты меняет активную точку
+      await page.evaluate(() => { const s = document.querySelector('.sheet__strip'); s.style.scrollBehavior = 'auto'; s.scrollLeft = s.clientWidth; });
+      await page.waitForFunction(() => document.querySelectorAll('.sheet__dot')[1].getAttribute('aria-current') === 'true');
+      ok(await page.evaluate(() => document.querySelectorAll('.sheet__dot')[0].getAttribute('aria-current') === null), 'прокрутка ленты ко второму фото переключает активную точку' + tag);
+      await page.screenshot({ path: OUT + '/121-b15-sheet-two-' + theme + '-2.png' });
+      // шторка перерисовывается (количество) — остаёмся на втором фото
+      await page.click('[data-step="1"]');
+      await page.waitForTimeout(200);
+      ok(await page.evaluate(() => { const s = document.querySelector('.sheet__strip'); return Math.round(s.scrollLeft / s.clientWidth) === 1 && document.querySelectorAll('.sheet__dot')[1].getAttribute('aria-current') === 'true'; }), 'после перерисовки шторки (кнопка «+») остаётся второе фото' + tag);
+      // нажатие на точку листает
+      await page.locator('.sheet__dot').first().click();
+      await page.waitForFunction(() => document.querySelector('.sheet__strip').scrollLeft < 2);
+      ok(await page.evaluate(() => document.querySelectorAll('.sheet__dot')[0].getAttribute('aria-current') === 'true'), 'нажатие на первую точку возвращает к первому фото' + tag);
+      await page.locator('.sheet__dot').nth(1).click();
+      await page.waitForFunction(() => { const s = document.querySelector('.sheet__strip'); return Math.abs(s.scrollLeft - s.clientWidth) < 2; });
+      ok(await page.evaluate(() => document.querySelectorAll('.sheet__dot')[1].getAttribute('aria-current') === 'true'), 'нажатие на вторую точку листает ко второму фото' + tag);
+      // корзина — только первое фото (маленькая копия)
+      await page.click('[data-action="add"]'); await page.click('#toastBtn');
+      await page.waitForSelector('.line__img img');
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
+      ok(!reqs.some(u => /\/s\/p\//.test(u)), 'маленькой копии второго фото не запрашивали' + tag, reqs.filter(u => /\/p\//.test(u)));
+      await ctx.close();
+
+      // товары без i2 / с мусором в i2 / со сломанным вторым фото — в свежем окне
+      const w = await open(browser, st.url, { uid: 503, w: 360, h: 640, theme, before });
+      await w.page.waitForSelector('#grid .card');
+      for (const id of ['DRY-005', 'DRY-003', 'DRY-004']) {
+        await toCard(w.page, id);
+        await w.page.locator('#grid .card[data-id="' + id + '"] .card__name').click();
+        await w.page.waitForSelector('.sheet__img img');
+        await w.page.waitForTimeout(300);
+        ok(await count(w.page, '.sheet__img > img') === 1 && await count(w.page, '.sheet__strip, .sheet__slide, .sheet__dot') === 0, id + (id === 'DRY-005' ? ': нет i2' : ': i2 не http(s) отброшен') + ' — один img и нет точек' + tag);
+        await w.page.click('.sheet__close'); await w.page.waitForTimeout(350);
+      }
+      await toCard(w.page, 'DRY-001');
+      await w.page.locator('#grid .card[data-id="DRY-001"] .card__name').click();
+      await w.page.waitForSelector('.sheet__img img');
+      await w.page.waitForFunction(() => document.querySelectorAll('.sheet__dot').length === 0, null, { timeout: 5000 });
+      ok(await count(w.page, '.sheet__img > img') === 1 && await count(w.page, '.sheet__strip, .sheet__slide--2') === 0 && await w.page.evaluate(() => document.querySelector('.sheet__img > img').naturalWidth > 0), 'второе фото не загрузилось (404): слайд и точки убраны, остаётся одно фото' + tag);
+      await w.page.screenshot({ path: OUT + '/122-b15-sheet-one-' + theme + '.png' });
+      ok(await noOverflow(w.page), 'без горизонтальной прокрутки' + tag);
+      ok(errors.length === 0 && w.errors.length === 0, 'в консоли браузера нет ошибок' + tag, errors.concat(w.errors));
+      await w.ctx.close();
+    }
+    // старый бэкенд: поля i2 нет — страница товара как раньше
+    const old = await open(browser, st.url, { uid: 504, w: 360, h: 640, before: async page => { await page.route(/\/img\/products\//, r => r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svgA })); } });
+    await old.page.waitForSelector('#grid .card');
+    await old.page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
+    await old.page.waitForSelector('.sheet__img img');
+    ok(await count(old.page, '.sheet__img > img') === 1 && await count(old.page, '.sheet__strip, .sheet__dot') === 0, 'каталог без i2 (старый бэкенд): шторка как раньше — одно фото, без точек');
+    await old.ctx.close();
+    st.server.close();
   }
 
   /* ---------------- Выпуск Б, блок 2: админка удобнее ---------------- */
@@ -2755,7 +2880,7 @@ const smallTargets = page => page.evaluate(() => {
   console.log('Выпуск Б · блок 2: админка со СТАРЫМ бэкендом');
   {
     const oldCode = path.join(require('os').tmpdir(), 'Code.old.gs');
-    fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+    fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || OLD_REF_A) + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const st = await start(8843, oldCode, s => { withPhotos(s); });
     const g = st.gas, n = a => st.log.filter(x => x.action === a).length;
     const { ctx, page, errors } = await open(browser, st.url, { uid: 900, query: '?admin=1' });
@@ -3048,6 +3173,7 @@ const smallTargets = page => page.evaluate(() => {
     await A.ctx.close();
     // ID товара — не метка, товар открывается как раньше
     await flush(A.page).catch(() => {});
+    await new Promise(r => setTimeout(r, 1000)); // события закрытых вкладок уходят через sendBeacon и доходят с задержкой
     const nSrc = evs().filter(e => e.e === 'src').length;
     const P = await open(browser, st.url, { uid: 702, start: 'DRY-039' });
     await P.page.waitForSelector('.sheet__title');
@@ -3093,7 +3219,7 @@ const smallTargets = page => page.evaluate(() => {
     st.gas.post({ action: 'ev', initData: st.gas.initData({ id: 72 }), sid: 'z', events: [{ e: 'src', v: 'qr2', t: Date.now() }] });
     // старый бэкенд: статистика открывается, блоков нет
     const oldCodeS = path.join(require('os').tmpdir(), 'Code.old.src.gs');
-    fs.writeFileSync(oldCodeS, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+    fs.writeFileSync(oldCodeS, execSync('git show ' + (process.env.OLD_BACKEND_REF || OLD_REF_A) + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const soS = await start(8874, oldCodeS, s => { withPhotos(s); });
     const Os = await open(browser, soS.url, { uid: 900, query: '?admin=1', w: 360, h: 740 });
     await Os.page.waitForSelector('.ord');
@@ -3162,7 +3288,7 @@ const smallTargets = page => page.evaluate(() => {
     const e1 = items();
     ok(e1.length === 1 && /boom1/.test(e1[0].m) && !/123 45 67|\+380 50/.test(e1[0].m) && e1[0].m.length <= 200, 'ошибка скрипта уходит записью err; телефон из текста вычищен', e1);
     const body1 = JSON.stringify(errReqs[0]);
-    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '24' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (23); без initData и данных покупателя', body1);
+    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '25' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (23); без initData и данных покупателя', body1);
     ok(await c.page.evaluate(() => /^[a-z0-9]{8,32}$/.test(localStorage.getItem('pamir_did'))), 'did — случайная строка в хранилище устройства');
     // одинаковые подряд не дублируются
     await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');
@@ -3407,6 +3533,331 @@ const smallTargets = page => page.evaluate(() => {
       await A.ctx.close();
     }
     sv.server.close();
+  }
+
+  /* ---------------- Волна Б2 · блоки 2–3: наборы, подсказка в корзине, повтор по ссылке, поиск, «Якщо товару немає» ---------------- */
+  console.log('Волна Б2 · блоки 2–3 (360 px)');
+  {
+    const NB = s => String(s).replace(/ /g, ' ');
+    const catalogMod = fn => async page => {
+      await page.route(/\/api\?.*action=catalog/, async route => {
+        const res = await route.fetch(); const j = await res.json();
+        fn(j);
+        await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(j) });
+      });
+    };
+    const flushEv = async page => { await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true }); document.dispatchEvent(new Event('visibilitychange')); }); await page.waitForTimeout(400); };
+    const EV = st => st.log.filter(x => x.action === 'ev').reduce((a, x) => a.concat(x.events || []), []);
+    const st = await start(8901, undefined, s => { withPhotos(s); });
+    const XSS = '<img src=x onerror="window.__xss=1">';
+
+    /* ---- б1: наборы ---- */
+    const setMod = j => {
+      const by = id => j.products.find(p => p.id === id);
+      by('CND-004').ks = ['DRY-039', 'NUT-002', 'SPC-004', 'ZZZ-404']; by('CND-004').kp = 450;   // ZZZ-404 в каталоге нет
+      by('CND-005').ks = ['SPC-004']; by('CND-005').kp = 260;                                       // «окремо» не больше цены набора — строки нет
+      by('SWT-006').ks = ['QQ-111', 'QQ-222'];                                                       // ни одного известного названия — блока нет
+      by('DRY-039').ua = 'Курага ' + XSS + ' натуральна'; by('NUT-002').ru = 'Кешью жареный';
+    };
+    for (const theme of ['light', 'dark']) {
+      const A = await open(browser, st.url, { uid: 801, theme, start: 'CND-004', before: catalogMod(setMod) });
+      await A.page.waitForSelector('.sheet__title');
+      const links = await A.page.locator('#sheet .setc__link').allInnerTexts();
+      ok(links.length === 3 && /^Курага <img/.test(links[0]) && /Кеш/.test(links[1]) && /Суміш/.test(links[2]), 'набор (' + theme + '): «Склад набору» — три известных названия, ID без товара не показан', links);
+      ok(/Склад набору/.test(await text(A.page, '#sheet .setc .label')) && !/ZZZ-404/.test(await text(A.page, '#sheet')), 'набор (' + theme + '): подпись блока, сырого ID нет');
+      ok(NB(await text(A.page, '#sheet .setc__sep')) === 'Окремо 450 ₴ · набором 390 ₴', 'набор (' + theme + '): «Окремо 450 ₴ · набором 390 ₴» с цифрами сервера', await text(A.page, '#sheet .setc__sep'));
+      ok(await A.page.evaluate(() => window.__xss === undefined) && await count(A.page, '#sheet .setc img') === 0, 'набор (' + theme + '): HTML в названии товара выводится текстом');
+      const sizes = await A.page.locator('#sheet .setc__link').evaluateAll(l => l.map(b => Math.round(b.getBoundingClientRect().height)));
+      ok(sizes.every(h => h >= 44) && await noOverflow(A.page) && (await smallTargets(A.page)).length === 0, 'набор (' + theme + '): ссылки ≥ 44 px, без горизонтальной прокрутки', [sizes, await smallTargets(A.page)]);
+      await A.page.screenshot({ path: OUT + '/b2-set-sheet-' + theme + '.png' });
+      await A.page.locator('#sheet .setc__link').nth(1).click();
+      await A.page.waitForFunction(() => /Кеш/.test(document.querySelector('.sheet__title').textContent));
+      ok(await count(A.page, '#sheet .setc') === 0, 'набор (' + theme + '): ссылка открывает шторку товара состава (у него состава нет — блока нет)');
+      ok(A.errors.length === 0, 'набор (' + theme + '): в консоли нет ошибок', A.errors);
+      await A.ctx.close();
+    }
+    {
+      const R = await open(browser, st.url, { uid: 802, lc: 'ru', start: 'CND-004', before: catalogMod(setMod) });
+      await R.page.waitForSelector('.sheet__title');
+      ok(/Состав набора/.test(await text(R.page, '#sheet .setc .label')) && NB(await text(R.page, '#sheet .setc__sep')) === 'Отдельно 450 ₴ · набором 390 ₴', 'набор RU: «Состав набора», «Отдельно … · набором …»');
+      await R.ctx.close();
+      const E = await open(browser, st.url, { uid: 803, start: 'CND-005', before: catalogMod(setMod) });
+      await E.page.waitForSelector('.sheet__title');
+      ok(await count(E.page, '#sheet .setc__link') === 1 && await count(E.page, '#sheet .setc__sep') === 0, 'набор: «окремо» равно цене набора — строки нет, состав есть');
+      await E.ctx.close();
+      const Z = await open(browser, st.url, { uid: 804, start: 'SWT-006', before: catalogMod(setMod) });
+      await Z.page.waitForSelector('.sheet__title');
+      ok(await count(Z.page, '#sheet .setc') === 0, 'набор: ни одного известного товара в составе — блока нет');
+      await Z.ctx.close();
+      const O = await open(browser, st.url, { uid: 805, start: 'CND-004' });
+      await O.page.waitForSelector('.sheet__title');
+      ok(await count(O.page, '#sheet .setc') === 0, 'без ks/kp (старый бэкенд): шторка как раньше');
+      await O.ctx.close();
+    }
+
+    /* ---- б2: подсказка в корзине ---- */
+    const hintMod = (extra) => j => {
+      const by = id => j.products.find(p => p.id === id);
+      by('DRY-039').tg = ['Для плову'];
+      j.shop.hint = Object.assign({ tag: ' для  ПЛОВУ ', id: 'SPC-004', ua: 'До плову: суміш ' + XSS + ' — 45 ₴', ru: 'К плову: смесь — 45 ₴' }, extra || {});
+    };
+    const toCartWith = async (page, id) => {
+      await page.waitForSelector('#grid .card');
+      await page.evaluate(i => { const b = document.querySelector('#grid .card[data-id="' + i + '"] .card__name'); if (b) b.click(); }, id);
+    };
+    for (const theme of ['light', 'dark']) {
+      const H = await open(browser, st.url, { uid: 810, theme, start: 'DRY-039', before: catalogMod(hintMod()) });
+      await H.page.waitForSelector('.sheet__title');
+      await H.page.click('#sheet [data-action="add"]');
+      await H.page.click('.tabbar [data-go="cart"]');
+      await H.page.waitForSelector('.line');
+      ok(await count(H.page, '#cartHint') === 1 && /До плову: суміш <img/.test(await text(H.page, '#cartHint .chint__text')) && NB(await text(H.page, '#cartHint')).indexOf('45 ₴') > 0, 'подсказка (' + theme + '): строка с текстом сервера и кнопкой «Додати»', await text(H.page, '#cartHint'));
+      ok(await H.page.evaluate(() => window.__xss === undefined) && await count(H.page, '#cartHint img') === 0, 'подсказка (' + theme + '): HTML в тексте подсказки выводится текстом');
+      ok(/Додати/.test(await text(H.page, '#cartHint .btn')) && await noOverflow(H.page) && (await smallTargets(H.page)).length === 0, 'подсказка (' + theme + '): кнопка ≥ 44 px, без горизонтальной прокрутки', await smallTargets(H.page));
+      await H.page.screenshot({ path: OUT + '/b2-cart-hint-' + theme + '.png' });
+      await H.page.click('#cartHint .btn');
+      await H.page.waitForFunction(() => document.querySelectorAll('.line').length === 2);
+      ok(await count(H.page, '#cartHint') === 0 && /Суміш/.test(await text(H.page, '.lines')), 'подсказка (' + theme + '): после «Додати» товар в корзине, строка исчезла');
+      ok(H.errors.length === 0, 'подсказка (' + theme + '): в консоли нет ошибок', H.errors);
+      await H.ctx.close();
+    }
+    {
+      const R = await open(browser, st.url, { uid: 811, lc: 'ru', start: 'DRY-039', before: catalogMod(hintMod()) });
+      await R.page.waitForSelector('.sheet__title');
+      await R.page.click('#sheet [data-action="add"]');
+      await R.page.click('.tabbar [data-go="cart"]');
+      await R.page.waitForSelector('.line');
+      ok(/К плову: смесь/.test(await text(R.page, '#cartHint .chint__text')) && /Добавить/.test(await text(R.page, '#cartHint .btn')), 'подсказка RU: русский текст и «Добавить»');
+      await R.ctx.close();
+      const cases = [
+        ['товар подсказки уже в корзине', hintMod(), true],
+        ['товар подсказки не в наличии', hintMod({ id: 'DRY-005' }), false],
+        ['товара подсказки нет в каталоге', hintMod({ id: 'ZZZ-404' }), false],
+        ['в корзине нет товара с тегом', j => { hintMod()(j); j.products.find(p => p.id === 'DRY-039').tg = ['для чаю']; }, false],
+        ['нет shop.hint (старый бэкенд)', j => { hintMod()(j); delete j.shop.hint; }, false]
+      ];
+      for (const [name, fn, inCart] of cases) {
+        const C = await open(browser, st.url, { uid: 812, start: 'DRY-039', before: catalogMod(fn) });
+        await C.page.waitForSelector('.sheet__title');
+        if (inCart) { // товар подсказки уже лежит в корзине на устройстве
+          await C.page.evaluate(() => localStorage.setItem('pamir_cart_v1', JSON.stringify({ t: Date.now(), i: [{ id: 'SPC-004', g: 0, q: 1, pr: 45 }] })));
+          await C.page.goto(st.url + '/', { waitUntil: 'networkidle' });
+          await C.page.waitForSelector('.sheet__title');
+        }
+        await C.page.click('#sheet [data-action="add"]');
+        await C.page.click('.tabbar [data-go="cart"]');
+        await C.page.waitForSelector('.line');
+        ok(await count(C.page, '#cartHint') === 0, 'подсказка: ' + name + ' — строки нет');
+        await C.ctx.close();
+      }
+    }
+
+    /* ---- б12: поиск ---- */
+    {
+      const clones = j => { // каталог в 300 товаров для проверки скорости
+        const base = j.products.filter(p => p.t === 'w');
+        for (let i = 0; j.products.length < 300; i++) { const b = base[i % base.length]; j.products.push(Object.assign({}, b, { id: 'ZZ-' + String(i).padStart(3, '0'), ua: b.ua + ' вар' + i, ru: (b.ru || b.ua) + ' вар' + i })); }
+      };
+      const searchMod = j => {
+        const by = id => j.products.find(p => p.id === id);
+        j.shop.syn = { 'Урюк': 'курага', 'кешью': 'кеш’ю', '__proto__': 'x', 'constructor': 'курага' };
+        by('DRY-001').ua = 'Горіх мигдаль'; by('NUT-003').ua = 'Мидгаль солоний'; by('NUT-003').ru = 'Мидгаль солёный';
+        clones(j);
+      };
+      const ids = async p => p.evaluate(() => [].slice.call(document.querySelectorAll('#grid .card')).map(c => c.getAttribute('data-id')));
+      const q = async (p, v) => { await p.fill('#search', v); await p.waitForTimeout(350); return ids(p); };
+      const S = await open(browser, st.url, { uid: 820, before: catalogMod(searchMod) });
+      await S.page.waitForSelector('#grid .card');
+      let r = await q(S.page, 'кешю');
+      ok(r[0] === 'NUT-002', 'поиск: «кешю» находит «Кеш’ю» (апостроф)', r.slice(0, 3));
+      r = await q(S.page, 'иншир');
+      ok(r.includes('DRY-003'), 'поиск: «иншир» = «інжир» (и/і как одна буква)', r.slice(0, 5));
+      r = await q(S.page, 'инжыр');
+      ok(r.includes('DRY-003'), 'поиск: «инжыр» = «інжир» (ы/и)', r.slice(0, 5));
+      {
+        const S2 = await open(browser, st.url, { uid: 822, before: catalogMod(j => { searchMod(j); j.products = j.products.filter(p => !/^ZZ-/.test(p.id)); }) });
+        await S2.page.waitForSelector('#grid .card');
+        const r2 = await q(S2.page, 'мигдаль');
+        const iEx = ['DRY-001', 'NUT-001'].map(i => r2.indexOf(i)), iTy = r2.indexOf('NUT-003');
+        ok(iEx.every(i => i >= 0) && iTy > Math.max.apply(null, iEx), 'поиск: точные совпадения выше, опечатка («Мидгаль») в конце выдачи', r2.slice(0, 6));
+        await S2.ctx.close();
+      }
+      r = await q(S.page, 'мигадаль');
+      ok(r.includes('NUT-001') && r.includes('DRY-001'), 'поиск: лишняя буква («мигадаль») находит «мигдаль»', r.slice(0, 5));
+      r = await q(S.page, 'мидгаль');
+      ok(r.includes('NUT-001') && r.includes('NUT-003'), 'поиск: перестановка соседних («мидгаль») находит и «мигдаль»', r.slice(0, 5));
+      r = await q(S.page, 'мигдвль');
+      ok(r.includes('NUT-001'), 'поиск: замена буквы («мигдвль») находит «мигдаль»', r.slice(0, 5));
+      r = await q(S.page, 'чяй');
+      ok(r.length === 0, 'поиск: слова короче 5 букв опечаток не прощают («чяй» ничего не находит)', r.slice(0, 5));
+      r = await q(S.page, 'урюк');
+      ok(r.includes('DRY-039') && r.length >= 1, 'поиск: синоним «урюк» → «курага» (ключ в другом регистре)', r.slice(0, 5));
+      r = await q(S.page, 'constructor');
+      ok(r.includes('DRY-039') && (await S.page.evaluate(() => 1)) === 1, 'поиск: ключ «constructor» — обычное слово синонимов, без ошибки', r.slice(0, 3));
+      r = await q(S.page, 'toString');
+      ok(r.length === 0, 'поиск: «toString» не принимается за синоним', r.slice(0, 3));
+      r = await q(S.page, '__proto__');
+      ok(r.length === 0 && S.errors.length === 0, 'поиск: «__proto__» ничего не ломает', S.errors);
+      const t0 = await S.page.evaluate(async () => {
+        const inp = document.getElementById('search'); const out = [];
+        for (const v of ['мигадаль', 'мидгаль солоний', 'курагва', 'зюзюзюзю', 'урюк']) {
+          const t = performance.now(); inp.value = v; inp.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise(r => setTimeout(r, 160)); await new Promise(r => requestAnimationFrame(() => r()));
+          out.push(Math.round(performance.now() - t - 160));
+        }
+        return out;
+      });
+      ok(t0.every(ms => ms < 250) && (await S.page.evaluate(() => document.querySelectorAll('#grid .card').length)) >= 0, 'поиск: на каталоге в 300 товаров запрос с опечаткой отрабатывает быстро (сверх 160 мс паузы)', t0);
+      await S.page.fill('#search', 'зюзюзюзю'); await S.page.waitForTimeout(300);
+      await S.page.locator('#search').blur(); await S.page.waitForTimeout(150);
+      await S.page.fill('#search', 'мидгаль'); await S.page.waitForTimeout(300);
+      await S.page.locator('#search').blur(); await S.page.waitForTimeout(150);
+      await S.page.fill('#search', 'урюк'); await S.page.waitForTimeout(300);
+      await S.page.locator('#search').blur(); await S.page.waitForTimeout(150);
+      await flushEv(S.page);
+      const ev = EV(st).filter(e => ['search', 'search0'].includes(e.e));
+      ok(ev.some(e => e.e === 'search0' && e.v === 'зюзюзюзю') && !ev.some(e => e.e === 'search0' && (e.v === 'мидгаль' || e.v === 'урюк')) && ev.some(e => e.e === 'search' && e.v === 'урюк'), 'поиск: search0 только когда пусто и после синонимов и опечаток', ev.slice(-6));
+      await S.ctx.close();
+      const N = await open(browser, st.url, { uid: 821 });
+      await N.page.waitForSelector('#grid .card');
+      r = await q(N.page, 'урюк');
+      ok(r.length === 0, 'поиск без shop.syn (старый бэкенд): «урюк» как раньше ничего не находит', r.slice(0, 3));
+      r = await q(N.page, 'мигдаль');
+      ok(r.includes('NUT-001'), 'поиск без shop.syn: обычный запрос как раньше');
+      await N.ctx.close();
+    }
+
+    /* ---- б12: «Якщо товару немає» ---- */
+    for (const theme of ['light', 'dark']) {
+      const F = await open(browser, st.url, { uid: 830, theme });
+      await F.page.waitForSelector('#grid .card');
+      await F.page.evaluate(() => { document.querySelector('#grid .card[data-id="NUT-007"] [data-quick="1"]').click(); });
+      await F.page.click('.tabbar [data-go="cart"]');
+      await F.page.waitForSelector('.line');
+      await F.page.evaluate(() => window.__tg.main.cb());
+      await F.page.waitForSelector('#form');
+      ok(await count(F.page, '#ifoBox input[name="ifOut"]') === 3 && await F.page.evaluate(() => document.querySelector('#ifoBox input[name="ifOut"]:checked').value) === 'call', 'если нет (' + theme + '): три варианта, «Зателефонуйте мені» выбран');
+      ok((await F.page.locator('#ifoBox .opt__box').allInnerTexts()).join('|') === 'Зателефонуйте мені|Замініть схожим|Приберіть із замовлення' && /Якщо товару немає/.test(await text(F.page, '#ifoBox legend')), 'если нет (' + theme + '): подписи UA');
+      const hs = await F.page.locator('#ifoBox .opt__box').evaluateAll(l => l.map(b => Math.round(b.getBoundingClientRect().height)));
+      ok(hs.every(h => h >= 44) && await noOverflow(F.page) && (await smallTargets(F.page)).length === 0, 'если нет (' + theme + '): варианты ≥ 44 px, без горизонтальной прокрутки', [hs, await smallTargets(F.page)]);
+      await F.page.locator('#ifoBox [data-opt="ifOut-replace"]').click();
+      await F.page.fill('#f-phone', '+380671112233');
+      await F.page.screenshot({ path: OUT + '/b2-checkout-ifo-' + theme + '.png', fullPage: true });
+      if (theme === 'light') {
+        // сбой отправки: выбор остаётся в форме и на устройстве
+        await F.page.route(/\/api$/, r => { if (r.request().method() === 'POST' && /"action":"order"/.test(r.request().postData() || '')) r.abort(); else r.continue(); });
+        await F.page.evaluate(() => window.__tg.main.cb());
+        await F.page.waitForSelector('.form__retry');
+        ok(await F.page.evaluate(() => document.querySelector('#ifoBox input[name="ifOut"]:checked').value) === 'replace' && await F.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_form_v1') || '{}').ifOut) === 'replace', 'если нет: после сбоя отправки выбор «Замініть схожим» сохранён');
+        await F.page.unroute(/\/api$/);
+        await F.page.click('.form__retry');
+        await F.page.waitForSelector('.done');
+        const sent = st.log.filter(x => x.action === 'order').slice(-1)[0];
+        ok(sent && sent.ifOut === 'replace', 'если нет: в заказ уходит ifOut = replace', sent && sent.ifOut);
+      }
+      ok(F.errors.length === 0, 'если нет (' + theme + '): в консоли нет ошибок', F.errors);
+      await F.ctx.close();
+    }
+    {
+      const R = await open(browser, st.url, { uid: 831, lc: 'ru' });
+      await R.page.waitForSelector('#grid .card');
+      await R.page.evaluate(() => { document.querySelector('#grid .card[data-id="NUT-007"] [data-quick="1"]').click(); });
+      await R.page.click('.tabbar [data-go="cart"]'); await R.page.waitForSelector('.line');
+      await R.page.evaluate(() => window.__tg.main.cb()); await R.page.waitForSelector('#form');
+      ok((await R.page.locator('#ifoBox .opt__box').allInnerTexts()).join('|') === 'Позвоните мне|Замените похожим|Уберите из заказа' && /Если товара нет/.test(await text(R.page, '#ifoBox legend')), 'если нет RU: «Позвоните мне», «Замените похожим», «Уберите из заказа»');
+      await R.ctx.close();
+      // без флага shop.ifo — блока нет и поле не уходит
+      const N = await open(browser, st.url, { uid: 832, before: catalogMod(j => { delete j.shop.ifo; }) });
+      await N.page.waitForSelector('#grid .card');
+      await N.page.evaluate(() => { document.querySelector('#grid .card[data-id="NUT-007"] [data-quick="1"]').click(); });
+      await N.page.click('.tabbar [data-go="cart"]'); await N.page.waitForSelector('.line');
+      await N.page.evaluate(() => window.__tg.main.cb()); await N.page.waitForSelector('#form');
+      ok(await count(N.page, '#ifoBox') === 0, 'без shop.ifo: блока «Якщо товару немає» нет');
+      await N.page.fill('#f-phone', '+380671112233');
+      await N.page.evaluate(() => window.__tg.main.cb()); await N.page.waitForSelector('.done');
+      const sent = st.log.filter(x => x.action === 'order').slice(-1)[0];
+      ok(sent && !('ifOut' in sent), 'без shop.ifo: поле ifOut в заказ не отправляется');
+      await N.ctx.close();
+    }
+
+    /* ---- б3: повтор заказа по ссылке re-<номер> ---- */
+    {
+      const U = await open(browser, st.url, { uid: 501, start: 're-0001' });
+      await U.page.waitForSelector('.line');
+      const my = st.log.filter(x => x.action === 'orders.my' && x.num);
+      ok(my.length === 1 && my[0].num === 'P-0001' && my[0].initData, 'повтор по ссылке: запрос orders.my с initData и num = P-0001', my.map(x => x.num));
+      ok(await count(U.page, '.line') === 2 && /Курага/.test(await text(U.page, '.line')) && /Товари з замовлення додано в кошик/.test(await text(U.page, '.page')) && await U.page.evaluate(() => document.body.getAttribute('data-view')) === 'cart', 'повтор по ссылке: товары заказа в корзине по текущим ценам, открыта корзина', await text(U.page, '.page'));
+      await U.page.screenshot({ path: OUT + '/b2-relink-cart.png' });
+      await flushEv(U.page);
+      ok(!EV(st).some(e => e.e === 'src' && /^re-/.test(e.v)) && await U.page.evaluate(() => localStorage.getItem('pamir_src_v1')) === null && await count(U.page, '.sheet__title') === 0, 'повтор по ссылке: не источник src, не ID товара');
+      ok(U.errors.length === 0, 'повтор по ссылке: в консоли нет ошибок', U.errors);
+      await U.ctx.close();
+      // сообщение с названиями: товар в каталоге, но «немає»
+      const G = await open(browser, st.url, { uid: 501, start: 're-0001', before: async page => {
+        await page.route(/\/api$/, async route => {
+          if (route.request().method() === 'POST' && /"action":"orders\.my"/.test(route.request().postData() || '')) {
+            const res = await route.fetch(); const j = await res.json();
+            if (j.one) j.one.i = [['DRY-039', 1000, 1], ['DRY-005', 500, 1], ['NUT-007', 0, 2]];
+            await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(j) });
+          } else await route.continue();
+        });
+      } });
+      await G.page.waitForSelector('.line');
+      ok(await count(G.page, '.line') === 2 && /Немає в наявності, не додано: Манго сушене\./.test(await text(G.page, '.page')), 'повтор: «немає» пропущен, клиент видит название («Манго сушене»)', await text(G.page, '.page'));
+      await G.ctx.close();
+      // нет заказа / чужой заказ / старый бэкенд — просто «Мої замовлення»
+      for (const [label, o] of [['нет такого заказа', { uid: 501, start: 're-9999' }], ['чужой заказ', { uid: 502, start: 're-0001' }]]) {
+        const X = await open(browser, st.url, Object.assign({}, o));
+        await X.page.waitForSelector('.page .state, .page .my');
+        ok(await count(X.page, '.line') === 0 && await count(X.page, '.form__err') === 0 && /Мої замовлення|Профіль/.test(await text(X.page, '.page__title, .sec')), 'повтор по ссылке (' + label + '): открыт список «Мої замовлення», корзина пуста, без ошибки');
+        ok(X.errors.length === 0, 'повтор по ссылке (' + label + '): в консоли нет ошибок', X.errors);
+        await X.ctx.close();
+      }
+      const oldCode = path.join(require('os').tmpdir(), 'Code.oldA.gs');
+      fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || OLD_REF_A) + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+      const so = await start(8902, oldCode, s => { withPhotos(s); });
+      const O = await open(browser, so.url, { uid: 501, start: 're-0001' });
+      await O.page.waitForSelector('.page .my');
+      ok(await count(O.page, '.line') === 0 && await count(O.page, '.form__err') === 0 && /Мої замовлення/.test(await text(O.page, '.page .sec')), 'старый бэкенд (нет поля one): повтор по ссылке открывает «Мої замовлення» без ошибки');
+      ok(O.errors.length === 0, 'старый бэкенд: в консоли нет ошибок', O.errors);
+      await O.page.screenshot({ path: OUT + '/b2-relink-old.png' });
+      await O.ctx.close();
+      // «старый бэкенд» для остальных пунктов: нет ks/kp/hint/syn/ifo
+      const OB = await open(browser, so.url, { uid: 840, start: 'CND-004' });
+      await OB.page.waitForSelector('.sheet__title');
+      ok(await count(OB.page, '#sheet .setc') === 0, 'старый бэкенд: набора в шторке нет');
+      await OB.page.click('#sheet [data-action="add"]'); await OB.page.click('.tabbar [data-go="cart"]'); await OB.page.waitForSelector('.line');
+      ok(await count(OB.page, '#cartHint') === 0, 'старый бэкенд: подсказки в корзине нет');
+      await OB.page.evaluate(() => window.__tg.main.cb()); await OB.page.waitForSelector('#form');
+      ok(await count(OB.page, '#ifoBox') === 0, 'старый бэкенд: «Якщо товару немає» нет');
+      await OB.page.fill('#f-phone', '+380671112233');
+      await OB.page.evaluate(() => window.__tg.main.cb()); await OB.page.waitForSelector('.done');
+      const sentOld = so.log.filter(x => x.action === 'order').slice(-1)[0];
+      ok(sentOld && !('ifOut' in sentOld), 'старый бэкенд: заказ уходит без ifOut');
+      ok(OB.errors.length === 0, 'старый бэкенд: в консоли нет ошибок', OB.errors);
+      await OB.ctx.close(); so.server.close();
+    }
+
+    /* ---- панель: «Шукали й не знайшли за 30 днів» ---- */
+    {
+      const st2 = await start(8903, undefined, s => { withPhotos(s); });
+      const now = Date.now();
+      st2.gas.post({ action: 'ev', initData: st2.gas.initData({ id: 71 }), sid: 'z', events: [{ e: 'open', t: now }, { e: 'search0', v: 'кава', t: now }, { e: 'search0', v: 'кава', t: now }] });
+      const P = await open(browser, st2.url, { uid: 900, query: '?admin=1' });
+      await P.page.waitForSelector('.ord');
+      await P.page.click('[data-action="adm-sales"]'); await P.page.waitForSelector('.funnel');
+      ok(/Шукали й не знайшли за 30 днів/.test(await text(P.page, '.page')) && /кава/.test(await text(P.page, '.page')), 'панель: «Шукали й не знайшли за 30 днів» со списком', await text(P.page, '.page'));
+      await P.page.screenshot({ path: OUT + '/b2-admin-zero.png' });
+      await P.ctx.close();
+      const st3 = await start(8904, undefined, s => { withPhotos(s); });
+      st3.gas.post({ action: 'ev', initData: st3.gas.initData({ id: 71 }), sid: 'z', events: [{ e: 'open', t: Date.now() }] });
+      const Q = await open(browser, st3.url, { uid: 900, query: '?admin=1' });
+      await Q.page.waitForSelector('.ord');
+      await Q.page.click('[data-action="adm-sales"]'); await Q.page.waitForSelector('.funnel');
+      ok(!/Шукали й не знайшли/.test(await text(Q.page, '.page')) && await count(Q.page, '.page [role="alert"]') === 0 && await noOverflow(Q.page) && Q.errors.length === 0, 'панель: пустой список «не знайшли» не ломает статистику', Q.errors);
+      await Q.ctx.close(); st2.server.close(); st3.server.close();
+    }
+    st.server.close();
   }
 
   await browser.close();

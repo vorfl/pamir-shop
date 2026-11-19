@@ -265,6 +265,24 @@ button { cursor: pointer; }
 }
 .sheet__img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .sheet__img .mark { width: 30%; }
+/* второе фото (необязательное i2): лента со scroll-snap и точки */
+.sheet__strip {
+  display: flex; width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.sheet__strip::-webkit-scrollbar { display: none; }
+.sheet__slide { flex: 0 0 100%; width: 100%; height: 100%; scroll-snap-align: center; scroll-snap-stop: always; display: grid; place-items: center; min-width: 0; }
+.sheet__slide .mark { width: 30%; }
+.sheet__dots { display: flex; justify-content: center; align-items: center; margin-top: calc(var(--space-3) * -1); margin-bottom: calc(var(--space-2) * -1); flex: none; }
+.sheet__dot {
+  position: relative; width: var(--tap); min-width: 44px; height: var(--tap); min-height: 44px; padding: 0; border: 0; background: transparent; cursor: pointer;
+}
+.sheet__dot::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%;
+  background: var(--line); box-shadow: inset 0 0 0 1px var(--ink-muted); transition: background-color .2s, transform .2s;
+}
+.sheet__dot[aria-current="true"]::after { background: var(--apricot); box-shadow: inset 0 0 0 1px var(--apricot); transform: scale(1.4); }
+@media (prefers-reduced-motion: reduce) { .sheet__strip { scroll-behavior: auto; } .sheet__dot::after { transition: none; } }
 .sheet__head { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); }
 .sheet__title { margin: 0; font-size: 20px; line-height: 26px; font-weight: 700; overflow-wrap: anywhere; }
 .sheet__desc { margin: 0; white-space: pre-line; }
@@ -655,6 +673,8 @@ textarea, select { font: inherit; color: inherit; }
 }
 .tabbar__count.is-bump { animation: pop .36s var(--ease); }
 .tabbar__dot { position: absolute; top: 1px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--pomegranate); box-shadow: 0 0 0 2px var(--surface-raised); }
+/* scrollIntoView, якоря и фокус не оставляют блок под нижней панелью (и под панелью «К корзине», когда она есть) */
+html.has-tabbar { scroll-padding-bottom: calc(var(--tabbar-h) + 16px + env(safe-area-inset-bottom, 0px)); }
 body.has-tabbar { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px)); }
 body.has-tabbar .bar { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px)); padding-bottom: var(--space-3); }
 body.has-tabbar.has-bar { padding-bottom: calc(var(--tabbar-h) + 76px + env(safe-area-inset-bottom, 0px)); }
@@ -1171,3 +1191,11 @@ body:not([data-view="catalog"]) .snow, body.is-locked .snow { display: none; }
 .srct th:first-child, .srct td:first-child { text-align: left; width: 34%; }
 .srct th { color: var(--ink-muted); font-weight: 600; }
 .srct td { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Волна Б2: состав набора в шторке товара и подсказка в корзине */
+.setc__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.setc__link { display: flex; align-items: center; width: 100%; min-height: var(--tap); overflow-wrap: anywhere; }
+.setc__sep { margin: 0; font-size: 14px; line-height: 20px; font-weight: 700; color: var(--ink); }
+.chint { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-md); background: var(--surface-sunken); border: 1px solid var(--line); }
+.chint__text { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.chint .btn { align-self: stretch; }
