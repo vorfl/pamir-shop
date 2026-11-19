@@ -1797,14 +1797,14 @@ console.log('Выпуск А, блок 2: подсказки Новой почт
     const a = adminAlerts(g);
     ok(a.length === 1 && !a[0].payload.text.includes(KEY) && !/https?:/.test(a[0].payload.text) && !logs.join('\n').includes(KEY), 'ключ и URL вычищены из причины и лога', a[0] && a[0].payload.text);
   }
-  // Лимит 600 в час
+  // Лимит публичных подсказок: 400 в час (админские накладные считаются отдельно, 600)
   {
     const g = fresh(); g.props.NP_API_KEY = KEY;
     const st = npStub(g);
-    for (let i = 0; i < 600; i++) g.get({ action: 'np.city', q: 'Ха' + i });
-    ok(st.calls.length === 600, 'до 600 вызовов в час проходят', st.calls.length);
+    for (let i = 0; i < 400; i++) g.get({ action: 'np.city', q: 'Ха' + i });
+    ok(st.calls.length === 400, 'до 400 публичных вызовов в час проходят', st.calls.length);
     const r = g.get({ action: 'np.city', q: 'Ха-новый' });
-    ok(r.ok === false && st.calls.length === 600, '601-й вызов — {ok:false}, к API не идём');
+    ok(r.ok === false && st.calls.length === 400, '401-й вызов — {ok:false}, к API не идём');
     ok(adminAlerts(g).length === 1, 'о лимите админ узнаёт один раз');
   }
   // Без ключа

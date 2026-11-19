@@ -211,6 +211,7 @@ function stage9b2Photos() {
 var FU_WINDOW_DAYS = 3;      // срок давности: позже — пропускаем без отметки
 var FU_GAP_DAYS = 14;        // между несервисными сообщениями одному клиенту
 var FU_REPLY_DAYS = 7;       // сколько после followup1 ответ клиента пересылается админам
+var FU_REPLY_MAX_FWD = 5;   // не больше 5 пересылок админам на клиента за окно
 var FU_REPLY_MORE_SEC = 900; // после первой пересылки ещё 15 минут пересылаем следующие сообщения (клиент пишет в несколько строк)
 var FU_MAX_RUN = 30;
 var FU_DAY_MS = 24 * 3600 * 1000;
@@ -328,15 +329,35 @@ function fuClientWrite_(uid, msgNow, wait) {
 /** Старые несервисные отправки (рассылка напоминания, просьба об отзыве, корзина) ставят эту отметку после успешной отправки. */
 function fuMarkSent_(uid) { return fuClientWrite_(uid, true, undefined); }
 
-/** Отметка в «Службове» заказа (под блокировкой, по свежему значению ячейки). false — уже стояла или блокировка занята. */
-function fuSetSvcMark_(sheet, col, rowIdx, mark) {
+/**
+ * Отметка в «Службове» заказа (под блокировкой, по свежему значению ячейки). false — уже стояла, блокировка занята или заказ не найден.
+ * num — ожидаемый номер заказа: строки могли сдвинуться после чтения снимка (удаление/сортировка), поэтому номер в строке сверяется,
+ * при несовпадении строка ищется заново по номеру; нет такой — отметка не ставится. Для f1/f2 рядом пишется время ft (мс): по нему
+ * лимит 14 дней видит отправку, даже если «Останнє повідомлення» записать не удалось.
+ */
+function fuSetSvcMark_(sheet, col, rowIdx, mark, num) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return false;
   try {
+    if (num && col.num >= 0) {
+      var at = Number(rowIdx);
+      var here = at >= 2 && at <= sheet.getLastRow() ? String(sheet.getRange(at, col.num + 1).getValues()[0][0] || '').trim() : '';
+      if (here !== String(num)) {
+        at = 0;
+        var last = sheet.getLastRow();
+        if (last >= 2) {
+          var nums = sheet.getRange(2, col.num + 1, last - 1, 1).getValues();
+          for (var i = 0; i < nums.length; i++) if (String(nums[i][0] || '').trim() === String(num)) { at = i + 2; break; }
+        }
+        if (!at) return false;
+        rowIdx = at;
+      }
+    }
     var cur = {};
     try { cur = JSON.parse(String(sheet.getRange(rowIdx, col.svc + 1).getValues()[0][0] || '{}')) || {}; } catch (err) { return false; }
     if (cur[mark]) return false;
     cur[mark] = 1;
+    if (mark === 'f1' || mark === 'f2') cur.ft = Date.now();
     sheet.getRange(rowIdx, col.svc + 1).setValue(JSON.stringify(cur));
     return true;
   } finally {
@@ -387,10 +408,17 @@ function followupJob_() {
   if (col.uid < 0 || col.date < 0 || col.svc < 0) return out;
   var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
   var clients = fuClients_(), stops = reminderStops_();
-  var now = Date.now(), lastOrder = {}, done = 0;
+  var now = Date.now(), lastOrder = {}, lastFu = {}, done = 0;
   values.forEach(function (row) { // последний настоящий заказ клиента: если он уже заказал снова, «Повторити замовлення» не зовём
     var uid = cell_(row, col.uid), t = fuDate_(row[col.date]);
     if (uid && t && cell_(row, col.source).indexOf('test') < 0 && t > (lastOrder[uid] || 0)) lastOrder[uid] = t;
+    var rawSvc = cell_(row, col.svc);
+    if (uid && rawSvc.indexOf('"ft"') >= 0) { // время прошлых f1/f2 по любым заказам клиента: лимит 14 дней не зависит от записи в «Клієнти»
+      try { var ft = Number((JSON.parse(rawSvc) || {}).ft) || 0; if (ft > (lastFu[uid] || 0)) lastFu[uid] = ft; } catch (err) { /* битая ячейка — пропуск */ }
+    }
+  });
+  Object.keys(lastFu).forEach(function (u) {
+    if (lastFu[u] > (clients[u] ? clients[u].last : 0)) clients[u] = Object.assign(clients[u] || { unsub: false, blocked: false, wait: '', lang: 'ua' }, { last: lastFu[u] });
   });
   for (var r = 0; r < values.length && done < FU_MAX_RUN; r++) {
     var row = values[r];
@@ -423,7 +451,7 @@ function followupJob_() {
         kb.push([{ text: ru ? 'Больше не напоминать' : 'Більше не нагадувати', callback_data: 'nr' }]);
         payload.reply_markup = { inline_keyboard: kb };
       }
-      if (!fuSetSvcMark_(sheet, col, r + 2, mark)) continue;        // отмечаем до отправки: второго раза не будет
+      if (!fuSetSvcMark_(sheet, col, r + 2, mark, num)) continue;        // отмечаем до отправки: второго раза не будет
       svc[mark] = 1;
       payload.chat_id = uid;
       var res = tg_(token, 'sendMessage', payload);
@@ -448,6 +476,7 @@ function fuReply_(msg, uid, text, token, props) {
   var more = cache.get('fur_' + uid);       // уже пересылали недавно: следующие строки того же ответа тоже
   var num = '', ru = false, first = false;
   if (more) {
+    if ((parseInt(cache.get('furc_' + uid), 10) || 0) >= FU_REPLY_MAX_FWD) return false; // лимит пересылок за окно: дальше обычная обработка, админам не уходит
     var mm = String(more).split(';');
     num = mm[0]; ru = mm[1] === 'ru';
   } else {
@@ -473,7 +502,12 @@ function fuReply_(msg, uid, text, token, props) {
     if (res && res.ok) delivered++;
   });
   if (!delivered) return false; // никто не получил — обычная обработка бота, ожидание остаётся
-  cache.put('fur_' + uid, num + ';' + (ru ? 'ru' : 'ua'), FU_REPLY_MORE_SEC);
+  if (first) { // окно «ещё строки» открывается один раз и не продлевается повторными сообщениями
+    cache.put('fur_' + uid, num + ';' + (ru ? 'ru' : 'ua'), FU_REPLY_MORE_SEC);
+    cache.put('furc_' + uid, '1', FU_REPLY_MORE_SEC);
+  } else {
+    cache.put('furc_' + uid, String((parseInt(cache.get('furc_' + uid), 10) || 0) + 1), FU_REPLY_MORE_SEC);
+  }
   if (first) {
     fuClientWrite_(uid, false, ''); // ответ получен: ожидание снимаем
     tg_(token, 'sendMessage', { chat_id: uid, text: ru ? FU_THANKS.ru : FU_THANKS.ua });
@@ -664,7 +698,8 @@ var NP_MSG = {
   bad_name: ['Вкажіть отримувача: прізвище та ім’я (два-три слова)', 'Укажите получателя: фамилия и имя (два-три слова)'],
   bad_weight: ['Вкажіть вагу від 100 г до 30 кг', 'Укажите вес от 100 г до 30 кг'],
   bad_amount: ['Сума не збігається із замовленням. Відкрийте підтвердження ще раз', 'Сумма не совпадает с заказом. Откройте подтверждение ещё раз'],
-  not_confirmed: ['Потрібне підтвердження', 'Нужно подтверждение']
+  not_confirmed: ['Потрібне підтвердження', 'Нужно подтверждение'],
+  city_diff: ['Місто в замовленні не збігається з містом Нової пошти за кодом. Перевірте адресу й підтвердіть створення ще раз', 'Город в заказе не совпадает с городом Новой почты по коду. Проверьте адрес и подтвердите создание ещё раз']
 };
 
 function npFail_(code, extra) {
@@ -743,14 +778,31 @@ function npResolveWh_(cityRef, branchText, locker) {
   var m = String(branchText || '').match(/\d{1,5}/);
   if (!m) return { error: 'wh_unknown' };
   var num = parseInt(m[0], 10);
-  var data = npCall_('getWarehouses', { CityRef: cityRef, FindByString: String(num), Limit: '300' }, { quiet: true });
+  var data = npCall_('getWarehouses', { CityRef: cityRef, FindByString: String(num), Limit: '300' }, { quiet: true, admin: true });
   if (!data) return { error: 'np_error' };
   var hits = data.filter(function (w) {
     return w && parseInt(w.Number, 10) === num && NP_UUID_RE.test(String(w.Ref || '')) && ((String(w.CategoryOfWarehouse || '') === 'Postomat') === locker);
   });
   if (hits.length !== 1) return { error: 'wh_unknown' };
   var w = hits[0];
-  return { ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60) };
+  return { ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60), cityRu: String(w.CityDescriptionRu || '').slice(0, 60) };
+}
+
+/** Название города для осторожного сравнения: регистр, апострофы, «м.»/«місто», скобки, всё после запятой не учитываются. */
+function npCityNorm_(v) {
+  var s = String(v === null || v === undefined ? '' : v).toLowerCase().replace(/ё/g, 'е').replace(/[’ʼ`'‘]/g, '').replace(/\([^)]*\)/g, ' ');
+  s = s.replace(/(^|\s)(м|г|смт|пгт|с|с-ще)\.(?=\s|[а-яіїєґ])/g, ' ').replace(/(^|\s)(місто|город|селище|село|поселок)(?=\s|$)/g, ' ');
+  return s.replace(/[^a-zа-яіїєґ0-9\s,-]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** true — город заказа из формы заметно отличается от города НП по Ref (нет данных для сравнения — false). */
+function npCityDiffers_(formCity, wh) {
+  var names = [npCityNorm_(wh && wh.city), npCityNorm_(wh && wh.cityRu)].filter(function (x) { return x; });
+  var form = npCityNorm_(formCity);
+  if (!names.length || !form) return false;
+  var head = form.split(',')[0].trim();
+  var padded = ' ' + form.replace(/[,]/g, ' ').replace(/\s+/g, ' ') + ' ';
+  return !names.some(function (n) { return head === n || padded.indexOf(' ' + n + ' ') >= 0; });
 }
 
 /** Общая часть preview и create: заказ найден, подходит, получатель и отделение известны. Возвращает {ok:true, f, d} или {ok:false,…}. */
@@ -786,11 +838,14 @@ function npTtnPreview_(num) {
   var p = npTtnPrepare_(num);
   if (!p.ok) return p;
   var o = p.f.o, d = p.d;
-  return { ok: true, ttn: {
+  var out = { ok: true, ttn: {
     num: num, name: d.name, nameOk: !!npName_(d.name), phone: '+' + d.phone, city: o.city, branch: o.branch, type: o.npType === 'locker' ? 'locker' : 'branch',
     npCity: d.wh.city, npWarehouse: d.wh.desc, weightG: d.weightG, cost: d.cost, cod: d.cod, desc: d.desc,
     minG: NP_W_MIN_G, maxG: NP_W_MAX_G
   } };
+  if (npCityDiffers_(o.city, d.wh)) out.ttn.cityDiff = 1;
+  return out;
+  // cityDiff: 1 добавляется только при расхождении города заказа и города НП по Ref (необязательное поле).
 }
 
 /** Запись в «Службове» заказа под блокировкой. fn(svc) возвращает код ошибки (строку), чтобы отказаться. '' — записано. */
@@ -823,6 +878,7 @@ function npTtnCreate_(body, token) {
   if (!p.ok) return p;
   if (body.confirm !== true) return npFail_('not_confirmed');
   var d = p.d;
+  if (npCityDiffers_(p.f.o.city, d.wh) && body.cityOk !== true) return npFail_('city_diff'); // город заказа ≠ город НП по Ref: нужно явное cityOk: true
   var wg = Math.round(Number(body.weight));
   if (!isFinite(wg) || wg < NP_W_MIN_G || wg > NP_W_MAX_G) return npFail_('bad_weight');
   if (body.cod !== undefined && body.cod !== null && Math.round(Number(body.cod)) !== d.cod) return npFail_('bad_amount');
@@ -850,16 +906,23 @@ function npTtnCreate_(body, token) {
   };
   if (d.cod > 0) props.BackwardDeliveryData = [{ PayerType: 'Recipient', CargoType: 'Money', RedeliveryString: String(d.cod) }];
   var eo = {};
-  var data = npCall_('save', props, { model: 'InternetDocument', noCache: true, quiet: true, errOut: eo });
+  var data = npCall_('save', props, { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
   var ttn = data && data[0] ? String(data[0].IntDocNumber || '').replace(/\s+/g, '') : '';
   if (!/^\d{10,20}$/.test(ttn)) {
     if (!data && eo.api !== true && eo.nocall !== true) return npFail_('np_unknown'); // связь оборвалась: накладная могла создаться, метку не снимаем
+    if (data && data.length) return npFail_('np_unknown');                             // success без разборчивого номера: накладная скорее всего создана, метку не снимаем
     npSvcEdit_(num, function (svc) { delete svc.tp; return ''; });                     // API отказал или не вызывался: повтор безопасен
     if (data) return npFail_('np_error');                                              // ответ без номера
     return eo.api === true ? npFail_('np_api', { np: eo.text || '' }) : npFail_('np_error');
   }
-  var res = setTtn_(num, ttn, token);                                                  // записывает «ТТН» и пишет клиенту номер с «Відстежити»
-  if (!res || !res.ok) return npFail_('save_failed', { ttn: ttn });
+  var res = null;
+  try {
+    res = setTtn_(num, ttn, token);                                                    // записывает «ТТН» и пишет клиенту номер с «Відстежити»
+  } catch (err) {
+    console.warn('np ttn save: ' + num + ' ' + ttn + ' ' + safeErr_(err));              // номер не теряем: он в ответе админу и в логе (не секрет)
+    res = null;
+  }
+  if (!res || !res.ok) return npFail_('save_failed', { ttn: ttn });                    // метку tp не снимаем: повтор в течение 5 минут не создаст дубль
   npSvcEdit_(num, function (svc) { delete svc.tp; return ''; });
   return { ok: true, ttn: ttn, told: res.told };
 }
@@ -910,13 +973,13 @@ function npTrackJob_() {
   for (var b = 0; b < NP_TRACK_MAX_BATCHES && b * NP_TRACK_BATCH < list.length; b++) {
     var chunk = list.slice(b * NP_TRACK_BATCH, (b + 1) * NP_TRACK_BATCH);
     var data = npCall_('getStatusDocuments', { Documents: chunk.map(function (x) { var d = { DocumentNumber: x.ttn }; if (x.phone) d.Phone = x.phone; return d; }) },
-      { model: 'TrackingDocument', noCache: true, quiet: true });
+      { model: 'TrackingDocument', noCache: true, quiet: true, admin: true });
     if (!data) continue; // ошибка API: до следующего раза
     var arrived = {};
     data.forEach(function (x) { if (x && NP_ARRIVED_CODES.indexOf(String(x.StatusCode)) >= 0) arrived[String(x.Number || '')] = true; });
     chunk.forEach(function (x) {
       if (!arrived[x.ttn]) return;
-      if (!fuSetSvcMark_(sheet, col, x.r, 'ar')) return; // уже отмечено (или блокировка занята): второго сообщения не будет
+      if (!fuSetSvcMark_(sheet, col, x.r, 'ar', x.num)) return; // уже отмечено (или блокировка занята): второго сообщения не будет
       var res = tg_(token, 'sendMessage', {
         chat_id: x.uid,
         text: x.ru ? 'Ваш заказ № ' + x.num + ' прибыл в отделение Новой почты. ТТН ' + x.ttn + '.'

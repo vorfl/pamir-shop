@@ -295,6 +295,31 @@ function readCategories_(ss) {
   return list;
 }
 
+/**
+ * Общая поправка разбора колонок «Товари» (читалка витрины и админ-панель): «Фото 2» не подменяет «Фото (посилання)», а «Склад набору»
+ * не читается как «Склад» (состав специй) при поиске по началу заголовка. Меняет col на месте.
+ */
+function fixProductCols_(col, headers) {
+  if (col.photo2 >= 0 && col.photo === col.photo2) {
+    col.photo = -1;
+    headers.forEach(function (h, i) {
+      if (col.photo < 0 && i !== col.photo2 && String(h || '').replace(/\s+/g, ' ').trim().toLowerCase().indexOf('фото') === 0) col.photo = i;
+    });
+  }
+  if (col.setItems >= 0) {
+    ['compUa', 'compRu'].forEach(function (k) {
+      if (col[k] !== col.setItems) return;
+      var want = k === 'compUa' ? ['склад (ua)', 'склад'] : ['состав (ru)', 'состав'];
+      col[k] = -1;
+      headers.forEach(function (h, i) {
+        var hn = String(h || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (col[k] < 0 && i !== col.setItems && want.some(function (w) { return hn === w; })) col[k] = i;
+      });
+    });
+  }
+  return col;
+}
+
 function readProducts_(ss, categories) {
   var sheet = ss.getSheetByName(SHEET_PRODUCTS);
   if (!sheet) throw new Error('Не найден лист «' + SHEET_PRODUCTS + '»');
@@ -304,26 +329,7 @@ function readProducts_(ss, categories) {
   ['id', 'nameUa', 'type', 'stock'].forEach(function (k) {
     if (col[k] < 0) throw new Error('В листе «Товари» не найдена колонка: ' + PRODUCT_COLS[k][0]);
   });
-  // «Фото 2» не должна подменять «Фото (посилання)» при поиске по началу заголовка.
-  if (col.photo2 >= 0 && col.photo === col.photo2) {
-    col.photo = -1;
-    values[0].forEach(function (h, i) {
-      if (col.photo < 0 && i !== col.photo2 && String(h || '').replace(/\s+/g, ' ').trim().toLowerCase().indexOf('фото') === 0) col.photo = i;
-    });
-  }
-
-  // «Склад набору» не должен читаться как «Склад» (состав специй) при поиске по началу заголовка.
-  if (col.setItems >= 0) {
-    ['compUa', 'compRu'].forEach(function (k) {
-      if (col[k] !== col.setItems) return;
-      var want = k === 'compUa' ? ['склад (ua)', 'склад'] : ['состав (ru)', 'состав'];
-      col[k] = -1;
-      values[0].forEach(function (h, i) {
-        var hn = String(h || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        if (col[k] < 0 && i !== col.setItems && want.some(function (w) { return hn === w; })) col[k] = i;
-      });
-    });
-  }
+  fixProductCols_(col, values[0]);
 
   var catByName = {};
   var catByCode = {};
@@ -980,13 +986,18 @@ function doPost(e) {
 
 /* ------------------------------ Приём заказа ------------------------------ */
 
-/** Отпечаток заказа для проверки повтора rid: HMAC от состава, суммы, доставки, оплаты, текстов, телефона и имени. ПДн в кэше нет. */
+/** Ref города НП для отпечатка и для svc.nc: только настоящий UUID при доставке на НП, иначе ''. */
+function fpCityRef_(o, body) {
+  return o && o.delivery === 'np' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(body.cityRef || '')) ? String(body.cityRef).toLowerCase() : '';
+}
+
+/** Отпечаток заказа для проверки повтора rid: HMAC от состава, суммы, доставки, оплаты, текстов, телефона имени, выбора «Якщо немає» и Ref города НП. ПДн в кэше нет. */
 function orderFingerprint_(token, ownerKey, body, o) {
   var items = (Array.isArray(body.items) ? body.items : []).map(function (it) {
     return [String((it && it.id) || ''), Number(it && it.g) || 0, Math.floor(Number(it && it.q)) || 0].join('|');
   }).sort();
   var raw = JSON.stringify([ownerKey, items, Number(body.total) || 0, o.delivery, o.npType, o.city, o.branch, String(body.point || ''),
-    o.pay, o.comment, clean_(body.giftNote, 120), o.phone, o.name]);
+    o.pay, o.comment, clean_(body.giftNote, 120), o.phone, o.name, o.ifOut || '', fpCityRef_(o, body)]);
   var sig = Utilities.computeHmacSha256Signature(Utilities.newBlob(raw).getBytes(), Utilities.newBlob(String(token)).getBytes());
   return sig.map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('').slice(0, 32);
 }
@@ -2277,11 +2288,12 @@ function listOrders_() {
 
 /** headers — первая строка листа, если лист уже прочитан целиком: тогда второго обращения к таблице нет. */
 function productCols_(sheet, headers) {
-  var col = mapHeaders_(headers || sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0], PRODUCT_COLS);
+  var hdr = headers || sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var col = mapHeaders_(hdr, PRODUCT_COLS);
   ['id', 'nameUa', 'type', 'stock'].forEach(function (k) {
     if (col[k] < 0) throw new Error('В листе «Товари» не найдена колонка: ' + PRODUCT_COLS[k][0]);
   });
-  return col;
+  return fixProductCols_(col, hdr);
 }
 
 function adminProduct_(row, col) {
@@ -4880,7 +4892,8 @@ function handleCallback8_(cq, token, props, answer) {
  */
 
 var NP_API_URL = 'https://api.novaposhta.ua/v2.0/json/';
-var NP_MAX_CALLS_PER_HOUR = 600; // суточная квота UrlFetch общая с Telegram
+var NP_MAX_CALLS_PER_HOUR = 600;        // админские вызовы (накладные, трекинг): свой счётчик, публичные подсказки его не расходуют
+var NP_MAX_PUBLIC_CALLS_PER_HOUR = 400; // публичные np.city / np.wh / np.price: потолок ниже, суточная квота UrlFetch общая с Telegram
 
 function npKey_() {
   return String(scriptProps_().getProperty('NP_API_KEY') || '').trim();
@@ -4896,6 +4909,7 @@ function npCall_(method, properties, opts) {
   var model = opts && opts.model ? String(opts.model) : 'Address';
   var eo = opts && opts.errOut ? opts.errOut : null;
   var quiet = !!(opts && opts.quiet);
+  var admin = !!(opts && opts.admin); // админское действие (накладная, трекинг, сверка отделения): отдельный счётчик
   function fail(why, api, nocall) {
     if (eo) { eo.text = npSafeReason_(why, key, 300); eo.api = !!api; eo.nocall = !!nocall; } // nocall — запрос в API не уходил (лимит)
     if (quiet) console.warn('np: ' + npSafeReason_(why, key)); else npReport_(why, key);
@@ -4906,11 +4920,12 @@ function npCall_(method, properties, opts) {
   var cached = noCache ? null : cache.get(cacheKey);
   if (cached) return JSON.parse(cached);
   // Счётчик за час: «число|начало окна». Окно не продлевается каждым запросом.
-  var now = Date.now(), parts = String(cache.get('np_calls') || '').split('|');
+  var ckCalls = admin ? 'np_calls_adm' : 'np_calls', maxCalls = admin ? NP_MAX_CALLS_PER_HOUR : NP_MAX_PUBLIC_CALLS_PER_HOUR;
+  var now = Date.now(), parts = String(cache.get(ckCalls) || '').split('|');
   var calls = parseInt(parts[0], 10) || 0, t0 = parseInt(parts[1], 10) || now;
   if (now - t0 > 3600000) { calls = 0; t0 = now; }
-  if (calls >= NP_MAX_CALLS_PER_HOUR) return fail('перевищено ліміт запитів на годину (' + NP_MAX_CALLS_PER_HOUR + ')', false, true);
-  cache.put('np_calls', (calls + 1) + '|' + t0, 3600);
+  if (calls >= maxCalls) return fail('перевищено ліміт запитів на годину (' + maxCalls + ')', false, true);
+  cache.put(ckCalls, (calls + 1) + '|' + t0, 3600);
   try {
     var res = UrlFetchApp.fetch(NP_API_URL, { method: 'post', contentType: 'application/json', muteHttpExceptions: true,
       payload: JSON.stringify({ apiKey: key, modelName: model, calledMethod: method, methodProperties: properties }) });
@@ -4934,6 +4949,13 @@ function npCall_(method, properties, opts) {
 function npSafeReason_(text, key, max) {
   var s = String(text === null || text === undefined ? '' : text);
   if (key) s = s.split(key).join('***');
+  ['NP_SENDER_REF', 'NP_SENDER_CONTACT', 'NP_SENDER_CITY', 'NP_SENDER_ADDRESS', 'NP_SENDER_PHONE'].forEach(function (k) {
+    var v = '';
+    try { v = String(scriptProps_().getProperty(k) || '').trim(); } catch (err) { v = ''; }
+    if (v.length >= 4) s = s.split(v).join('***');
+    var d = v.replace(/\D/g, '');
+    if (d.length >= 7) s = s.split(d).join('***'); // телефон в виде одних цифр
+  });
   return s.replace(/https?:\/\/\S+/gi, '[url]').replace(/\s+/g, ' ').trim().slice(0, max || 120);
 }
 
