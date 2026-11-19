@@ -547,6 +547,27 @@ async function main() {
       for (let i = 0; i < 144; i++) { w.now += 10 * MIN; await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush(); }
       ok(kv.puts.length - b <= 3, 'сутки при старой копии: записей KV ' + (kv.puts.length - b) + ' (<= 3)');
     }
+    // Expose-Headers во всех видах ответа /catalog
+    {
+      const EXP = (r) => r.headers.get('Access-Control-Expose-Headers') === 'X-Pamir-Cache';
+      const { w, wk } = await prep();
+      const seen = {};
+      let r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); seen[hdr(r)] = EXP(r);
+      w.now += 2 * MIN;
+      r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush(); seen[hdr(r)] = EXP(r);
+      w.now += 10 * MIN;
+      r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); seen[hdr(r)] = EXP(r);
+      w.gas.catalog = () => ({ status: 500, body: '' });
+      w.now += 10 * MIN;
+      r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); seen[hdr(r)] = EXP(r);
+      const w2 = makeEnv(); const wk2 = await loadWorker();
+      r = await wk2.fetch(req('GET', '/catalog'), w2.env, w2.ctx); seen[hdr(r)] = EXP(r);
+      ok(['HIT', 'STALE', 'REFRESHED', 'EXPIRED', 'MISS'].every((k) => seen[k] === true), 'Expose-Headers: X-Pamir-Cache в ответах ' + Object.keys(seen).join('/'));
+      const w3 = makeEnv(); const wk3 = await loadWorker();
+      w3.gas.catalog = () => ({ status: 500, body: '' });
+      r = await wk3.fetch(req('GET', '/catalog'), w3.env, w3.ctx);
+      ok(r.status === 502 && EXP(r), 'Expose-Headers и на 502');
+    }
     // purge: следующий запрос получает новый каталог
     {
       const { w, wk } = await prep();
