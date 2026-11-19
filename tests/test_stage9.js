@@ -456,7 +456,7 @@ function mkSets(opt) {
   ok(['SET-004', 'SET-005', 'SET-006'].every(id => a.by[id] && a.by[id].a === 0 && a.by[id].kp === undefined), 'состав «немає» / скрыт / нет в таблице: набор недоступен, kp нет', ['SET-004', 'SET-005', 'SET-006'].map(id => a.by[id].a));
   ok(a.by['SET-007'].a === 0 && a.by['SET-008'].a === 0 && a.by['SET-012'].a === 0, 'набор на себя, набор в наборе и пустой состав недоступны');
   ok(a.by['SET-009'].a === 1 && a.by['SET-009'].kp === undefined && a.by['SET-011'].kp === undefined, 'цена состава неоднозначна или неизвестна: kp не отдаётся');
-  ok(a.by['SET-010'].kp === 50 && a.by['SET-010'].a === 1, 'товар состава с единственной фасовкой: цена известна, kp = 50', a.by['SET-010']);
+  ok(a.by['SET-010'].kp === undefined && a.by['SET-010'].a === 1, 'весовой товар состава (даже с одной фасовкой) без цены упаковки: kp не отдаётся', a.by['SET-010']);
   ok(a.by['KIT-A'].ks === undefined && a.by['KIT-A'].kp === undefined, 'у обычного товара нет ks/kp');
   ok(!/СЕКРЕТ|do-smaku|33%/.test(a.text) && !/:999[,}]|:111[,}]|:222[,}]/.test(a.text), 'служебные колонки не утекают (в т.ч. с колонкой «Склад набору»)');
 
@@ -477,6 +477,49 @@ function mkSets(opt) {
   ok(at > 0 && T[at + 1] === NB.repeat(4) + '· Спеція А' && T[at + 2] === NB.repeat(4) + '· Спеція Б' && T[at + 3] === NB.repeat(4) + '· Спеція, В' && /^• Спеція А × 1 = 50 ₴$/.test(T[at + 4]) && /Разом: 320 ₴/.test(adm.payload.text), 'админу: набор строкой, состав под ней с отступом, затем обычная позиция', T.slice(at, at + 6));
   const cmp = JSON.parse(last[last.length - 1] || '{}');
   ok(JSON.stringify((cmp.i || []).map(x => x[0])) === JSON.stringify(['SET-001', 'KIT-A']), 'служебная запись заказа: набор — одна позиция (состав в неё не попадает)', cmp.i);
+}
+{
+  // Решение владельца: «окремо» = сумма цен упаковки (баночки) состава; ожидание 145 / 105 / 170.
+  // Цены баночек — из STAGE9_JARS (Stage9.gs), тот же источник, что кладёт их в таблицу.
+  const jarPrice = {};
+  require('vm').runInNewContext(require('fs').readFileSync(path.join(__dirname, '..', 'apps-script', 'Stage9.gs'), 'utf8') + '\nthis.J = STAGE9_JARS;', jarPrice);
+  const price = id => jarPrice.J.find(j => j.id === id).price;
+  const mk = (drop) => {
+    const s = build(); const rows = s.sheets['Товари']; const head = rows[0];
+    head.push('Склад набору'); rows.slice(1).forEach(r => r.push(''));
+    const add = (id, tp, p, comp, extra) => {
+      const row = head.map(() => '');
+      const put = (k, v) => { row[head.indexOf(k)] = v; };
+      put('ID', id); put('Категорія (UA)', 'Спеції'); put('Категория (RU)', 'Специи'); put('Назва (UA)', id); put('Название (RU)', id);
+      put('Наявність', 'є'); put('Тип', tp); put('Ціна за упаковку/шт', p); put('Склад набору', comp || '');
+      Object.keys(extra || {}).forEach(k => put(k, extra[k]));
+      put('Ціна конкурента', 999); put('Закупка', 111); put('Маржа', 222);
+      rows.push(row);
+    };
+    const sets = { 'SET-001': [135, ['SPS-001', 'SPS-006', 'SPS-007']], 'SET-002': [95, ['SPS-003', 'SPS-021', 'SPS-024']], 'SET-003': [155, ['SPS-012', 'SPS-009', 'SPS-014', 'SPS-010']] };
+    Object.keys(sets).forEach(k => sets[k][1].forEach(id => { rows.splice(rows.findIndex((r, i) => i > 0 && r[0] === id), 1); }));
+    Object.keys(sets).forEach(k => sets[k][1].forEach(id => add(id, 'упаковка', price(id))));
+    if (drop) drop(add, rows, head);
+    Object.keys(sets).forEach(k => add(k, 'упаковка', sets[k][0], sets[k][1].join(', ')));
+    return s;
+  };
+  const a = catalog(createGas(CODE, mk()));
+  ok(a.by['SET-001'].kp === 145 && a.by['SET-002'].kp === 105 && a.by['SET-003'].kp === 170, '«окремо» по цене баночки: SET-001 = 145, SET-002 = 105, SET-003 = 170', [1, 2, 3].map(i => a.by['SET-00' + i].kp));
+  ok(a.by['SET-001'].p === 135 && a.by['SET-002'].p === 95 && a.by['SET-003'].p === 155, 'цены наборов не изменились');
+  ok(!/:999[,}]|:111[,}]|:222[,}]/.test(a.text), 'служебные колонки не утекают');
+  const g1 = createGas(CODE, mk());
+  ok(order(g1, U(74), [{ id: 'SET-001', g: 0, q: 1 }], 135).ok === true && order(g1, U(74), [{ id: 'SET-001', g: 0, q: 1 }], 145).error === 'changed', 'сумма заказа — по цене набора, kp на неё не влияет');
+  // у одной специи нет цены за упаковку
+  const s2 = mk(); const h2 = s2.sheets['Товари'][0];
+  s2.sheets['Товари'].find(r => r[0] === 'SPS-006')[h2.indexOf('Ціна за упаковку/шт')] = '';
+  const b = catalog(createGas(CODE, s2));
+  ok(b.by['SET-001'].kp === undefined && b.by['SET-002'].kp === 105 && b.by['SET-001'].p === 135, 'у специи состава нет цены упаковки: kp у набора нет, у остальных есть');
+  // весовой товар с несколькими фасовками без цены упаковки
+  const s3 = mk(); const h3 = s3.sheets['Товари'][0];
+  const w = s3.sheets['Товари'].find(r => r[0] === 'SPS-007');
+  w[h3.indexOf('Тип')] = 'вагова'; w[h3.indexOf('Фасування')] = '100 г / 250 г'; w[h3.indexOf('Ціна за 1 кг')] = 500; w[h3.indexOf('Ціна за упаковку/шт')] = '';
+  const c = catalog(createGas(CODE, s3));
+  ok(c.by['SPS-007'].t === 'w' && c.by['SET-001'].kp === undefined && c.by['SET-001'].a === 1 && c.by['SET-003'].kp === 170, 'весовой товар с несколькими фасовками в составе: kp нет, набор доступен');
 }
 {
   // Экранирование в тексте админу; статистика не ломается от многострочной ячейки.

@@ -82,7 +82,7 @@ function makeKV() {
     async get(k, type) { const v = m.get(k); if (v === undefined) return null; return type === 'json' ? JSON.parse(v) : v; },
     async getWithMetadata(k) { const v = m.get(k); return v === undefined ? { value: null, metadata: null } : { value: v, metadata: meta.get(k) || null }; },
     async put(k, v, o) { m.set(k, v); meta.set(k, o && o.metadata); puts.push(k); },
-    puts,
+    puts, meta,
   };
 }
 
@@ -386,6 +386,67 @@ async function main() {
     w.gas.ping = () => 'throw';
     for (let i = 0; i < 20; i++) await tick();
     ok(kv.puts.length === 3, 'долгий сбой: ещё 2 записи (1-я и 2-я ошибка), дальше без записей');
+  });
+
+  await run('лимит записей KV: сутки работы', async (worker) => {
+    const cat = (upd, id) => JSON.stringify({ ok: true, updated: upd, products: [{ id }] });
+    // 24 ч, запрос каждую минуту, каталог не меняется (меняется только updated), cron раз в 5 мин
+    const kv = makeKV();
+    const w = makeEnv({ PAMIR_KV: kv, BOT_TOKEN: TOKEN, ADMIN_CHAT_IDS: '111' });
+    let n = 0;
+    w.gas.catalog = () => ({ status: 200, body: cat('t' + (++n), 'a') });
+    for (let i = 0; i < 1440; i++) {
+      w.now += 60000;
+      await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      await w.flush();
+      if (i % 5 === 0) { await worker.scheduled({}, w.env, w.ctx); await w.flush(); }
+    }
+    const catPuts = kv.puts.filter((k) => k === 'catalog').length;
+    ok(catPuts <= 3, 'сутки без изменений каталога: записей каталога ' + catPuts + ' (<= 3)');
+    ok(kv.puts.length <= 5, 'сутки обычной работы: всего записей KV ' + kv.puts.length + ' (<= 5)');
+    // несколько холодных изолятов подряд не множат записи
+    const b0 = kv.puts.length;
+    for (let i = 0; i < 5; i++) { const wk = await loadWorker(); w.now += 61000; await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush(); }
+    ok(kv.puts.length <= b0 + 1, '5 холодных изолятов с тем же каталогом: не больше 1 записи (плановое обновление раз в 12 ч), было ' + (kv.puts.length - b0));
+    // изменение каталога — ровно одна запись
+    w.gas.catalog = () => ({ status: 200, body: cat('t', 'b') });
+    w.now += 61000;
+    const b1 = kv.puts.length;
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush();
+    ok(kv.puts.length === b1 + 1, 'изменение каталога: ровно 1 запись');
+    // два изолята заметили изменение одновременно — всё равно одна запись
+    const wA = await loadWorker(), wB = await loadWorker();
+    w.gas.catalog = () => ({ status: 200, body: cat('t', 'c') });
+    w.now += 61000;
+    const b2 = kv.puts.length;
+    await Promise.all([wA.fetch(req('GET', '/catalog'), w.env, w.ctx), wB.fetch(req('GET', '/catalog'), w.env, w.ctx)]);
+    await w.flush();
+    ok(kv.puts.length <= b2 + 2 && kv.puts.length >= b2 + 1, 'два изолята, одно изменение: записей ' + (kv.puts.length - b2) + ' (<= 2)');
+    // purge без изменений — 0 записей
+    const b3 = kv.puts.length;
+    w.now += 61000;
+    await worker.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w.env, w.ctx); await w.flush();
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+    ok(kv.puts.length <= b3 + 1, 'purge: записей ' + (kv.puts.length - b3) + ' (<= 1)');
+    // purge при изменении — 1 запись
+    const b4 = kv.puts.length;
+    w.gas.catalog = () => ({ status: 200, body: cat('t', 'd') });
+    w.now += 61000;
+    await worker.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w.env, w.ctx); await w.flush();
+    ok(kv.puts.length === b4 + 1, 'purge с изменением: ровно 1 запись');
+    // метаданные хранят хэш, в них нет тела
+    const meta = kv.meta ? kv.meta.get('catalog') : null;
+    ok(!meta || (typeof meta.h === 'string' && meta.h.length === 64), 'хэш SHA-256 лежит в metadata вместе со значением');
+  });
+
+  await run('лимит записей KV: Cache API снимает чтения KV', async (worker) => {
+    const kv = makeKV();
+    let reads = 0; const g = kv.getWithMetadata; kv.getWithMetadata = async (...a) => { reads++; return g(...a); };
+    const w = makeEnv({ PAMIR_KV: kv });
+    await worker.fetch(req('GET', '/catalog'), w.env, w.ctx);
+    const r0 = reads;
+    for (let i = 0; i < 20; i++) { const wk = await loadWorker(); await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); }
+    ok(reads === r0, '20 холодных изолятов при рабочем Cache API: 0 чтений KV');
   });
 
   await run('горячий путь /catalog: JSON не разбирается повторно', async (worker) => {
