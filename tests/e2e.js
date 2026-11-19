@@ -1952,7 +1952,7 @@ const smallTargets = page => page.evaluate(() => {
         }
         if (action === 'np.whall') {
           calls.whall++;
-          if (o.whall === 'error') return send({ ok: false });
+          if (o.whall === 'error') return send({ ok: false, error: 'unknown_action' }); // старый бэкенд не знает np.whall (лимит НП — отдельный сценарий Б3)
           if (o.whall === 'hang') return send({ ok: true, list: WH }, 6500);
           if (o.whall === 'slow') { Promise.resolve(o.gate).then(() => send({ ok: true, list: WH })); return; } // ответ держим до команды теста (не по таймеру: иначе гонка с медленным прогоном)
           return send({ ok: true, list: WH });
@@ -2391,7 +2391,7 @@ const smallTargets = page => page.evaluate(() => {
     const before = async page => {
       await page.route(/\/img\/products\//, r => {
         const u = r.request().url(); reqs.push(u);
-        if (/\/s\/DRY-001\.webp\?v=26$/.test(u) || /DRY-002\.webp\?v=26$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
+        if (/\/s\/DRY-001\.webp\?v=27$/.test(u) || /DRY-002\.webp\?v=27$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
         r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg });
       });
       await page.route('https://drive.google.com/**', r => { reqs.push(r.request().url()); r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg }); });
@@ -2401,21 +2401,21 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForTimeout(700);
     const src = id => page.evaluate(i => { const im = document.querySelector('#grid .card[data-id="' + i + '"] .card__img img'); return im ? im.getAttribute('src') : null; }, id);
     const has = re => reqs.some(u => re.test(u));
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=26$/) && !has(/\/img\/products\/DRY-039\.webp\?v=26$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
-    ok(/\/img\/products\/DRY-001\.webp\?v=26$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=26$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
-    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=26$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=26$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=27$/) && !has(/\/img\/products\/DRY-039\.webp\?v=27$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
+    ok(/\/img\/products\/DRY-001\.webp\?v=27$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=27$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
+    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=27$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=27$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
     const catImg = st.gas.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-003').img;
     ok(/drive\.google\.com/.test(catImg) && await src('DRY-003') === catImg && !/\/s\//.test(await src('DRY-003')), 'адрес Google Drive не меняется', [catImg, await src('DRY-003')]);
     const miniSrc = await page.evaluate(() => { const im = document.querySelector('.mini[data-id="DRY-039"] img'); return im ? im.getAttribute('src') : ''; });
-    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=26$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
+    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=27$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
     await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
     await page.waitForSelector('.sheet__img img');
     await page.waitForTimeout(300);
-    ok(/\/img\/products\/DRY-039\.webp\?v=26$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=26$/), 'шторка товара берёт большое фото');
+    ok(/\/img\/products\/DRY-039\.webp\?v=27$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=27$/), 'шторка товара берёт большое фото');
     await page.click('[data-action="add"]');
     await page.click('#toastBtn');
     await page.waitForSelector('.line__img img');
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await ctx.close(); st.server.close();
     // файлы: у каждого большого фото есть копия не тяжелее 30 КБ
@@ -2455,7 +2455,7 @@ const smallTargets = page => page.evaluate(() => {
       await page.waitForSelector('#grid .card');
       const tag = ' (' + theme + ')';
       const cardSrc = await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-039"] .card__img img').getAttribute('src'));
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
       await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
       await page.waitForSelector('.sheet__strip');
       await page.waitForTimeout(400);
@@ -2465,7 +2465,7 @@ const smallTargets = page => page.evaluate(() => {
         return { first: sl[0].getAttribute('src'), second: sl[1].getAttribute('src'), lazy: sl[1].getAttribute('loading'), cur: d.map(x => x.classList.contains('is-on')), tag: d.map(x => x.tagName), hidden: document.querySelector('.sheet__dots').getAttribute('aria-hidden'),
           gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), dist: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().left), snap: getComputedStyle(document.querySelector('.sheet__strip')).scrollSnapType };
       });
-      ok(/\/img\/products\/DRY-039\.webp\?v=26$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=26$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
+      ok(/\/img\/products\/DRY-039\.webp\?v=27$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=27$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
       ok(info.cur[0] === true && info.cur[1] === false && /x mandatory/.test(info.snap), 'активна первая точка; у ленты scroll-snap' + tag, info);
       const dots = await page.evaluate(() => { const b = document.querySelector('.sheet__dots'), r = b.getBoundingClientRect(), d = [].slice.call(b.querySelectorAll('.sheet__dot')); return { tag: b.tagName, label: b.getAttribute('aria-label'), w: Math.round(r.width), h: Math.round(r.height), n: d.length, gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), hid: d.every(x => x.getAttribute('aria-hidden') === 'true') }; });
       ok(dots.tag === 'BUTTON' && dots.label === 'Наступне фото' && dots.w >= 44 && dots.h >= 44 && dots.n === 2 && dots.gap >= 8 && dots.gap <= 10 && dots.hid, 'полоска точек — одна кнопка ≥ 44×44 с подписью «Наступне фото», точки внутри на расстоянии 8–10 px' + tag, dots);
@@ -2496,7 +2496,7 @@ const smallTargets = page => page.evaluate(() => {
       // корзина — только первое фото (маленькая копия)
       await page.click('[data-action="add"]'); await page.click('#toastBtn');
       await page.waitForSelector('.line__img img');
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=27$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
       ok(!reqs.some(u => /\/s\/p\//.test(u)), 'маленькой копии второго фото не запрашивали' + tag, reqs.filter(u => /\/p\//.test(u)));
       await ctx.close();
 
@@ -3367,7 +3367,7 @@ const smallTargets = page => page.evaluate(() => {
     const e1 = items();
     ok(e1.length === 1 && /boom1/.test(e1[0].m) && !/123 45 67|\+380 50/.test(e1[0].m) && e1[0].m.length <= 200, 'ошибка скрипта уходит записью err; телефон из текста вычищен', e1);
     const body1 = JSON.stringify(errReqs[0]);
-    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '26' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (23); без initData и данных покупателя', body1);
+    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '27' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (27); без initData и данных покупателя', body1);
     ok(await c.page.evaluate(() => /^[a-z0-9]{8,32}$/.test(localStorage.getItem('pamir_did'))), 'did — случайная строка в хранилище устройства');
     // одинаковые подряд не дублируются
     await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');
@@ -4186,6 +4186,206 @@ const smallTargets = page => page.evaluate(() => {
       ok(sentOld && !('cityRef' in sentOld) && sentOld.delivery === 'np', 'старый бэкенд: заказ как раньше, без cityRef');
       ok(o.errors.length === 0, 'старый бэкенд: в консоли нет ошибок', o.errors);
       await o.ctx.close(); so.server.close();
+    }
+
+    /* ---- Б3. Лимит запросов к Новой почте: счётчик np.*, кэш, пауза ---- */
+    console.log('Волна Б3 · лимит запросов к Нової пошті (360 px)');
+    {
+      /** Заглушка НП со счётчиком. mode.limit = { actions: ['np.city', …] | null (все), error, retryAfter } — ответ-ошибка лимита. */
+      const b3open = async (st3, uid, o) => {
+        o = o || {};
+        const log = [], mode = { limit: null };
+        const c = await open(browser, st3.url, { uid, theme: o.theme, lc: o.lc, start: 'DRY-039', before: async p => {
+          await p.addInitScript(() => { window.__skew = 0; const d = Date.now.bind(Date); Date.now = () => d() + window.__skew; }); // управляемое время: сдвиг часов страницы
+          await p.route(/\/api\?.*action=np\./, route => {
+            const u = new URL(route.request().url()), a = u.searchParams.get('action');
+            log.push({ a, q: u.searchParams.get('q'), w: Number(u.searchParams.get('w')) });
+            const send = b => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(b) }).catch(() => {});
+            if (mode.limit && (!mode.limit.actions || mode.limit.actions.includes(a))) { const r = { ok: false, error: mode.limit.error || 'np_error' }; if (mode.limit.retryAfter) r.retryAfter = mode.limit.retryAfter; return send(r); }
+            if (a === 'np.city') return send({ ok: true, list: CITIES(u.searchParams.get('q')).concat(u.searchParams.get('q').toLowerCase().indexOf('ки') === 0 ? [{ n: 'м. Київ, Київська обл.', s: 'Київ', ref: '33333333-3333-3333-3333-333333333333' }] : []) });
+            if (a === 'np.whall') return send({ ok: true, list: [[12, 'вул. Сумська, 12', 'w']] });
+            if (a === 'np.price') return send({ ok: true, cost: priceFor(Number(u.searchParams.get('w'))) });
+            return send({ ok: false });
+          });
+        } });
+        const n = a => log.filter(x => x.a === a).length;
+        const closeSheet = async () => { await c.page.waitForTimeout(500); await c.page.evaluate(() => { const b = document.querySelector('#sheet .sheet__close'); if (b && !document.getElementById('sheet').hidden) b.click(); }); };
+        await c.page.waitForSelector('.sheet__title');
+        await c.page.click('#sheet [data-action="add"]');
+        await c.page.click('.tabbar [data-go="cart"]'); await c.page.waitForSelector('.line');
+        await c.page.evaluate(() => window.__tg.main.cb()); await c.page.waitForSelector('#form');
+        await c.page.locator('.opt', { hasText: o.lc === 'ru' ? 'Новая почта' : 'Нова пошта' }).first().click();
+        const skew = ms => c.page.evaluate(v => { window.__skew += v; }, ms);
+        return { c, log, mode, n, skew, closeSheet, page: c.page };
+      };
+      const sugg = (page, id) => page.locator('#' + id + ' button').allInnerTexts();
+      const cntStr = L => ['np.city', 'np.whall', 'np.wh', 'np.price'].map(a => a + '=' + L.n(a)).join(' ');
+
+      const stB3 = await mkSt(8920, { np: true, npp: 1 });
+      /* --- Б3-1. Обычное оформление: набор, выбор, отделение, корзина, возврат, перезагрузка --- */
+      {
+        const L = await b3open(stB3, 930, {}), p = L.page;
+        await p.locator('#f-city').click();
+        await p.type('#f-city', 'Харків', { delay: 80 });
+        await p.waitForSelector('#citySugg button');
+        await p.waitForTimeout(1500);
+        ok(L.n('np.city') <= 2 && L.n('np.city') >= 1, 'Б3: «Харків» по буквам (80 мс) — не больше 2 запросов np.city (факт: ' + L.n('np.city') + ')', L.log);
+        ok(L.n('np.price') === 0 && L.n('np.whall') === 0, 'Б3: пока город не выбран — 0 запросов np.price и np.whall', cntStr(L));
+        const c1 = L.n('np.city');
+        await p.fill('#f-city', 'Ха'); await p.waitForTimeout(1000);
+        ok(L.n('np.city') === c1 && await p.locator('#citySugg').isHidden() && await p.inputValue('#f-city') === 'Ха', 'Б3: 2 буквы — запроса нет, поле принимает любой текст', cntStr(L));
+        await p.fill('#f-city', 'Харків'); await p.waitForSelector('#citySugg button'); await p.waitForTimeout(900);
+        ok(L.n('np.city') === c1 && L.n('np.price') === 0, 'Б3: тот же текст — из кэша, 0 новых запросов np.city и 0 np.price', cntStr(L));
+        await p.locator('#citySugg button').first().click();
+        await p.waitForFunction(() => document.querySelector('.js-npcost') && !document.querySelector('.js-npcost').hidden);
+        await p.waitForTimeout(800);
+        ok(L.n('np.price') === 1 && L.n('np.whall') === 1 && L.n('np.city') === c1, 'Б3: после выбора города — ровно 1 np.price и 1 np.whall, np.city не растёт', cntStr(L));
+        await p.fill('#f-city', 'Харків'); await p.waitForTimeout(900);
+        ok(L.n('np.city') === c1 && L.n('np.price') === 1 && L.n('np.whall') === 1, 'Б3: текст совпал с выбранным городом — запросов нет', cntStr(L));
+        await p.fill('#f-branch', '1'); await p.fill('#f-branch', '12'); await p.waitForTimeout(900);
+        ok(/^№12,/.test((await sugg(p, 'whSugg'))[0] || '') && L.n('np.whall') === 1 && L.n('np.wh') === 0, 'Б3: номер «12» ищется по уже загруженному списку — без запроса', cntStr(L));
+        await p.click('[data-nav="back"]'); await p.waitForSelector('.line'); await p.waitForTimeout(700);
+        ok(L.n('np.price') === 1, 'Б3: возврат в корзину — 0 новых np.price', cntStr(L));
+        await p.click('[data-line-step="1"]'); await p.waitForTimeout(1000);
+        ok(L.n('np.price') === 1, 'Б3: +1 товар в той же ступени веса — 0 новых np.price', cntStr(L));
+        await p.click('[data-line-step="1"]');
+        await p.waitForFunction(() => /95/.test((document.querySelector('.js-npcost .np-cost__v') || {}).textContent || ''));
+        ok(L.n('np.price') === 2, 'Б3: другая ступень веса — ровно 1 новый np.price', cntStr(L));
+        await p.click('[data-line-step="-1"]'); await p.click('[data-line-step="-1"]'); await p.waitForTimeout(1000);
+        ok(L.n('np.price') === 2 && NB(await text(p, '.js-npcost .np-cost__v')) === '≈ 85 ₴ за тарифом Нової пошти', 'Б3: возврат к уже спрошенной ступени — из кэша, 0 запросов', cntStr(L));
+        await p.evaluate(() => window.__tg.main.cb()); await p.waitForSelector('#form'); await p.waitForTimeout(900);
+        await p.click('#f-branch'); await p.click('#f-phone'); await p.click('#f-branch'); await p.waitForTimeout(500);
+        ok(L.n('np.price') === 2 && L.n('np.city') === c1 && L.n('np.whall') === 1, 'Б3: повторный вход в оформление, фокус/уход с поля — 0 новых запросов', cntStr(L));
+        const before = L.log.length;
+        await p.reload({ waitUntil: 'networkidle' }); await L.closeSheet(); await p.waitForTimeout(1500);
+        ok(L.log.length === before, 'Б3: перезагрузка магазина с сохранённой формой — 0 запросов np.* до открытия корзины', L.log.slice(before));
+        await p.click('.tabbar [data-go="cart"]'); await p.waitForSelector('.line'); await p.waitForTimeout(1200);
+        ok(L.log.length === before && await costVisible(p), 'Б3: корзина после перезагрузки в той же вкладке — цена из sessionStorage, 0 запросов', L.log.slice(before));
+        await p.evaluate(() => sessionStorage.clear());
+        await p.reload({ waitUntil: 'networkidle' }); await L.closeSheet(); await p.waitForTimeout(1200);
+        const b2 = L.log.length;
+        ok(b2 === before, 'Б3: новая сессия (sessionStorage пуст) — на старте магазина 0 запросов np.*', L.log.slice(before));
+        await p.click('.tabbar [data-go="cart"]'); await p.waitForSelector('.line');
+        await p.waitForFunction(() => document.querySelector('.js-npcost') && !document.querySelector('.js-npcost').hidden);
+        ok(L.n('np.price') === 3 && L.log.length === b2 + 1, 'Б3: запрос цены ушёл, только когда открыли корзину (1 запрос)', L.log.slice(b2));
+        await p.evaluate(() => window.__tg.main.cb()); await p.waitForSelector('#form');
+        await p.click('#f-branch'); await p.waitForTimeout(800);
+        ok(L.n('np.city') === c1 && L.n('np.whall') === 2 && L.n('np.price') === 3, 'Б3: восстановленный город: при фокусе отделения — список отделений 1 раз, np.city не нужен', cntStr(L));
+        await p.screenshot({ path: OUT + '/b3-np-limit-ok-light.png' });
+        ok(await noOverflow(p) && (await smallTargets(p)).length === 0, 'Б3: 360 px без прокрутки, кнопки ≥ 44 px', await smallTargets(p));
+        const sentB3 = await sendOrder(p, stB3);
+        ok(sentB3 && sentB3.cityRef === REF_KH && sentB3.delivery === 'np' && sentB3.branch === '12', 'Б3: заказ уходит как раньше, cityRef на месте', sentB3 && [sentB3.cityRef, sentB3.branch]);
+        console.log('  Б3 итого за оформление (обычная скорость): ' + cntStr(L));
+        ok(L.c.errors.length === 0, 'Б3: в консоли нет ошибок', L.c.errors);
+        await L.c.ctx.close();
+      }
+      /* --- Б3-2. Медленный набор (буква в секунду) и тёмная тема RU --- */
+      {
+        const L = await b3open(stB3, 931, { theme: 'dark', lc: 'ru' }), p = L.page;
+        await p.locator('#f-city').click();
+        await p.type('#f-city', 'Харків', { delay: 1000 });
+        await p.waitForSelector('#citySugg button'); await p.waitForTimeout(900);
+        ok(L.n('np.city') <= 4 && L.n('np.price') === 0, 'Б3: «Харків» по букве в секунду — не больше 4 запросов (от 3-й буквы; факт: ' + L.n('np.city') + '), 0 np.price', cntStr(L));
+        await p.screenshot({ path: OUT + '/b3-np-limit-slow-dark-ru.png' });
+        ok(await noOverflow(p) && (await smallTargets(p)).length === 0 && L.c.errors.length === 0, 'Б3 (тёмная, RU): 360 px, кнопки ≥ 44 px, без ошибок', [await smallTargets(p), L.c.errors]);
+        await L.c.ctx.close();
+      }
+      /* --- Б3-3. Лимит НП на подсказках города: {ok:false,error:'np_error'} → пауза 10 минут --- */
+      {
+        const L = await b3open(stB3, 932, {}), p = L.page;
+        L.mode.limit = { error: 'np_error' };
+        await p.locator('#f-city').click();
+        await p.type('#f-city', 'Харків', { delay: 80 });
+        await p.waitForTimeout(1500);
+        ok(L.log.length === 1 && await p.locator('#citySugg').isHidden() && await p.locator('#cityBusy').isHidden() && await count(p, '.form__err:not([hidden])') === 0 && !/Нов|тариф|помил|ліміт/i.test((await p.locator('.toast:not([hidden])').allInnerTexts()).join(' ')), 'Б3 лимит: один запрос получил ошибку — подсказок и сообщений покупателю нет', L.log);
+        await p.type('#f-city', 'а', { delay: 50 }); await p.fill('#f-city', 'Київ'); await p.waitForTimeout(1500);
+        await p.fill('#f-branch', '12');
+        await p.locator('#cityChips .chip', { hasText: 'Київ' }).click(); await p.waitForTimeout(800);
+        await p.click('#f-branch'); await p.click('#f-phone'); await p.waitForTimeout(500);
+        ok(L.log.length === 1, 'Б3 лимит: после ошибки ввод города, чип, фокус отделения — 0 новых запросов np.*', L.log);
+        await L.skew(5 * 60 * 1000); await p.fill('#f-city', 'Харкі'); await p.waitForTimeout(1500);
+        ok(L.log.length === 1, 'Б3 лимит: через 5 минут (пауза 10) — всё ещё 0 запросов', L.log);
+        await p.fill('#f-city', 'Київ'); await p.fill('#f-branch', '15');
+        await p.screenshot({ path: OUT + '/b3-np-limit-pause-light.png' });
+        await L.skew(6 * 60 * 1000); L.mode.limit = null;
+        await p.fill('#f-city', 'Харк'); await p.waitForSelector('#citySugg button');
+        ok(L.n('np.city') === 2, 'Б3 лимит: после 10 минут запросы возобновились (np.city 2-й раз) и подсказки снова есть', L.log);
+        await p.locator('#citySugg button').first().click();
+        await p.waitForFunction(() => document.querySelector('.js-npcost') && !document.querySelector('.js-npcost').hidden);
+        ok(L.n('np.whall') === 1 && L.n('np.price') === 1, 'Б3 лимит: после паузы выбор города — 1 np.whall и 1 np.price', cntStr(L));
+        const sentL = await sendOrder(p, stB3);
+        ok(sentL && sentL.cityRef === REF_KH && sentL.delivery === 'np', 'Б3 лимит: после паузы заказ с cityRef как раньше', sentL && sentL.cityRef);
+        ok(L.c.errors.length === 0, 'Б3 лимит: в консоли нет ошибок', L.c.errors);
+        await L.c.ctx.close();
+      }
+      /* --- Б3-4. Лимит с retryAfter (секунды) и заказ руками во время паузы --- */
+      {
+        const L = await b3open(stB3, 933, {}), p = L.page;
+        L.mode.limit = { error: 'np_error', retryAfter: 120 };
+        await p.fill('#f-city', 'Харк'); await p.waitForTimeout(1500);
+        ok(L.log.length === 1, 'Б3 retryAfter: один запрос, ответ с retryAfter=120', L.log);
+        await L.skew(90 * 1000); await p.fill('#f-city', 'Харкі'); await p.waitForTimeout(1500);
+        ok(L.log.length === 1, 'Б3 retryAfter: через 90 с (< 120) — 0 запросов', L.log);
+        await p.fill('#f-city', 'Невідоме місто'); await p.fill('#f-branch', '15'); await p.waitForTimeout(600);
+        const sentM = await sendOrder(p, stB3);
+        ok(sentM && sentM.delivery === 'np' && sentM.city === 'Невідоме місто' && sentM.branch === '15' && !('cityRef' in sentM) && L.log.length === 1, 'Б3 retryAfter: во время паузы город и отделение вводятся руками, заказ уходит без запросов np.*', sentM && [sentM.city, sentM.branch]);
+        await L.c.ctx.close();
+        const L2 = await b3open(stB3, 934, {}), p2 = L2.page;
+        L2.mode.limit = { error: 'np_error', retryAfter: 120 };
+        await p2.fill('#f-city', 'Харк'); await p2.waitForTimeout(1500);
+        await L2.skew(130 * 1000); L2.mode.limit = null;
+        await p2.fill('#f-city', 'Харкі'); await p2.waitForSelector('#citySugg button');
+        ok(L2.n('np.city') === 2, 'Б3 retryAfter: через 130 с (> 120) запросы возобновились', L2.log);
+        await L2.c.ctx.close();
+      }
+      /* --- Б3-5. Лимит на np.price: пауза включается, цена не повторяется раньше 10 минут --- */
+      {
+        const L = await b3open(stB3, 935, {}), p = L.page;
+        L.mode.limit = { error: 'np_error', actions: ['np.price'] };
+        await p.type('#f-city', 'Харк', { delay: 60 }); await p.waitForSelector('#citySugg button');
+        await p.locator('#citySugg button').first().click(); await p.waitForTimeout(1500);
+        ok(L.n('np.price') === 1 && !(await costVisible(p)) && await count(p, '.form__err:not([hidden])') === 0, 'Б3 price-лимит: 1 запрос, строки стоимости и сообщений нет', cntStr(L));
+        const t0 = L.log.length;
+        await p.click('[data-nav="back"]'); await p.waitForSelector('.line');
+        await p.click('[data-line-step="1"]'); await p.click('[data-line-step="1"]'); await p.waitForTimeout(1500);
+        await p.evaluate(() => window.__tg.main.cb()); await p.waitForSelector('#form');
+        await p.fill('#f-city', 'Київ'); await p.waitForTimeout(1500);
+        ok(L.log.length === t0, 'Б3 price-лимит: смена веса, возврат в оформление, ввод города — 0 новых запросов np.*', L.log.slice(t0));
+        await L.skew(11 * 60 * 1000); L.mode.limit = null;
+        await p.fill('#f-city', 'Київ'); await p.waitForSelector('#citySugg button');
+        ok(L.n('np.city') === 2, 'Б3 price-лимит: после 10 минут подсказки города снова работают', cntStr(L));
+        await p.locator('#citySugg button').first().click();
+        await p.waitForFunction(() => /\d/.test((document.querySelector('.js-npcost .np-cost__v') || {}).textContent || ''));
+        ok(L.n('np.price') === 2 && L.log[L.log.length - 1].a !== undefined, 'Б3 price-лимит: после паузы цена запрошена снова (1 запрос)', cntStr(L));
+        await L.c.ctx.close();
+      }
+      /* --- Б3-6. Нет sessionStorage (запрещён): всё работает в памяти, ошибок нет --- */
+      {
+        const L = await b3open(stB3, 936, {}), p = L.page;
+        await p.evaluate(() => { try { Object.defineProperty(window, 'sessionStorage', { get() { throw new Error('denied'); } }); } catch (e) { /* ignore */ } });
+        await p.type('#f-city', 'Харк', { delay: 60 }); await p.waitForSelector('#citySugg button');
+        await p.locator('#citySugg button').first().click();
+        await p.waitForFunction(() => document.querySelector('.js-npcost') && !document.querySelector('.js-npcost').hidden);
+        ok(L.n('np.price') === 1 && L.c.errors.length === 0, 'Б3: sessionStorage недоступен — цена работает из памяти, ошибок нет', [cntStr(L), L.c.errors]);
+        await L.c.ctx.close();
+      }
+      /* --- Б3-7. Ошибка np.whall: не переходим на np.wh и не повторяем np.whall до конца паузы --- */
+      for (const ra of [0, 120]) {
+        const L = await b3open(stB3, 937 + ra, {}), p = L.page;
+        L.mode.limit = { error: 'np_error', actions: ['np.whall'], retryAfter: ra || undefined };
+        await p.type('#f-city', 'Харк', { delay: 60 }); await p.waitForSelector('#citySugg button');
+        await p.locator('#citySugg button').first().click(); await p.waitForTimeout(1000);
+        ok(L.n('np.whall') === 1, 'Б3 whall (retryAfter=' + ra + '): список отделений запрошен 1 раз и получил ошибку', cntStr(L));
+        await p.click('#f-branch'); await p.type('#f-branch', '12', { delay: 400 }); await p.waitForTimeout(1200);
+        await p.click('#f-phone'); await p.click('#f-branch'); await p.click('#f-phone'); await p.click('#f-branch');
+        await L.skew(40 * 1000); await p.click('#f-phone'); await p.click('#f-branch'); await p.type('#f-branch', '5', { delay: 200 }); await p.waitForTimeout(1200);
+        ok(L.n('np.whall') === 1 && L.n('np.wh') === 0 && await p.locator('#whSugg').isHidden(), 'Б3 whall (retryAfter=' + ra + '): набор номера и повторные фокусы в паузе — 0 запросов np.wh и 0 повторов np.whall', cntStr(L));
+        await L.skew((ra ? 100 : 11 * 60) * 1000); L.mode.limit = null; // пауза кончилась (120 с или 10 минут)
+        await p.click('#f-phone'); await p.click('#f-branch'); await p.waitForTimeout(1000);
+        ok(L.n('np.whall') === 2 && L.n('np.wh') === 0, 'Б3 whall (retryAfter=' + ra + '): после паузы список запрошен ещё раз (1 запрос), np.wh не нужен', cntStr(L));
+        await L.c.ctx.close();
+      }
+      stB3.server.close();
     }
 
     /* ---- 3. Админ: «Створити ТТН» ---- */

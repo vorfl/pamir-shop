@@ -4449,19 +4449,62 @@
 
   /* ---- 1.7 Нова пошта: тип доставки, города, подсказки (если на сервере задан NP_API_KEY) ---- */
   var NP_CITIES = [['Харків', 'Харьков'], ['Київ', 'Киев'], ['Дніпро', 'Днепр'], ['Львів', 'Львов'], ['Одеса', 'Одесса'], ['Запоріжжя', 'Запорожье'], ['Вінниця', 'Винница'], ['Полтава', 'Полтава']];
-  var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0, resolving: false, whAt: {}, whPending: {} };
+  var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0, resolving: false, whAt: {}, whPending: {}, chosen: null, flight: '', queued: null, req: {}, whq: {} };
   var NP_TIMEOUT = 5000;
+  var NP_MIN = 3;               // подсказки города — от 3 букв; короче поле просто принимает любой текст
+  var NP_DEBOUNCE = 600;        // пауза после последней буквы перед запросом
+  var NP_PAUSE_MS = 10 * 60 * 1000; // после ошибки Новой почты (лимит и т.п.) запросов np.* не шлём 10 минут
   var NP_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  /** Ref города Новой почты для текста города city: выбран из подсказки (np.ref) или восстановлен из сохранённой формы; введён руками — пусто. */
-  function npRefNow(city) {
-    var f = state.form;
-    if (np.ref && NP_UUID.test(np.ref)) return np.ref;
-    return f.cityRef && f.cityRefFor === city && NP_UUID.test(f.cityRef) ? f.cityRef : '';
+  function ssGet(k) { try { return window.sessionStorage.getItem(k); } catch (e) { return null; } }
+  function ssSet(k, v) { try { window.sessionStorage.setItem(k, v); } catch (e) { /* хранилище недоступно — живём в памяти */ } }
+  /* --- пауза: Нова пошта ответила ошибкой — до её конца витрина не шлёт np.*, поля работают вручную, покупателю ничего не показываем --- */
+  var npPauseUntil = Number(ssGet('pamir_nppause_v1')) || 0;
+  function npPaused() { return Date.now() < npPauseUntil; }
+  function npPauseSet(res) {
+    var ra = res && Number(res.retryAfter), ms = ra > 0 ? Math.min(ra, 3600) * 1000 : NP_PAUSE_MS; // retryAfter — секунды, поле необязательное
+    npPauseUntil = Date.now() + ms;
+    ssSet('pamir_nppause_v1', String(npPauseUntil));
+    clearTimeout(np.timer); clearTimeout(np.whTimer); clearTimeout(npc.timer); npc.want = ''; np.queued = null;
   }
+  /** Запрос np.* через единую дверь: в паузе не уходит; ответ ok:false (кроме «старый бэкенд не знает действие») включает паузу. */
+  function npGet(query, limit) {
+    if (npPaused()) return Promise.reject(new Error('np_pause'));
+    return apiGetTimed(query, limit).then(function (res) {
+      if (res && res.ok === false && res.error !== 'unknown_action') npPauseSet(res);
+      return res;
+    });
+  }
+  /** Ref города Новой почты для текста города city: выбран из подсказки (np.ref), совпадает с ранее выбранным или восстановлен из сохранённой формы; введён руками — пусто. */
+  function npRefNow(city) {
+    if (np.ref && NP_UUID.test(np.ref)) return np.ref;
+    return npKnownRef(city);
+  }
+  /** Ref, если текст city совпадает с уже выбранным городом (в этой сессии или в сохранённой форме); иначе пусто. Запрос к серверу для такого текста не нужен. */
+  function npKnownRef(city) {
+    var f = state.form, low = npKey(city);
+    if (!low) return '';
+    if (np.chosen && np.chosen.t === low && NP_UUID.test(np.chosen.ref)) return np.chosen.ref;
+    if (f.cityRef && f.cityRefFor && npKey(f.cityRefFor) === low && NP_UUID.test(f.cityRef)) { np.chosen = { t: low, ref: f.cityRef }; return f.cityRef; }
+    return '';
+  }
+  function npKey(q) { return String(q || '').trim().replace(/\s+/g, ' ').toLowerCase(); }
 
   /* --- стоимость доставки «≈ 85 ₴ за тарифом Нової пошти» (только при shop.npp = 1; в сумму заказа не входит) --- */
+  // Не чаще одного запроса на пару (город, ступень веса 0,5 кг) за сессию: кэш в памяти и в sessionStorage; после ошибки — не раньше чем через 10 минут.
   var npc = { cache: {}, failAt: {}, timer: null, want: '' };
-  var NPC_DEBOUNCE = 400, NPC_RETRY_MS = 60000;
+  var NPC_DEBOUNCE = 400, NPC_RETRY_MS = NP_PAUSE_MS;
+  (function () {
+    try {
+      var s = JSON.parse(ssGet('pamir_npc_v1') || '{}');
+      Object.keys(s.c || {}).forEach(function (k) { if (Number(s.c[k]) > 0) npc.cache[k] = Number(s.c[k]); });
+      Object.keys(s.f || {}).forEach(function (k) { npc.cache[k] = 'fail'; npc.failAt[k] = Number(s.f[k]) || 0; });
+    } catch (e) { /* битая запись — начинаем с пустого кэша */ }
+  })();
+  function npcSave() {
+    var s = { c: {}, f: {} };
+    Object.keys(npc.cache).forEach(function (k) { if (typeof npc.cache[k] === 'number') s.c[k] = npc.cache[k]; else if (npc.cache[k] === 'fail') s.f[k] = npc.failAt[k] || 0; });
+    ssSet('pamir_npc_v1', JSON.stringify(s));
+  }
   function npCostOn() { return Number(shopInfo().npp) === 1 && !!cfg.API_URL; }
   /** Что спрашивать у сервера сейчас: город, вес корзины, сумма. null — не хватает данных (нет города с ref, не наш вид доставки, вес хоть одной позиции неизвестен). */
   function npCostTarget() {
@@ -4486,7 +4529,7 @@
     if (!w) return '';
     var c = npc.cache[w.key];
     if (typeof c === 'number') return tf('npCost', { n: money(c) });
-    if (c === undefined || (c === 'fail' && Date.now() - (npc.failAt[w.key] || 0) >= NPC_RETRY_MS)) npCostAsk(w); // после ошибки повтор не раньше чем через минуту
+    if (!npPaused() && (c === undefined || (c === 'fail' && Date.now() - (npc.failAt[w.key] || 0) >= NPC_RETRY_MS))) npCostAsk(w); // после ошибки повтор не раньше чем через 10 минут
     return '';
   }
   function npCostAsk(w) {
@@ -4495,12 +4538,15 @@
     clearTimeout(npc.timer);
     npc.timer = setTimeout(function () {
       var c0 = npc.cache[w.key];
-      if (c0 === 'loading' || typeof c0 === 'number') return;
+      if (c0 === 'loading' || typeof c0 === 'number' || npPaused()) { if (npc.want === w.key) npc.want = ''; return; }
       npc.cache[w.key] = 'loading';
-      apiGetTimed('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
-        var c = res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0;
+      var done = function (c) {
         if (c) npc.cache[w.key] = c; else { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); }
-      }).catch(function () { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); })
+        npcSave();
+      };
+      npGet('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
+        done(res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0);
+      }).catch(function () { done(0); })
         .then(function () { if (npc.want === w.key) npc.want = ''; npCostSync(); }); // устаревший ответ только ложится в кэш: показывается то, что нужно сейчас
     }, NPC_DEBOUNCE);
   }
@@ -4571,27 +4617,48 @@
   function npBusy(id, on) { var b = document.getElementById(id); if (b) b.hidden = !on; }
   function npOn() { return !!(shopInfo().np && cfg.API_URL && state.view === 'checkout'); }
 
-  /* --- города: дебаунс 500 мс, кэш по строке запроса, не короче 2 букв --- */
+  /* --- города: от 3 букв, дебаунс 600 мс, кэш по нормализованной строке, один запрос в пути (новый ждёт), устаревшие ответы только в кэш --- */
   function npCityTyped(input) {
     clearTimeout(np.timer);
-    np.ref = ''; np.seq++; np.resolving = false;
-    npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], ''); npCostSync();
-    var q = input.value.trim(), key = q.toLowerCase(), seq = np.seq;
-    if (q.length < 2) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
+    np.seq++; np.resolving = false; np.queued = null;
+    var q = input.value.trim(), key = npKey(q), seq = np.seq;
+    npBusy('cityPick', false);
+    var known = npKnownRef(q);
+    if (known) { // текст совпал с уже выбранным городом: ref возвращаем, на сервер не ходим
+      np.ref = known; npBusy('cityBusy', false); suggShow('citySugg', [], '');
+      npCostSync(); npLoadWh();
+      return;
+    }
+    np.ref = ''; npBusy('whBusy', false); suggShow('whSugg', [], ''); npCostSync();
+    if (q.length < NP_MIN || npPaused()) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
     if (np.cities[key]) { npBusy('cityBusy', false); suggShow('citySugg', np.cities[key], 'np-city'); return; }
     npBusy('cityBusy', true);
-    np.timer = setTimeout(function () { npCityFetch(q, seq, false, false); }, 500);
+    np.timer = setTimeout(function () { npCityFetch(q, seq, false, false); }, NP_DEBOUNCE);
   }
   function npCityFetch(q, seq, pick, chip) {
-    var key = q.toLowerCase();
-    apiGetTimed('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
+    var key = npKey(q);
+    if (npPaused()) { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } return; }
+    if (np.flight) { np.queued = { q: q, seq: seq, pick: pick, chip: chip }; return; } // один запрос в пути: новый ждёт его конца
+    np.flight = key;
+    var finish = function () { np.flight = ''; npCityNext(); };
+    npGet('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
       var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
       if (list) np.cities[key] = list;
-      if (seq !== np.seq) return; // пришёл устаревший ответ — не затираем свежий
-      np.resolving = false;
-      npBusy('cityBusy', false);
-      if (list) npCityShow(list, pick, q, chip); else suggShow('citySugg', [], '');
-    }).catch(function () { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } });
+      if (seq === np.seq) { // устаревший ответ только ложится в кэш и не затирает свежий
+        np.resolving = false;
+        npBusy('cityBusy', false);
+        if (list) npCityShow(list, pick, q, chip); else suggShow('citySugg', [], '');
+      }
+      finish();
+    }).catch(function () { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } finish(); });
+  }
+  /** Запрос, дожидавшийся конца предыдущего: уходит, только если он всё ещё актуален и ответа нет в кэше. */
+  function npCityNext() {
+    var n = np.queued; np.queued = null;
+    if (!n || n.seq !== np.seq || npPaused()) { if (n && n.seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); } return; }
+    var list = np.cities[npKey(n.q)];
+    if (list) { np.resolving = false; npBusy('cityBusy', false); npCityShow(list, n.pick, n.q, n.chip); return; }
+    npCityFetch(n.q, n.seq, n.pick, n.chip);
   }
   function npCityShow(list, pick, q, chip) {
     suggShow('citySugg', list, 'np-city');
@@ -4607,8 +4674,11 @@
   function npCityResolve(q, chip) {
     clearTimeout(np.timer);
     q = String(q || '').trim();
-    if (!npOn() || np.ref || q.length < 2) return;
-    var seq = ++np.seq, key = q.toLowerCase();
+    if (!npOn() || np.ref || q.length < NP_MIN) return;
+    var known = npKnownRef(q);
+    if (known) { np.ref = known; npBusy('cityPick', false); npBusy('cityBusy', false); suggShow('citySugg', [], ''); readForm(); npCostSync(); npLoadWh(); return; } // уже выбранный город: запроса нет
+    if (npPaused()) return;
+    var seq = ++np.seq, key = npKey(q);
     if (np.cities[key]) { npBusy('cityBusy', false); npCityShow(np.cities[key], true, q, chip); return; }
     npBusy('cityBusy', true);
     np.resolving = true; // поиск «по уходу с поля» или из чипа уже идёт: второй не запускаем
@@ -4618,7 +4688,8 @@
     var city = document.getElementById('f-city');
     if (!city) return;
     city.value = String(x.s).slice(0, 60);
-    np.ref = String(x.ref || ''); np.seq++;
+    np.ref = String(x.ref || ''); np.seq++; np.queued = null;
+    np.chosen = NP_UUID.test(np.ref) ? { t: npKey(city.value), ref: np.ref } : null; // этот текст больше не требует запросов
     npBusy('cityPick', false); npBusy('cityBusy', false);
     setError('city', ''); suggShow('citySugg', [], ''); readForm(); npCostSync();
     if (!auto) hapticSelect();
@@ -4631,8 +4702,10 @@
   function npLoadWh() {
     var ref = np.ref;
     if (!npOn() || !ref) return;
-    var st = np.wh[ref], retryMs = Number(window.__NP_RETRY_MS) || 30000;
-    // Прошлая попытка не удалась: повторяем при следующем фокусе поля, не чаще раза в 30 с на город.
+    var st = np.wh[ref], retryMs = Number(window.__NP_RETRY_MS) || NP_PAUSE_MS;
+    // Список — один раз на город за сессию. Прошлая попытка не удалась: повторяем при следующем фокусе поля, не раньше чем через 10 минут.
+    if (npPaused() && (st === undefined || st === 'old' || st === 'err')) return; // пауза: не грузим, поле работает вручную
+    if (st === 'err') st = undefined; // пауза закончилась — один новый запрос списка
     if (st === 'old' && !np.whPending[ref] && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined;
     if (st === undefined) {
       np.wh[ref] = 'loading'; np.whPending[ref] = true; np.whAt[ref] = Date.now();
@@ -4643,11 +4716,13 @@
         np.wh[ref] = 'old';
         if (np.ref === ref) npBusy('whBusy', false);
       }, NP_TIMEOUT);
-      apiGetTimed('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
+      npGet('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
         np.whPending[ref] = false;
         var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
           .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
-        np.wh[ref] = list || 'old'; // нет ответа или бэкенд не знает np.whall — подсказки по-старому, через np.wh
+        // Ошибка НП (ok:false, кроме unknown_action): запасной np.wh НЕ включаем — иначе лимит поддерживал бы сам себя; список повторим после паузы.
+        var npErr = res && res.ok === false && res.error !== 'unknown_action';
+        np.wh[ref] = list || (npErr ? 'err' : 'old'); // нет ответа или бэкенд не знает np.whall — подсказки по-старому, через np.wh
         if (np.ref === ref) {
           npBusy('whBusy', false);
           var inp = document.getElementById('f-branch');
@@ -4690,14 +4765,20 @@
     if (np.wh[np.ref] !== 'old') return;
     // Старый бэкенд: запрос на ввод, с задержкой, устаревшие ответы отбрасываются.
     clearTimeout(np.whTimer);
-    var q = input.value.trim(), seq = ++np.whSeq, ref = np.ref; // ref: ответ по прежнему городу не показываем под новым
+    if (npPaused()) { suggShow('whSugg', [], ''); return; }
+    var q = input.value.trim(), seq = ++np.whSeq, ref = np.ref, type = state.form.npType === 'locker' ? 'locker' : '', ck = ref + '|' + type + '|' + npKey(q); // ref: ответ по прежнему городу не показываем под новым
+    if (np.whq[ck]) { npBusy('whBusy', false); suggShow('whSugg', np.whq[ck], 'np-wh'); return; } // та же строка — из кэша
     np.whTimer = setTimeout(function () {
-      if (np.ref !== ref) return;
+      if (np.ref !== ref || npPaused()) return;
       npBusy('whBusy', true);
-      apiGetTimed('action=np.wh&city=' + encodeURIComponent(ref) + '&q=' + encodeURIComponent(q) + '&t=' + (state.form.npType === 'locker' ? 'locker' : ''))
-        .then(function (res) { if (seq === np.whSeq) { npBusy('whBusy', false); if (np.ref === ref) suggShow('whSugg', (res && res.ok && res.list) || [], 'np-wh'); } })
+      npGet('action=np.wh&city=' + encodeURIComponent(ref) + '&q=' + encodeURIComponent(q) + '&t=' + type)
+        .then(function (res) {
+          var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
+          if (list) np.whq[ck] = list;
+          if (seq === np.whSeq) { npBusy('whBusy', false); if (np.ref === ref) suggShow('whSugg', list || [], 'np-wh'); }
+        })
         .catch(function () { if (seq === np.whSeq) npBusy('whBusy', false); });
-    }, 350);
+    }, NP_DEBOUNCE);
   }
   function npSuggest(input) {
     if (!npOn()) return;
@@ -4715,7 +4796,7 @@
   el.page.addEventListener('focusin', function (e) {
     if (!npOn() || e.target.name !== 'branch') return;
     var city = document.getElementById('f-city');
-    if (!np.ref && city && city.value.trim().length >= 2) npCityResolve(city.value, false);
+    if (!np.ref && city && city.value.trim().length >= NP_MIN) npCityResolve(city.value, false);
     else if (np.ref) npLoadWh();
   });
   el.page.addEventListener('focusout', function (e) {
