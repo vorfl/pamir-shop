@@ -6478,7 +6478,7 @@
         fetchToday(true);
       } catch (e) { /* блокировка уже снята */ }
     };
-    guard = setTimeout(function () { stDone(t('admStBack'), true); }, 45000);
+    guard = setTimeout(function () { stDone(t('admStLate'), true); }, 45000);
     api('admin.status', { num: order.num, code: stCode }).then(function (res) {
       if (finished) return;
       if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
@@ -6948,7 +6948,14 @@
       ttnDel: 'Видалити накладну', ttnDelTitle: 'Видалити накладну', ttnDelText: 'Пробну накладну № {n} буде видалено в Новій пошті, номер у замовленні — стерто. Клієнту нічого не надсилається.',
       ttnDelDone: 'Накладну видалено. Номер у замовленні стерто.', ttnDelErrTitle: 'Накладну не видалено',
       ttnDelPartial: 'У Новій пошті накладну видалено, але номер у замовленні лишився. Зітріть номер у колонці „ТТН“ цього замовлення; інші комірки не чіпайте.',
-      ttnDelInfoTitle: 'Номер не змінено', ttnTrial: 'пробна'
+      ttnDelInfoTitle: 'Номер не змінено', ttnTrial: 'пробна',
+      ttnLast: 'Прізвище', ttnFirst: 'Ім’я', ttnMiddle: 'По батькові (необов’язково)',
+      ttnNameCheck: 'Перевірте: покупці часто пишуть спочатку ім’я. Якщо навпаки — поміняйте.', ttnSwap: 'Поміняти місцями',
+      ttnNameShort: 'Прізвище та ім’я — не менше 2 знаків кожне',
+      ttnDimReq: 'Обов’язково: ширина, довжина й висота, см (від 1 до 120).', ttnDimMin: 'Мінімум, наприклад, 10×10×4 см.', ttnDimNeed: 'Заповніть ширину, довжину й висоту.',
+      ttnBranchWrote: 'Покупець написав', ttnBranchFound: 'Знайдено в Новій пошті', ttnWhGuess: 'Номер відділення взято з тексту покупця — перевірте.',
+      ttnQuietWarn: 'Сама Нова пошта може надіслати отримувачу SMS або сповіщення — пробну робіть лише на власне замовлення.',
+      admStLate: 'Сервер не відповів. Оновіть список замовлень і перевірте статус.'
     },
     ru: {
       npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'В сумму заказа не входит. Точную сумму считает перевозчик.',
@@ -6971,7 +6978,14 @@
       ttnDel: 'Удалить накладную', ttnDelTitle: 'Удалить накладную', ttnDelText: 'Пробная накладная № {n} будет удалена в Новой почте, номер в заказе — стёрт. Клиенту ничего не отправляется.',
       ttnDelDone: 'Накладная удалена. Номер в заказе стёрт.', ttnDelErrTitle: 'Накладная не удалена',
       ttnDelPartial: 'В Новой почте накладная удалена, но номер в заказе остался. Сотрите номер в колонке «ТТН» этого заказа; другие ячейки не трогайте.',
-      ttnDelInfoTitle: 'Номер не изменён', ttnTrial: 'пробная'
+      ttnDelInfoTitle: 'Номер не изменён', ttnTrial: 'пробная',
+      ttnLast: 'Фамилия', ttnFirst: 'Имя', ttnMiddle: 'Отчество (необязательно)',
+      ttnNameCheck: 'Проверьте: покупатели часто пишут сначала имя. Если наоборот — поменяйте.', ttnSwap: 'Поменять местами',
+      ttnNameShort: 'Фамилия и имя — не короче 2 знаков каждое',
+      ttnDimReq: 'Обязательно: ширина, длина и высота, см (от 1 до 120).', ttnDimMin: 'Минимум, например, 10×10×4 см.', ttnDimNeed: 'Заполните ширину, длину и высоту.',
+      ttnBranchWrote: 'Покупатель написал', ttnBranchFound: 'Найдено в Новой почте', ttnWhGuess: 'Номер отделения взят из текста покупателя — проверьте.',
+      ttnQuietWarn: 'Сама Новая почта может отправить получателю SMS или уведомление — пробную делайте только на собственный заказ.',
+      admStLate: 'Сервер не ответил. Обновите список заказов и проверьте статус.'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
@@ -6999,6 +7013,13 @@
   }
   el.sheet.addEventListener('input', sheetSync);
   el.sheet.addEventListener('change', sheetSync);
+  el.sheet.addEventListener('click', function (e) {
+    var sw = e.target && e.target.closest && e.target.closest('[data-ttn-swap]');
+    if (!sw) return;
+    var a = document.getElementById('ttnLN'), b = document.getElementById('ttnFN');
+    if (a && b) { var v = a.value; a.value = b.value; b.value = v; hapticLight(); }
+    sheetSync(e);
+  });
   var ttnFlight = false;
   /** «Створити ТТН»: сначала admin.ttn.preview (ничего не меняет), потом шторка подтверждения. */
   function ttnMake(btn) {
@@ -7027,40 +7048,60 @@
     var minG = Number(d.minG) || 100, maxG = Number(d.maxG) || 30000;
     var wg = Number(d.weightG) > 0 ? Math.round(Number(d.weightG)) : '';
     var cod = Math.round(Number(d.cod) || 0);
-    var diff = Number(d.cityDiff) === 1;
+    var diff = Number(d.cityDiff) === 1, dimReq = Number(d.dimsReq) === 1;
+    // Имя: догадка сервера (nameParts); старый ответ без неё — первое слово в «Прізвище», второе в «Ім'я», остальное — по батькові.
+    var np = { last: '', first: '', middle: '' };
+    if (d.nameParts && typeof d.nameParts === 'object') {
+      np.last = String(d.nameParts.last || ''); np.first = String(d.nameParts.first || ''); np.middle = String(d.nameParts.middle || '');
+    } else {
+      var ws = String(d.name || '').trim().split(/\s+/).filter(Boolean);
+      np.last = ws[0] || ''; np.first = ws[1] || ''; np.middle = ws.slice(2).join(' ');
+    }
     var html = '<div class="ttnc">' +
       (diff ? '<div class="ttnc__warn" role="alert"><p>' + esc(tf('ttnCityDiff', { a: d.city || '', b: d.npCity || '' })) + '</p>' +
         '<label class="check"><input type="checkbox" id="ttnCityOk"><span>' + esc(t('ttnCityOk')) + '</span></label></div>' : '') +
-      (d.nameOk ? ttnRow(t('ttnRecv'), d.name) : '') + ttnRow(t('ttnPhone'), d.phone) + ttnRow(t('ttnCity'), d.city) +
-      ttnRow(t(d.type === 'locker' ? 'ttnBranchP' : 'ttnBranchW'), d.npWarehouse || d.branch) +
+      ttnRow(t('ttnPhone'), d.phone) + ttnRow(t('ttnCity'), d.city) +
+      (d.branch ? ttnRow(t('ttnBranchWrote'), d.branch) : '') +
+      (d.npWarehouse ? ttnRow(t('ttnBranchFound'), d.npWarehouse) : '') +
+      (Number(d.whGuess) === 1 ? '<div class="ttnc__warn" role="alert"><p>' + esc(t('ttnWhGuess')) + '</p></div>' : '') +
       ttnRow(t('ttnCod'), cod > 0 ? money(cod) : t('ttnNoCod')) +
       (d.payer === 'recipient' ? ttnRow(t('ttnPayer'), t('ttnPayerRecv')) : '') +
-      (d.nameOk ? '' : '<div class="field"><label class="label" for="ttnN">' + esc(t('ttnName')) + '</label><input class="input" id="ttnN" type="text" autocomplete="off" maxlength="80" value="' + esc(d.name) + '"><p class="ttnc__hint">' + esc(t('ttnNameHint')) + '</p></div>') +
+      '<div class="field"><label class="label" for="ttnLN">' + esc(t('ttnLast')) + '</label><input class="input" id="ttnLN" type="text" autocomplete="off" maxlength="40" value="' + esc(np.last) + '"></div>' +
+      '<div class="field"><label class="label" for="ttnFN">' + esc(t('ttnFirst')) + '</label><input class="input" id="ttnFN" type="text" autocomplete="off" maxlength="40" value="' + esc(np.first) + '"></div>' +
+      '<div class="field"><label class="label" for="ttnMN">' + esc(t('ttnMiddle')) + '</label><input class="input" id="ttnMN" type="text" autocomplete="off" maxlength="40" value="' + esc(np.middle) + '"></div>' +
+      '<p class="ttnc__hint ttnc__hint--warn">' + esc(t('ttnNameCheck')) + '</p>' +
+      '<button type="button" class="btn btn--block" data-ttn-swap="1">' + esc(t('ttnSwap')) + '</button>' +
+      '<p class="ttnc__hint ttnc__hint--warn" id="ttnNameShort" role="status" hidden>' + esc(t('ttnNameShort')) + '</p>' +
       '<div class="field"><label class="label" for="ttnW">' + esc(t('ttnWeight')) + '</label><input class="input" id="ttnW" type="text" inputmode="numeric" autocomplete="off" maxlength="6" value="' + esc(wg) + '">' +
       '<p class="ttnc__hint">' + esc(wg === '' ? t('ttnWeightAsk') + ' ' : '') + esc(tf('ttnWeightHint', { a: minG, b: maxG })) + '</p></div>' +
       '<div class="field"><label class="label" for="ttnD">' + esc(t('ttnDesc')) + '</label><input class="input" id="ttnD" type="text" autocomplete="off" maxlength="100" value="' + esc(d.desc || '') + '"></div>' +
       '<div class="ttnc__dims">' + [['ttnDW', 'ttnDimW'], ['ttnDL', 'ttnDimL'], ['ttnDH', 'ttnDimH']].map(function (x) {
         return '<div class="field"><label class="label" for="' + x[0] + '">' + esc(t(x[1])) + '</label><input class="input" id="' + x[0] + '" type="text" inputmode="decimal" autocomplete="off" maxlength="6"></div>';
       }).join('') + '</div>' +
-      '<p class="ttnc__hint">' + esc(t('ttnDimHint')) + '</p><p class="ttnc__hint ttnc__hint--warn" id="ttnDimPart" role="status" hidden>' + esc(t('ttnDimPart')) + '</p>' +
-      '<label class="check"><input type="checkbox" id="ttnQuiet"><span>' + esc(t('ttnQuiet')) + '</span></label><p class="ttnc__hint">' + esc(t('ttnQuietNote')) + '</p></div>';
+      '<p class="ttnc__hint' + (dimReq ? ' ttnc__hint--warn' : '') + '" id="ttnDimHint">' + esc(dimReq ? t('ttnDimReq') + ' ' + t('ttnDimMin') : t('ttnDimHint')) + '</p><p class="ttnc__hint ttnc__hint--warn" id="ttnDimPart" role="status" hidden>' + esc(t('ttnDimPart')) + '</p>' +
+      '<label class="check"><input type="checkbox" id="ttnQuiet"><span>' + esc(t('ttnQuiet')) + '</span></label><p class="ttnc__hint">' + esc(t('ttnQuietNote')) + '</p><p class="ttnc__hint ttnc__hint--warn">' + esc(t('ttnQuietWarn')) + '</p></div>';
     var val = function (id) { var n = document.getElementById(id); return n ? String(n.value || '').trim() : ''; };
     var dimVals = function () { return [val('ttnDW'), val('ttnDL'), val('ttnDH')]; };
-    askConfirm({
-      title: t('ttnMkTitle') + ' ' + d.num, html: html, ok: t('ttnCreate'), lock: diff,
+    var nameBad = function () { return val('ttnLN').length < 2 || val('ttnFN').length < 2; };
+    var o = {
+      title: t('ttnMkTitle') + ' ' + d.num, html: html, ok: t('ttnCreate'), lock: true,
       sync: function () {
         var cb = document.getElementById('ttnCityOk'), okb = el.sheet.querySelector('[data-action="cf-ok"]');
-        var part = ttnDims(dimVals()) === 'part', hint = document.getElementById('ttnDimPart');
+        var dv = ttnDims(dimVals());
+        var part = dv === 'part' || (dimReq && !dv), hint = document.getElementById('ttnDimPart');
+        var nb = nameBad(), nh = document.getElementById('ttnNameShort'); if (nh) nh.hidden = !nb;
         if (hint) {
-          var was = hint.hidden; hint.hidden = !part;
-          if (part && was) try { hint.scrollIntoView({ block: 'nearest' }); } catch (e) { /* старый браузер */ } // подсказка не должна остаться под кнопками
+          var was = hint.hidden; hint.hidden = dv !== 'part';
+          if (dv === 'part' && was) try { hint.scrollIntoView({ block: 'nearest' }); } catch (e) { /* старый браузер */ } // подсказка не должна остаться под кнопками
         }
-        if (okb && !okb.classList.contains('is-busy')) okb.disabled = part || (diff && !(cb && cb.checked));
+        if (okb && !okb.classList.contains('is-busy')) okb.disabled = part || nb || (diff && !(cb && cb.checked));
       },
       run: function (done) {
         var w = Math.round(Number(val('ttnW').replace(/\s+/g, '')));
         if (!(w >= minG && w <= maxG)) { done(tf('ttnBadW', { a: minG, b: maxG })); return; }
         var dm = ttnDims(dimVals());
+        if (nameBad()) { done(t('ttnNameShort')); return; }
+        if (dimReq && !dm) { done(t('ttnDimNeed')); return; }
         if (dm === 'part') { done(t('ttnDimPart')); return; }
         if (dm === 'bad') { done(t('ttnBadDims')); return; }
         var body = { num: d.num, weight: w, confirm: true, cod: cod };
@@ -7072,11 +7113,9 @@
           if (!cb || !cb.checked) { done(t('ttnCityOk')); return; }
           body.cityOk = true;
         }
-        if (!d.nameOk) {
-          var nm = val('ttnN').replace(/\s+/g, ' '), words = nm ? nm.split(' ') : [];
-          if (words.length < 2 || words.length > 3) { done(t('ttnBadName')); return; }
-          body.name = nm;
-        }
+        body.lastName = val('ttnLN').replace(/\s+/g, ' '); body.firstName = val('ttnFN').replace(/\s+/g, ' ');
+        var mn = val('ttnMN').replace(/\s+/g, ' '); if (mn) body.middleName = mn;
+        if (!(d.nameParts && typeof d.nameParts === 'object')) body.name = body.lastName + ' ' + body.firstName + (mn ? ' ' + mn : ''); // старый ответ без nameParts: бэкенд знает только name
         var ds = val('ttnD'); if (ds) body.desc = ds.slice(0, 100);
         api('admin.ttn.create', body).then(function (res) {
           if (res && res.ok && res.ttn) {
@@ -7107,7 +7146,9 @@
           done(msg);
         }).catch(function () { done(t('admFail')); });
       }
-    });
+    };
+    askConfirm(o);
+    o.sync();
   }
 
   /** «Видалити накладну»: подтверждение шторкой, потом admin.ttn.delete с confirm:true. Клиенту ничего не уходит. */
@@ -7120,7 +7161,8 @@
         api('admin.ttn.delete', { num: num, confirm: true }).then(function (res) {
           if (res && res.ok) {
             ord.ttn = ''; delete ord.ttnDel; delete ord.ttnTrial;
-            done(); renderAdminList(); haptic('success'); toast(t('ttnDelDone'));
+            done(); renderAdminList(); haptic('success');
+            toast(res.done === 'del_done' && ttnSrvMsg(res) ? ttnSrvMsg(res) : t('ttnDelDone')); // «вже видалено»: текст сервера, это успех
             return;
           }
           var code = res && res.error;
