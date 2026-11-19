@@ -283,22 +283,25 @@ async function main() {
     await w.flush();
     ok(w.gasCalls.length === base + 1, 'после 30 с пробуем снова');
 
-    // нет хорошего ответа вообще: 502 без нового запроса
+    // нет хорошего ответа вообще: пауза холодным запросам не мешает (каждый делает попытку + 1 повтор)
     const w2 = makeEnv();
     const worker2 = await loadWorker();
     w2.gas.catalog = () => ({ status: 200, body: 'oops' });
     let r = await worker2.fetch(req('GET', '/catalog'), w2.env, w2.ctx);
-    ok(r.status === 502 && w2.gasCalls.length === 1, 'первый сбой -> 502');
-    for (let i = 0; i < 20; i++) { w2.now += 100; r = await worker2.fetch(req('GET', '/catalog'), w2.env, w2.ctx); }
-    ok(r.status === 502 && w2.gasCalls.length === 1, 'в паузу 502 без нового запроса к Apps Script');
+    ok(r.status === 502 && w2.gasCalls.length === 2, 'первый сбой -> 502 (попытка + 1 повтор)');
+    w2.now += 100;
+    w2.gas.catalog = () => ({ status: 200, body: w2.goodCatalog(5) });
+    r = await worker2.fetch(req('GET', '/catalog'), w2.env, w2.ctx);
+    ok(r.status === 200 && w2.gasCalls.length === 3, 'в паузу холодный запрос всё равно идёт в Apps Script и получает каталог');
 
-    // пауза общая через Cache API: другой изолят тоже не ходит
+    // другой изолят с пустым кэшем тоже пробует (пауза в Cache API не блокирует холодных)
     const w3 = makeEnv();
     const wa = await loadWorker(), wb = await loadWorker();
     w3.gas.catalog = () => ({ status: 200, body: 'oops' });
     await wa.fetch(req('GET', '/catalog'), w3.env, w3.ctx);
-    await wb.fetch(req('GET', '/catalog'), w3.env, w3.ctx);
-    ok(w3.gasCalls.length === 1, 'второй изолят видит паузу в Cache API');
+    w3.gas.catalog = () => ({ status: 200, body: w3.goodCatalog(1) });
+    r = await wb.fetch(req('GET', '/catalog'), w3.env, w3.ctx);
+    ok(r.status === 200, 'второй изолят при паузе в Cache API без каталога — идёт в Apps Script');
 
     // purge игнорирует паузу и снимает её
     const w4 = makeEnv();
@@ -311,6 +314,105 @@ async function main() {
     await w4.flush();
     r = await w4w.fetch(req('GET', '/catalog'), w4.env, w4.ctx);
     ok(r.status === 200 && (await r.text()) === w4.goodCatalog(3), 'purge работает и во время паузы');
+  });
+
+  await run('холодный старт: повтор, single-flight, плохие ответы', async (worker) => {
+    const BADS = {
+      'HTML Google': { status: 200, body: '<!DOCTYPE html><html><body>Error</body></html>' },
+      '500': { status: 500, body: 'Internal' },
+      'пустое тело': { status: 200, body: '' },
+      'обрезанный JSON': { status: 200, body: '{"ok":true,"products":[{"id":"p1"' },
+      'ok:false': { status: 200, body: JSON.stringify({ ok: false, error: 'x' }) },
+      'throw': 'throw',
+    };
+    // 1) холодный изолят: первый ответ плохой, второй хороший -> 200, ровно 2 обращения
+    for (const k of Object.keys(BADS)) {
+      const w = makeEnv(); const wk = await loadWorker();
+      let n = 0;
+      w.gas.catalog = () => (++n === 1 ? BADS[k] : { status: 200, body: w.goodCatalog(1) });
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok(r.status === 200 && JSON.parse(await r.text()).ok === true && w.gasCalls.length === 2, 'холодный: ' + k + ' -> повтор -> 200 (обращений ' + w.gasCalls.length + ')');
+    }
+    // 2) оба плохие: 502, не кэшируется, CORS и no-store, время мало
+    for (const k of Object.keys(BADS)) {
+      const w = makeEnv(); const wk = await loadWorker();
+      w.gas.catalog = () => BADS[k];
+      const t0 = process.hrtime.bigint();
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      await w.flush();
+      ok(r.status === 502 && r.headers.get('Access-Control-Allow-Origin') === '*' && r.headers.get('Cache-Control') === 'no-store'
+        && !r.headers.get('X-Pamir-Cache') && w.gasCalls.length === 2 && !w.cacheStore.has('https://pamir-cache.invalid/catalog'),
+        'два плохих (' + k + ') -> 502 с CORS и no-store, в кэш не попало, ' + Math.round(ms) + ' мс');
+      ok(ms < 2000, 'два быстрых сбоя: ответ быстрее 2 с (' + Math.round(ms) + ' мс)');
+      const j = await r.json();
+      ok(j.ok === false && !JSON.stringify(j).includes(GAS), '502: тело {ok:false}, без адреса Apps Script');
+    }
+    // 3) пауза холодных не блокирует: после сбоя сразу следующий запрос ходит в GAS
+    {
+      const w = makeEnv(); const wk = await loadWorker();
+      w.gas.catalog = () => ({ status: 500, body: '' });
+      await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush();
+      const c = w.gasCalls.length;
+      await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush();
+      ok(w.gasCalls.length === c + 2, 'во время паузы холодный запрос делает попытку и повтор');
+    }
+    // 4) 10 одновременных холодных запросов делят один обмен
+    {
+      const w = makeEnv(); const wk = await loadWorker();
+      let release; const gate = new Promise((res) => { release = res; });
+      w.gas.catalog = async () => { await gate; return { status: 200, body: w.goodCatalog(1) }; };
+      const ps = []; for (let i = 0; i < 10; i++) ps.push(wk.fetch(req('GET', '/catalog'), w.env, w.ctx));
+      await new Promise((res) => setTimeout(res, 20));
+      release();
+      const rs = await Promise.all(ps);
+      ok(rs.every((r) => r.status === 200) && w.gasCalls.length === 1, '10 одновременных холодных -> все 200, обращений к Apps Script: ' + w.gasCalls.length);
+      // то же при плохом ответе: не больше 2 обращений (попытка + повтор)
+      const w2 = makeEnv(); const wk2 = await loadWorker();
+      w2.gas.catalog = () => ({ status: 500, body: '' });
+      const rs2 = await Promise.all(Array.from({ length: 10 }, () => wk2.fetch(req('GET', '/catalog'), w2.env, w2.ctx)));
+      ok(rs2.every((r) => r.status === 502) && w2.gasCalls.length <= 2, '10 одновременных при сбое -> 502, обращений: ' + w2.gasCalls.length + ' (<= 2)');
+    }
+    // 5) первая попытка была медленной (> 3 с) -> повтора нет, быстрый 502
+    {
+      const w = makeEnv(); const wk = await loadWorker();
+      w.gas.catalog = () => { w.now += 5000; return { status: 500, body: '' }; };
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok(r.status === 502 && w.gasCalls.length === 1, 'медленный сбой (> 3 с): без повтора, 502');
+    }
+    // 6) Apps Script завис: ответ Worker не позже ~4,5 с, обмен дорабатывает в фоне
+    {
+      const w = makeEnv(); const wk = await loadWorker();
+      let release; const gate = new Promise((res) => { release = res; });
+      w.gas.catalog = async () => { await gate; return { status: 200, body: w.goodCatalog(9) }; };
+      const t0 = process.hrtime.bigint();
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      ok(r.status === 502 && ms >= 4400 && ms < 5500, 'зависший Apps Script: 502 через ~4,5 с (' + Math.round(ms) + ' мс) < 6 с витрины');
+      release(); await w.flush();
+      const r2 = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok(r2.status === 200 && (await r2.text()) === w.goodCatalog(9) && w.gasCalls.length === 1, 'после зависания фоновый обмен наполнил кэш');
+    }
+    // 7) есть кэш, Apps Script отвечает любой дрянью -> STALE 200, плохое не кэшируется
+    for (const k of Object.keys(BADS)) {
+      const w = makeEnv(); const wk = await loadWorker();
+      await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      const good = w.goodCatalog(1);
+      w.gas.catalog = () => BADS[k];
+      w.now += 61000;
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      await w.flush();
+      const r2 = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok(r.status === 200 && (await r.text()) === good && r.headers.get('X-Pamir-Cache') === 'STALE' && (await r2.text()) === good, 'кэш + ' + k + ' -> STALE 200, плохое не сохранено');
+    }
+    // 8) KV: холодные сбои не пишут в KV
+    {
+      const kv = makeKV(); const w = makeEnv({ PAMIR_KV: kv }); const wk = await loadWorker();
+      w.gas.catalog = () => ({ status: 500, body: '' });
+      for (let i = 0; i < 10; i++) await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      await w.flush();
+      ok(kv.puts.length === 0, 'сбои Apps Script не пишут в KV');
+    }
   });
 
   await run('KV: поле updated не считается изменением', async (worker) => {

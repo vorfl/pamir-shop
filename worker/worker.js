@@ -24,7 +24,11 @@ const KV_STATE = 'monitor-state';
 const PAUSE_MS = 30 * 1000;            // после сбоя Apps Script 30 с не ходим за каталогом
 const PURGE_GAP_MS = 5 * 1000;         // purge чаще раза в 5 с нового чтения не запускает
 const CACHE_KEY_PAUSE = 'https://pamir-cache.invalid/catalog-pause';
-const mem = { catalog: null, kvWrittenAt: 0, inflight: null, pauseUntil: 0, purgeAt: 0 };
+// Пауза действует, только когда есть что отдать из кэша (STALE). Холодный запрос без кэша её игнорирует.
+const RESPONSE_DEADLINE_MS = 4500;     // витрина ждёт Worker 6 с (webapp/app.js); отвечаем не позже 4,5 с, иначе быстрый 502
+const RETRY_WINDOW_MS = 3000;          // повтор только если первая попытка кончилась быстро (за 3 с)
+const RETRY_DELAY_MS = 400;            // пауза перед повтором
+const mem = { catalog: null, kvWrittenAt: 0, inflight: null, inflightCold: false, pauseUntil: 0, purgeAt: 0 };
 
 // Каталог без поля updated (время сборки): по нему понимаем, изменился ли каталог на самом деле.
 // Без JSON.parse: вырезаем значение первого "updated" обычной заменой в строке.
@@ -147,18 +151,38 @@ async function handleCatalog(env, ctx) {
     ctx.waitUntil(refreshCatalog(env, false).catch(() => {}));
     return catalogResponse(item.body, 'STALE');
   }
-  // кэша нет — идём в Apps Script
-  const fresh = await refreshCatalog(env, false);
+  // кэша нет — идём в Apps Script (пауза не мешает: отдать всё равно нечего).
+  // Одновременные запросы делят один обмен; при быстром сбое одна повторная попытка.
+  // Ждём не дольше RESPONSE_DEADLINE_MS (витрина ждёт Worker 6 с, потом идёт в Apps Script сама);
+  // обмен при этом дорабатывает в фоне и наполняет кэш.
+  const work = refreshCatalog(env, false, true).catch(() => null);
+  ctx.waitUntil(work);
+  let timer;
+  const deadline = new Promise((res) => { timer = setTimeout(() => res(null), RESPONSE_DEADLINE_MS); });
+  const fresh = await Promise.race([work, deadline]);
+  clearTimeout(timer);
   if (fresh) return catalogResponse(fresh.body, 'MISS');
   return catalogError();
 }
 
-/** Берёт каталог из Apps Script; хороший ответ кладёт в кэш. Один запрос за раз. */
-function refreshCatalog(env, force) {
-  if (mem.inflight) return mem.inflight;
+/**
+ * Берёт каталог из Apps Script; хороший ответ кладёт в кэш. Один обмен за раз.
+ * cold: отдать нечего — пауза не действует, при быстром сбое одна повторная попытка.
+ */
+function refreshCatalog(env, force, cold) {
+  if (mem.inflight) {
+    // обмен фоновый (мог пропустить попытку из-за паузы), а нам нужен настоящий
+    if (cold && !mem.inflightCold) return mem.inflight.then((r) => r || refreshCatalog(env, false, true));
+    return mem.inflight;
+  }
+  const t0 = Date.now();
   const p = (async () => {
-    if (!force && (await isPaused(env))) return null; // недавний сбой: в Apps Script не ходим
-    const body = await fetchGood(env, 'catalog', isGoodCatalog);
+    if (!force && !cold && (await isPaused(env))) return null; // недавний сбой: в Apps Script не ходим (но есть что отдать)
+    let body = await fetchGood(env, 'catalog', isGoodCatalog);
+    if (!body && cold && Date.now() - t0 <= RETRY_WINDOW_MS) {
+      await new Promise((res) => setTimeout(res, RETRY_DELAY_MS));
+      body = await fetchGood(env, 'catalog', isGoodCatalog);
+    }
     if (!body) {
       await markPause(env);
       return null;
@@ -172,7 +196,8 @@ function refreshCatalog(env, force) {
     return item;
   })();
   mem.inflight = p;
-  const clear = () => { if (mem.inflight === p) mem.inflight = null; };
+  mem.inflightCold = !!cold;
+  const clear = () => { if (mem.inflight === p) { mem.inflight = null; mem.inflightCold = false; } };
   p.then(clear, clear);
   return p;
 }
