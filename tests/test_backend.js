@@ -2543,7 +2543,7 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     rec(g1, 'phoneaaaa001', null, null, 5);
     g1.call('errorsJob');
     const t1 = sumOf(g1)[0].payload.text;
-    ok(/^Помилки у магазині за годину: 5 \(з 1 телефона\)\n/.test(t1) && /net catalog: network \(екран: catalog, версія: 26\) — 5 \(1 телефон\)/.test(t1) && !/Покупці|Адмін/.test(t1), 'сводка: один телефон, 5 записей — «1 телефон»', t1);
+    ok(/^Помилки у магазині за годину: 5 \(з 1 телефону\)\n/.test(t1) && /net catalog: network \(екран: catalog, версія: 26\) — 5 \(1 телефон\)/.test(t1) && !/Покупці|Адмін/.test(t1), 'сводка: один телефон, 5 записей — «1 телефон»', t1);
     // три и пять телефонов
     const g2 = fresh();
     ['phoneaaaa001', 'phoneaaaa002', 'phoneaaaa003'].forEach(d => rec(g2, d, null, null, 2));
@@ -2553,30 +2553,58 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     for (let i = 1; i <= 5; i++) rec(g3, 'phonebbbb00' + i, null, null, 1);
     g3.call('errorsJob');
     ok(/— 5 \(5 телефонів\)/.test(sumOf(g3)[0].payload.text), 'сводка: пять телефонов — «5 телефонів»', sumOf(g3)[0].payload.text);
-    ok([1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 111].map(n => g3.call('errPhoneNoun_', n)).join() === 'телефон,телефони,телефони,телефонів,телефонів,телефонів,телефонів,телефон,телефони,телефонів,телефонів' && g3.call('errPhoneFrom_', 1) === 'з 1 телефона' && g3.call('errPhoneFrom_', 21) === 'з 21 телефона' && g3.call('errPhoneFrom_', 3) === 'з 3 телефонів', 'формы слова «телефон»: 1, 2–4, 5+, 11–14, 21');
+    ok([1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 111].map(n => g3.call('errPhoneNoun_', n)).join() === 'телефон,телефони,телефони,телефонів,телефонів,телефонів,телефонів,телефон,телефони,телефонів,телефонів' && g3.call('errPhoneFrom_', 1) === 'з 1 телефону' && g3.call('errPhoneFrom_', 21) === 'з 21 телефону' && g3.call('errPhoneFrom_', 3) === 'з 3 телефонів', 'формы слова «телефон»: 1, 2–4, 5+, 11–14, 21');
+    // формы слов «телефон» (с родительным) и «раз»
+    ok([1, 2, 3, 4, 5, 11, 12, 14, 21, 22, 25, 111].map(n => g3.call('errPhoneFrom_', n)).join('|') === 'з 1 телефону|з 2 телефонів|з 3 телефонів|з 4 телефонів|з 5 телефонів|з 11 телефонів|з 12 телефонів|з 14 телефонів|з 21 телефону|з 22 телефонів|з 25 телефонів|з 111 телефонів', 'родительный «з N телефону/телефонів»');
+    ok([1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 111].map(n => g3.call('errTimesText_', n)).join('|') === '1 раз|2 рази|4 рази|5 разів|11 разів|12 разів|14 разів|21 раз|22 рази|25 разів|111 разів', 'формы «раз/рази/разів»');
+    // настоящие значения витрины: админские чтения идут с экрана catalog
+    const gA = fresh();
+    rec(gA, 'phoneadm0001', 'net admin.orders: network', 'catalog', 1);
+    rec(gA, 'phoneadm0002', 'net admin.today: timeout', 'catalog', 1);
+    rec(gA, 'phoneadm0003', 'net orders.my: network', 'orders', 1);
+    rec(gA, 'phoneadm0004', 'net catalog: network', 'catalog', 1);
+    rec(gA, 'phoneadm0005', 'TypeError x @ app.js:10', 'admin', 1);
+    gA.call('errorsJob');
+    const tA = sumOf(gA)[0].payload.text;
+    const [tShop, tAdm] = tA.split('Адмін-панель:');
+    ok(/Покупці: 2 /.test(tShop) && /net orders.my: network/.test(tShop) && /net catalog: network/.test(tShop) && !/net admin/.test(tShop) && /^ ?3 /.test(tAdm) && /net admin.orders: network/.test(tAdm) && /net admin.today: timeout/.test(tAdm) && /TypeError @ app.js:10/.test(tAdm), 'админские ошибки с экрана catalog и скриптовые на экране admin — в блоке админки', tA);
+    ok(gA.call('errIsAdmin_', 'catalog', 'net adminorders: network') === true && gA.call('errIsAdmin_', 'Admin', 'x') === true && gA.call('errIsAdmin_', 'catalog', 'net catalog: network') === false, 'errIsAdmin_: вид без точки и регистр');
+    // метка worker_fallback не съедает лимит настоящих ошибок и не отбрасывается им
+    const gF = fresh();
+    gF.post({ action: 'err', did: 'phonefb00001', items: [{ m: 'worker_fallback', s: 'catalog', v: '26' }, { m: 'worker_fallback', s: 'catalog', v: '26' }, { m: 'worker_fallback', s: 'catalog', v: '26' }] });
+    rec(gF, 'phonefb00001', 'net orders: HTTP 502', 'orders', 5);
+    gF.post({ action: 'err', did: 'phonefb00001', items: [{ m: 'worker_fallback', s: 'catalog', v: '26' }] });
+    gF.call('errorsJob');
+    const tF = sumOf(gF)[0].payload.text;
+    ok(/Помилки у магазині за годину: 5 /.test(tF) && /Каталог через Cloudflare не відповів[^\n]*: 2 рази /.test(tF), 'worker_fallback: свой лимит 2 в час, 5 настоящих ошибок проходят', tF);
+    const gG = fresh();
+    rec(gG, 'phonefb00002', 'net orders: HTTP 502', 'orders', 5);
+    gG.post({ action: 'err', did: 'phonefb00002', items: [{ m: 'worker_fallback', s: 'catalog', v: '26' }] });
+    gG.call('errorsJob');
+    ok(/: 1 раз /.test(sumOf(gG)[0].payload.text), 'worker_fallback принимается, даже когда 5 настоящих ошибок уже набрано');
     // админы отдельно от покупателей
     const g4 = fresh();
     rec(g4, 'phonecccc001', 'net catalog: network', 'catalog', 2);
     rec(g4, 'phonecccc002', 'net catalog: network', 'catalog', 1);
-    rec(g4, 'phonecccc003', 'net admin: timeout', 'admin.orders', 2);
+    rec(g4, 'phonecccc003', 'net admin: timeout', 'admin', 2);
     g4.call('errorsJob');
     const t4 = sumOf(g4)[0].payload.text;
-    ok(/^Помилки у магазині за годину: 5 \(з 3 телефонів\)\n/.test(t4) && /\nПокупці: 3 \(з 2 телефонів\)\n• net catalog: network[^\n]*— 3 \(2 телефони\)\nАдмін-панель: 2 \(з 1 телефона\)\n• net admin: timeout[^\n]*— 2 \(1 телефон\)$/.test(t4), 'сводка: ошибки админов — отдельным блоком, покупатели — отдельно', t4);
+    ok(/^Помилки у магазині за годину: 5 \(з 3 телефонів\)\n/.test(t4) && /\nПокупці: 3 \(з 2 телефонів\)\n• net catalog: network[^\n]*— 3 \(2 телефони\)\nАдмін-панель: 2 \(з 1 телефону\)\n• net admin: timeout[^\n]*— 2 \(1 телефон\)$/.test(t4), 'сводка: ошибки админов — отдельным блоком, покупатели — отдельно', t4);
     // только админские
     const g5 = fresh();
     rec(g5, 'phonedddd001', 'net admin: HTTP 500', 'admin.stats', 1);
     rec(g5, 'phonedddd001', 'net admin: HTTP 500', 'admin', 1);
     g5.call('errorsJob');
     const t5 = sumOf(g5)[0].payload.text;
-    ok(/Тільки адмін-панель, покупці помилок не мали/.test(t5) && /Адмін-панель: 2 \(з 1 телефона\)/.test(t5) && !/Покупці:/.test(t5), 'сводка: только админские — так и написано, блока покупателей нет', t5);
+    ok(/Тільки адмін-панель, покупці помилок не мали/.test(t5) && /Адмін-панель: 2 \(з 1 телефону\)/.test(t5) && !/Покупці:/.test(t5), 'сводка: только админские — так и написано, блока покупателей нет', t5);
     // только покупательские
     const t6 = (() => { const g = fresh(); rec(g, 'phoneeeee001', 'net orders: HTTP 502', 'orders', 3); g.call('errorsJob'); return sumOf(g)[0].payload.text; })();
-    ok(/^Помилки у магазині за годину: 3 \(з 1 телефона\)\n• net orders: HTTP 502/.test(t6) && !/Адмін|Покупці:/.test(t6), 'сводка: только покупательские — без блоков админа', t6);
+    ok(/^Помилки у магазині за годину: 3 \(з 1 телефону\)\n• net orders: HTTP 502/.test(t6) && !/Адмін|Покупці:/.test(t6), 'сводка: только покупательские — без блоков админа', t6);
     // лимит 5 в час на телефон
     const g7 = fresh();
     rec(g7, 'phoneffff001', null, null, 4); rec(g7, 'phoneffff001', null, null, 4);
     g7.call('errorsJob');
-    ok(/Помилки у магазині за годину: 5 \(з 1 телефона\)/.test(sumOf(g7)[0].payload.text), 'сводка: лимит 5 записей в час на телефон работает', sumOf(g7)[0].payload.text);
+    ok(/Помилки у магазині за годину: 5 \(з 1 телефону\)/.test(sumOf(g7)[0].payload.text), 'сводка: лимит 5 записей в час на телефон работает', sumOf(g7)[0].payload.text);
     // did не попадает ни в сводку, ни в кэш
     const g8 = fresh();
     rec(g8, 'secretdidxyz99', 'net catalog: network', 'catalog', 2);
@@ -2609,7 +2637,7 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     rec(g11, 'phonehhhh002', 'worker_fallback', 'catalog', 1);
     g11.call('errorsJob');
     const t11 = sumOf(g11);
-    ok(t11.length === 1 && /^Інформація/.test(t11[0].payload.text) && /Каталог через Cloudflare не відповів, магазин узяв його напряму: 3 разів \(з 2 телефонів\)/.test(t11[0].payload.text) && !/Помилки у магазині/.test(t11[0].payload.text), 'worker_fallback: не ошибка, отдельная информационная строка', t11[0] && t11[0].payload.text);
+    ok(t11.length === 1 && /^Інформація/.test(t11[0].payload.text) && /Каталог через Cloudflare не відповів, магазин узяв його напряму: 3 рази \(з 2 телефонів\)/.test(t11[0].payload.text) && !/Помилки у магазині/.test(t11[0].payload.text), 'worker_fallback: не ошибка, отдельная информационная строка', t11[0] && t11[0].payload.text);
     rec(g11, 'phonehhhh003', 'worker_fallback', 'catalog', 1);
     g11.call('errorsJob');
     ok(sumOf(g11).length === 1, 'worker_fallback: одни метки — не чаще раза в сутки');
@@ -2623,7 +2651,7 @@ console.log('Выпуск 9Б, блок 3: Worker, быстрый режим, к
     rec(g12, 'phoneiiii001', 'net orders: HTTP 502', 'orders', 2);
     g12.call('errorsJob');
     const t12 = sumOf(g12)[0].payload.text;
-    ok(/^Помилки у магазині за годину: 2 \(з 1 телефона\)/.test(t12) && /Каталог через Cloudflare не відповів[^\n]*: 1 разів \(з 1 телефона\)$/.test(t12), 'worker_fallback рядом с ошибками: в N не входит, строка внизу', t12);
+    ok(/^Помилки у магазині за годину: 2 \(з 1 телефону\)/.test(t12) && /Каталог через Cloudflare не відповів[^\n]*: 1 раз \(з 1 телефону\)$/.test(t12), 'worker_fallback рядом с ошибками: в N не входит, строка внизу', t12);
     // неизвестная метка m принимается по обычным правилам
     const g13 = fresh();
     ok(g13.post({ action: 'err', did: 'phonejjjj001', items: [{ m: 'some_new_mark', s: 'catalog', v: '26' }] }).ok === true, 'неизвестная метка m принимается и не ломает приём');

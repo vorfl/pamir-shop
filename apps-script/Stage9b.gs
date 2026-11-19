@@ -574,6 +574,7 @@ function menuBackupOff() {
 /* ------------------------- б7.7: ошибки витрины ------------------------- */
 
 var ERR_PER_DID_HOUR = 5;
+var ERR_FB_PER_DID_HOUR = 2;  // метка worker_fallback с одного телефона в час (не съедает лимит настоящих ошибок)
 var ERR_TOTAL_HOUR = 300;     // общий счётчик: выше него повторы уже известных текстов не растут
 var ERR_DISTINCT_HOUR = 40;   // разных текстов в час: новые сверх этого молча отбрасываются
 var ERR_TEXT_MAX = 80;
@@ -699,18 +700,26 @@ function handleErr_(body) {
   var cache = CacheService.getScriptCache();
   var dKey = 'er_d_' + did + '_' + Math.floor(Date.now() / 3600000);
   var used = parseInt(cache.get(dKey), 10) || 0;
+  var fKey = 'er_f_' + did + '_' + Math.floor(Date.now() / 3600000); // метка worker_fallback: свой лимит
+  var usedF = parseInt(cache.get(fKey), 10) || 0;
+  var newF = 0;
   var items = [];
   var dh = errDidHash_(did);
-  body.items.slice(0, ERR_PER_DID_HOUR).forEach(function (it) {
-    if (used + items.length >= ERR_PER_DID_HOUR) return;
+  body.items.slice(0, ERR_PER_DID_HOUR + ERR_FB_PER_DID_HOUR).forEach(function (it) {
     var m = errSafe_(it && it.m) || errScrub_(it && it.m, ERR_TEXT_MAX);
     if (!m) return;
+    if (m === ERR_FALLBACK_MSG) {
+      if (usedF + newF >= ERR_FB_PER_DID_HOUR) return;
+      newF++;
+    } else if (used + items.filter(function (y) { return y.m !== ERR_FALLBACK_MSG; }).length >= ERR_PER_DID_HOUR) return;
     var v = String((it && it.v) || '').replace(/[^0-9A-Za-z.\-]/g, '').slice(0, 12);
     if (!/^v?\d[\w.\-]*$/i.test(v)) v = ''; // версия похожа на версию, а не на адрес
     items.push({ m: m, s: String((it && it.s) || '').replace(/[^\w:\-]/g, '').slice(0, 24), v: v, d: dh });
   });
   if (!items.length) return { ok: true };
-  cache.put(dKey, String(used + items.length), 3600);
+  var realN = items.length - newF;
+  if (realN > 0) cache.put(dKey, String(used + realN), 3600);
+  if (newF > 0) cache.put(fKey, String(usedF + newF), 3600);
   // Анонимный запрос не должен брать блокировку заказов: только DocumentLock, иначе запасные слоты.
   var lock = null;
   try { var dl = LockService.getDocumentLock(); if (dl && dl.tryLock(500)) lock = dl; } catch (errLock) { lock = null; }
@@ -773,8 +782,19 @@ function errPhoneNoun_(n) {
   if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return 'телефони';
   return 'телефонів';
 }
-/** После «з»: з 1 телефона, з 3 телефонів. */
-function errPhoneFrom_(n) { return 'з ' + n + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'телефона' : 'телефонів'); }
+/** После «з» (родительный): з 1 телефону, з 21 телефону, з 2 телефонів, з 11 телефонів. */
+function errPhoneFrom_(n) { return 'з ' + n + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'телефону' : 'телефонів'); }
+/** 1 раз, 2–4 рази, 5+ разів (11–14 — разів, 21 раз, 22 рази). */
+function errTimesText_(n) {
+  var a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return n + ' раз';
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return n + ' рази';
+  return n + ' разів';
+}
+/** Ошибка админки: экран начинается с admin или это сетевая ошибка действия admin.* (витрина читает admin.* заранее, с экрана catalog). */
+function errIsAdmin_(screen, msg) {
+  return /^admin/i.test(String(screen || '')) || /^net admin/i.test(String(msg || ''));
+}
 
 /** Число разных телефонов по списку видов ошибок; unknown — есть записи без отпечатка (старые, до выкладки). */
 function errPhoneStat_(holder, keys) {
@@ -796,7 +816,8 @@ function errPhoneText_(st, from) {
 function errSummaryText_(buf, fb) {
   var groups = { shop: [], admin: [] };
   Object.keys(buf.m || {}).forEach(function (k) {
-    groups[/^admin/i.test(k.split('\u0001')[0]) ? 'admin' : 'shop'].push({ k: k, c: buf.m[k] });
+    var kp = k.split('\u0001');
+    groups[errIsAdmin_(kp[0], kp[2]) ? 'admin' : 'shop'].push({ k: k, c: buf.m[k] });
   });
   function block(list) {
     list.sort(function (a, b) { return (b.c - a.c) || (a.k < b.k ? -1 : 1); });
@@ -835,7 +856,7 @@ function errSummaryText_(buf, fb) {
   }
   if (fb) {
     if (!out.length) out.push('Інформація (це не помилки, покупці нічого не помітили):');
-    out.push('Каталог через Cloudflare не відповів, магазин узяв його напряму: ' + fb.c + ' разів (' + errPhoneText_(errPhoneStat_(fb, ['x']), true) + ')');
+    out.push('Каталог через Cloudflare не відповів, магазин узяв його напряму: ' + errTimesText_(fb.c) + ' (' + errPhoneText_(errPhoneStat_(fb, ['x']), true) + ')');
   }
   return out.join('\n');
 }
