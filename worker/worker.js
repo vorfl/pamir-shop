@@ -12,7 +12,7 @@
 
 const FRESH_MS = 60 * 1000;            // каталог свежий 60 с
 const KEEP_MS = 24 * 60 * 60 * 1000;   // прошлый хороший ответ живёт до 24 ч
-const KV_REWRITE_MS = 30 * 60 * 1000;  // в KV не пишем чаще, если ответ не изменился
+const KV_REWRITE_MS = 12 * 60 * 60 * 1000; // без изменений каталога KV обновляем не чаще раза в 12 ч (чтобы запись не истекла)
 const MSG_GAP_MS = 30 * 60 * 1000;     // сообщение одного вида не чаще раза в 30 мин
 const GAS_TIMEOUT_MS = 20 * 1000;
 const CACHE_KEY_CATALOG = 'https://pamir-cache.invalid/catalog';
@@ -30,6 +30,12 @@ const mem = { catalog: null, kvWrittenAt: 0, inflight: null, pauseUntil: 0, purg
 // Без JSON.parse: вырезаем значение первого "updated" обычной заменой в строке.
 function normalizeCatalog(body) {
   return body.replace(/"updated"\s*:\s*("(?:[^"\\]|\\.)*"|-?[0-9.eE+-]+|null)/, '"updated":0');
+}
+
+// Отпечаток каталога: SHA-256 от нормализованного тела (без поля updated). Хранится рядом со значением.
+async function catalogHash(body) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizeCatalog(body)));
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 const CORS = {
@@ -158,9 +164,9 @@ function refreshCatalog(env, force) {
       return null;
     }
     mem.pauseUntil = 0;
-    const item = { body, ts: Date.now(), norm: normalizeCatalog(body) };
+    const item = { body, ts: Date.now(), h: await catalogHash(body) };
     const prev = mem.catalog || (await loadCatalogShared(env));
-    const changed = !prev || prev.norm !== item.norm;
+    const changed = !prev || prev.h !== item.h;
     mem.catalog = item;
     await saveCatalogShared(env, item, changed);
     return item;
@@ -269,41 +275,61 @@ async function safeEqual(a, b) {
 // Каталог хранится готовой строкой (время — в метаданных), JSON на горячем пути не разбирается.
 
 async function loadCatalogShared(env) {
-  if (env.PAMIR_KV) {
-    try {
-      const r = await env.PAMIR_KV.getWithMetadata(KV_CATALOG, 'text');
-      if (r && typeof r.value === 'string' && r.metadata && typeof r.metadata.ts === 'number') {
-        mem.kvWrittenAt = Math.max(mem.kvWrittenAt, r.metadata.ts); // время последней записи в KV известно
-        return { body: r.value, ts: r.metadata.ts, norm: normalizeCatalog(r.value) };
-      }
-    } catch (e) { /* идём дальше */ }
-  }
+  // 1) Cache API: бесплатно по лимитам KV; берём, только если там свежий каталог
+  let cached = null;
   try {
     if (typeof caches !== 'undefined' && caches.default) {
       const r = await caches.default.match(new Request(CACHE_KEY_CATALOG));
       if (r) {
         const ts = Number(r.headers.get('X-Pamir-Ts'));
-        if (ts) { const body = await r.text(); return { body, ts, norm: normalizeCatalog(body) }; }
+        if (ts) {
+          const body = await r.text();
+          cached = { body, ts, h: r.headers.get('X-Pamir-Hash') || (await catalogHash(body)) };
+          if (Date.now() - ts <= FRESH_MS) return cached;
+        }
       }
     }
   } catch (e) { /* ignore */ }
-  return null;
+  // 2) KV (запасной слой): одно чтение
+  if (env.PAMIR_KV) {
+    try {
+      const r = await env.PAMIR_KV.getWithMetadata(KV_CATALOG, 'text');
+      if (r && typeof r.value === 'string' && r.metadata && typeof r.metadata.ts === 'number') {
+        mem.kvWrittenAt = Math.max(mem.kvWrittenAt, r.metadata.ts); // время последней записи в KV известно
+        const kvItem = { body: r.value, ts: r.metadata.ts, h: typeof r.metadata.h === 'string' ? r.metadata.h : await catalogHash(r.value) };
+        if (!cached || kvItem.ts > cached.ts) return kvItem;
+      }
+    } catch (e) { /* идём дальше */ }
+  }
+  return cached;
 }
 
-async function saveCatalogShared(env, item, writeKv) {
+async function saveCatalogShared(env, item, changed) {
   if (env.PAMIR_KV) {
-    // у KV на бесплатном тарифе 1000 записей в сутки: пишем при изменении или раз в 30 минут
-    if (writeKv || Date.now() - mem.kvWrittenAt > KV_REWRITE_MS) {
+    // Бесплатный KV: 1000 записей в сутки. Пишем только если каталог изменился
+    // (по хэшу) либо раз в 12 часов, чтобы запись не истекла. Перед записью смотрим,
+    // не записал ли то же самое другой экземпляр Worker.
+    const now = Date.now();
+    if (changed || now - mem.kvWrittenAt > KV_REWRITE_MS) {
       try {
-        await env.PAMIR_KV.put(KV_CATALOG, item.body, { expirationTtl: 2 * 24 * 60 * 60, metadata: { ts: item.ts } });
-        mem.kvWrittenAt = Date.now();
+        let skip = false;
+        const cur = await env.PAMIR_KV.getWithMetadata(KV_CATALOG, 'text');
+        const m = cur && cur.metadata;
+        if (m && typeof m.ts === 'number' && m.h === item.h && now - m.ts <= KV_REWRITE_MS) {
+          skip = true;
+          mem.kvWrittenAt = Math.max(mem.kvWrittenAt, m.ts);
+        }
+        if (!skip) {
+          await env.PAMIR_KV.put(KV_CATALOG, item.body, { expirationTtl: 2 * 24 * 60 * 60, metadata: { ts: item.ts, h: item.h } });
+          mem.kvWrittenAt = now;
+        }
       } catch (e) { /* ignore */ }
     }
   }
   try {
     if (typeof caches !== 'undefined' && caches.default) {
       await caches.default.put(new Request(CACHE_KEY_CATALOG), new Response(item.body, {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=86400', 'X-Pamir-Ts': String(item.ts) },
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=86400', 'X-Pamir-Ts': String(item.ts), 'X-Pamir-Hash': item.h },
       }));
     }
   } catch (e) { /* ignore */ }

@@ -37,7 +37,7 @@
       pcs: 'шт',
       less: 'Менше',
       more: 'Більше',
-      close: 'Закрити',
+      close: 'Закрити', photoNext: 'Наступне фото',
       wholesale: 'Опт',
       outNote: 'Зараз цього товару немає в наявності.',
       emptyTitle: 'Нічого не знайдено',
@@ -156,7 +156,7 @@
       pcs: 'шт',
       less: 'Меньше',
       more: 'Больше',
-      close: 'Закрыть',
+      close: 'Закрыть', photoNext: 'Следующее фото',
       wholesale: 'Опт',
       outNote: 'Сейчас этого товара нет в наличии.',
       emptyTitle: 'Ничего не найдено',
@@ -450,7 +450,7 @@
     view: 'catalog',   // catalog | cart | checkout | done | admin | orders
     scrollY: 0,
     cart: { t: 0, i: [] }, // i: [{ id, g (граммы, 0 = штука/упаковка), q, pr (цена за единицу), was? }]
-    form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', giftNote: '', npType: 'branch', point: '' },
+    form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', giftNote: '', npType: 'branch', point: '', ifOut: 'call', cityRef: '', cityRefFor: '' },
     done: null,
     cartNotice: '',
     rid: loadRid(),    // id попытки заказа: повторная отправка не создаст второй заказ (переживает перезагрузку страницы)
@@ -633,6 +633,7 @@
         openDeepLink();
         deepId = '';
         captureSrc();
+        openReLink();
       })
       .catch(function () {
         if (!state.catalog) {
@@ -641,6 +642,7 @@
         } else if (cfg.API_URL) {
           state.offline = true;
           renderBanner();
+          openReLink(); // сети нет, но каталог из сохранённой копии есть
         }
       });
   }
@@ -715,7 +717,7 @@
     hapticLight();
     if (on) track('fav', id);
     renderTabbar();
-    if (state.view === 'fav' && !state.sheet) renderPage();
+    if (state.view === 'fav') { if (state.sheet) stale.fav = true; else renderPage(); }
   }
 
   function favBtn(p) {
@@ -732,19 +734,55 @@
     saveList(SEEN_KEY, 'seen', seen);
   }
 
-  /** Нижний регистр, «ё» = «е», без апострофов: «мʼята» и «мята» находят одно и то же. */
+  /** Нижний регистр, «ё»/«є»/«э» = «е», «і»/«ї»/«ы» = «и», без апострофов: «мʼята» и «мята», «кедрові» и «кедровые» находят одно и то же. */
   function norm(s) {
-    return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[ʼ’'`]/g, '').replace(/\s+/g, ' ').trim();
+    return String(s || '').toLowerCase().replace(/[ёєэ]/g, 'е').replace(/[іїы]/g, 'и').replace(/[ʼ’'`]/g, '').replace(/\s+/g, ' ').trim();
   }
 
   function buildSearchIndex(data) {
-    var cats = {};
+    var cats = {}, words = {};
     data.categories.forEach(function (c) { cats[c.code] = c.ua + ' ' + c.ru; });
     data.sx = {}; data.sn = {};
     data.products.forEach(function (p) {
       data.sn[p.id] = norm(p.ua + ' ' + (p.ru || '') + ' ' + p.id);
       data.sx[p.id] = data.sn[p.id] + ' ' + norm((cats[p.c] || '') + ' ' + (p.dUa || '') + ' ' + (p.dRu || ''));
+      data.sx[p.id].split(/[^a-z0-9а-яґ]+/).forEach(function (w) { if (w.length >= 4) words[w] = 1; });
     });
+    data.dict = Object.keys(words); // слова каталога: по ним ищем опечатки (не по каждому товару)
+    // Синонимы shop.syn ({слово: что искать}) приводим к тому же виду, что индекс. Нет поля — пусто, поиск как раньше.
+    data.synN = {};
+    var syn = data.shop && data.shop.syn;
+    if (syn && typeof syn === 'object' && !Array.isArray(syn)) {
+      Object.keys(syn).forEach(function (k) {
+        var key = norm(k), val = norm(syn[k]);
+        if (key && val && key !== '__proto__' && key.length <= 40 && val.length <= 80) data.synN[key] = val;
+      });
+    }
+  }
+
+  /** Отличаются ли слова не более чем на одну букву: замена, пропуск, лишняя, перестановка соседних. */
+  function nearWord(a, b) {
+    var la = a.length, lb = b.length;
+    if (la - lb > 1 || lb - la > 1) return false;
+    var i = 0;
+    while (i < la && i < lb && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+    if (i === la && i === lb) return true;
+    if (la === lb) {
+      if (a.slice(i + 1) === b.slice(i + 1)) return true;
+      return i + 1 < la && a.charAt(i) === b.charAt(i + 1) && a.charAt(i + 1) === b.charAt(i) && a.slice(i + 2) === b.slice(i + 2);
+    }
+    return la > lb ? a.slice(i + 1) === b.slice(i) : b.slice(i + 1) === a.slice(i);
+  }
+  /** Слова каталога, похожие на слово запроса (от 5 букв). Сравниваем слово целиком и его начало такой же длины («курагу» ~ «курага»). */
+  function typoWords(tk) {
+    var out = [], dict = (state.catalog && state.catalog.dict) || [];
+    if (tk.length < 5) return out;
+    for (var i = 0; i < dict.length; i++) {
+      var w = dict[i], d = w.length - tk.length;
+      if (d < -1) continue; // слово короче слова запроса больше чем на букву — не подходит
+      if (w !== tk && (nearWord(tk, w) || (d > 1 && nearWord(tk, w.slice(0, tk.length))))) out.push(w);
+    }
+    return out;
   }
 
   function rememberSearch(q) {
@@ -814,7 +852,7 @@
   function srcLabel(raw, catalog) {
     var v = String(raw || '');
     if (!/^[a-z0-9_-]{1,24}$/.test(v)) return '';
-    if (/^(ref_|adm_|rec)/.test(v) || /^[a-z]{3}-\d{3}$/.test(v)) return '';
+    if (/^(ref_|adm_|rec)/.test(v) || /^[a-z]{3}-\d{3}$/.test(v) || /^re-\d{1,10}$/.test(v)) return '';
     if (catalog && catalog.products.some(function (p) { return String(p.id).toLowerCase() === v; })) return '';
     return v;
   }
@@ -1024,29 +1062,52 @@
 
   function visibleProducts() {
     var tokens = norm(state.q).split(' ').filter(Boolean);
-    var sx = state.catalog.sx || {}, sn = state.catalog.sn || {};
-    var list = state.catalog.products.filter(function (p) {
+    var sx = state.catalog.sx || {}, sn = state.catalog.sn || {}, synN = state.catalog.synN || {};
+    var has = Object.prototype.hasOwnProperty;
+    var pool = state.catalog.products.filter(function (p) {
       if (state.cat && p.c !== state.cat) return false;
       if (flt.onlyStock && !p.a) return false;
       if (flt.onlySale && !(p.a && hasOld(p))) return false;
-      var text = sx[p.id] || '';
-      return tokens.every(function (tk) { return text.indexOf(tk) >= 0; });
+      return true;
     });
-    if (tokens.length) { // совпадение в названии важнее совпадения в описании
-      var inName = function (p) { var text = sn[p.id] || ''; return tokens.every(function (tk) { return text.indexOf(tk) >= 0; }); };
-      list = list.filter(inName).concat(list.filter(function (p) { return !inName(p); }));
+    function finish(list) {
+      if (tokens.length) { // совпадение в названии важнее совпадения в описании
+        var inName = function (p) { var text = sn[p.id] || ''; return tokens.every(function (tk) { return text.indexOf(tk) >= 0; }); };
+        list = list.filter(inName).concat(list.filter(function (p) { return !inName(p); }));
+      }
+      if (flt.sort === 'asc' || flt.sort === 'desc') {
+        var dir = flt.sort === 'asc' ? 1 : -1;
+        var val = function (p) { var cp = cardPrice(p); return cp ? cp.price : Infinity * dir; };
+        list = list.slice().sort(function (a, b) { return (val(a) - val(b)) * dir; });
+      } else if (flt.sort === 'pop') {
+        list = list.slice().sort(function (a, b) { return (b.n || 0) - (a.n || 0); });
+      } else if (flt.sort === 'az') {
+        list = list.slice().sort(function (a, b) { return name(a).localeCompare(name(b), state.lang === 'ru' ? 'ru' : 'uk'); });
+      }
+      // Товары, которых нет, уходят в конец; порядок остальных — как выбрано (по умолчанию как в таблице).
+      return list.filter(function (p) { return p.a; }).concat(list.filter(function (p) { return !p.a; }));
     }
-    if (flt.sort === 'asc' || flt.sort === 'desc') {
-      var dir = flt.sort === 'asc' ? 1 : -1;
-      var val = function (p) { var cp = cardPrice(p); return cp ? cp.price : Infinity * dir; };
-      list = list.slice().sort(function (a, b) { return (val(a) - val(b)) * dir; });
-    } else if (flt.sort === 'pop') {
-      list = list.slice().sort(function (a, b) { return (b.n || 0) - (a.n || 0); });
-    } else if (flt.sort === 'az') {
-      list = list.slice().sort(function (a, b) { return name(a).localeCompare(name(b), state.lang === 'ru' ? 'ru' : 'uk'); });
-    }
-    // Товары, которых нет, уходят в конец; порядок остальных — как выбрано (по умолчанию как в таблице).
-    return list.filter(function (p) { return p.a; }).concat(list.filter(function (p) { return !p.a; }));
+    if (!tokens.length) return finish(pool);
+    // Три слоя: точные совпадения; совпадения через синонимы; опечатки. Каждый следующий слой идёт ниже предыдущего.
+    var exact = [], viaSyn = [], viaTypo = [], typo = {};
+    pool.forEach(function (p) {
+      var text = sx[p.id] || '', usedSyn = false, usedTypo = false;
+      var all = tokens.every(function (tk) {
+        if (text.indexOf(tk) >= 0) return true;
+        if (has.call(synN, tk)) { // слово запроса заменяется целевым: «урюк» → «курага»
+          var parts = synN[tk].split(' ').filter(Boolean);
+          if (parts.length && parts.every(function (w) { return text.indexOf(w) >= 0; })) { usedSyn = true; return true; }
+        }
+        if (tk.length >= 5) {
+          var ws = typo[tk] || (typo[tk] = typoWords(tk));
+          for (var i = 0; i < ws.length; i++) if (text.indexOf(ws[i]) >= 0) { usedTypo = true; return true; }
+        }
+        return false;
+      });
+      if (!all) return;
+      (usedTypo ? viaTypo : usedSyn ? viaSyn : exact).push(p);
+    });
+    return finish(exact).concat(finish(viaSyn), finish(viaTypo));
   }
 
   /** Адрес маленькой копии (360 px) — только для файлов витрины вида …/img/products/<ID>.webp; остальные адреса (Google Drive и т. п.) не меняются. */
@@ -1054,10 +1115,10 @@
     var m = /^(.*\/img\/products\/)([^\/?#]+\.webp)$/i.exec(String(u || ''));
     return m ? m[1] + 's/' + m[2] : '';
   }
-  /** К файлам витрины …/img/products/<ID>.webp (и s/<ID>.webp) добавляется ?v=<версия из index.html>: после замены фото телефоны не показывают старый кэш. Остальные адреса не меняются. */
+  /** К файлам витрины …/img/products/<ID>.webp (и s/<ID>.webp, p/<ID>.webp) добавляется ?v=<версия из index.html>: после замены фото телефоны не показывают старый кэш. Остальные адреса не меняются. */
   function verUrl(u) {
     u = String(u || '');
-    return SCRIPT_V && /\/img\/products\/(s\/)?[^\/?#]+\.webp$/i.test(u) ? u + '?v=' + SCRIPT_V : u;
+    return SCRIPT_V && /\/img\/products\/(s\/|p\/)?[^\/?#]+\.webp$/i.test(u) ? u + '?v=' + SCRIPT_V : u;
   }
   /** small — карточки, ленты, корзина: берут маленькую копию; шторка товара — большую. Нет маленькой — один раз подставляется большая (см. обработчик error). */
   function photoHtml(p, eager, small) {
@@ -1296,17 +1357,22 @@
     items.sort(function (x, y) { return (x.pri - y.pri) || (x.seq - y.seq); });
     return items;
   }
+  /**
+   * Главная после «Нашей кураги»: {first} — первая непустая лента (она встаёт сразу под «Нашей курагой»,
+   * чтобы на 360 × 640 карточки были на первом экране), {rest} — остальные ленты, чипы «Ще» и рецепты.
+   */
   function homeRails() {
     var all = railItems(), max = railsMax();
     var items = all.filter(function (i) { return i.key !== 'gift'; });
-    var html = all.filter(function (i) { return i.key === 'gift'; }).concat(items.slice(0, max)).map(function (i) { return i.html; }).join('');
+    var shown = all.filter(function (i) { return i.key === 'gift'; }).concat(items.slice(0, max));
+    var html = shown.slice(1).map(function (i) { return i.html; }).join('');
     var rest = items.slice(max);
     if (rest.length) { // лишние непустые ленты — строкой чипов; чип открывает отдельный экран со списком
       html += '<div class="morerails"><span class="morerails__label">' + esc(t('plusMore')) + '</span>' + rest.map(function (i) {
         return '<button type="button" class="chip chip--sm" data-w1="rail" data-k="' + esc(i.key) + '">' + esc(i.title) + '</button>';
       }).join('') + '</div>';
     }
-    return html + recipesHomeHtml();
+    return { first: shown.length ? shown[0].html : '', rest: html + recipesHomeHtml() };
   }
   function railPageHtml() {
     var it = null;
@@ -1345,7 +1411,8 @@
         railHtml(t('secPop'), '', popular(10).list);
       return;
     }
-    var html = home ? featureHtml() + fatherHtml() + plusHtml() + homeRails() : '';
+    var hr = home ? homeRails() : null;
+    var html = home ? featureHtml() + hr.first + fatherHtml() + plusHtml() + hr.rest : '';
     // Список листается страницами по PAGE_SIZE товаров; номер страницы живёт в flt.page.
     flt.page = clampPage(flt.page, list.length, PAGE_SIZE);
     var from = (flt.page - 1) * PAGE_SIZE;
@@ -1429,6 +1496,16 @@
     document.body.classList.remove('is-locked');
     updateChrome();
     swipes(state.view !== 'checkout');
+    flushStale();
+  }
+  /** Ответ пришёл, пока была открыта шторка: экран под ней не перерисовывался. Перерисовываем при закрытии, если он всё ещё актуален. */
+  var stale = { main: '', fav: false, admin: false };
+  function flushStale() {
+    var s = stale; stale = { main: '', fav: false, admin: false };
+    if (state.sheet) { stale = s; return; }
+    if (s.main && state.view === 'catalog' && state.status === 'ready' && (s.main === 'force' || (isHome() && (window.scrollY || 0) < 200))) renderMain();
+    if (s.fav && state.view === 'fav') renderPage();
+    if (s.admin && state.view === 'admin' && !adm.loading && !adm.busy && !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !adm.mailEdit) renderAdminList();
   }
 
   /** Пока открыта шторка или форма заказа, жест «потянуть вниз» не должен сворачивать весь магазин. */
@@ -1498,9 +1575,11 @@
     var total = lineTotal(p, s.vi, s.qty), old = oldTotal(p, s.vi, s.qty);
     var canBuy = p.a && total > 0 && max >= 1;
 
-    var body = '<div class="sheet__img">' + photoHtml(p) + '<div class="sheet__acts">' +
+    var two = sheetPhoto2(p); // второе фото (необязательное поле i2): есть — лента из двух слайдов и точки, нет — как раньше
+    var body = '<div class="sheet__img">' + (two ? '<div class="sheet__strip"><div class="sheet__slide">' + photoHtml(p) + '</div><div class="sheet__slide sheet__slide--2">' + two + '</div></div>' : photoHtml(p)) +
+      '<div class="sheet__acts">' +
       '<button type="button" class="fav fav--share" data-action="share" aria-label="' + esc(t('share')) + '">' + icon('share') + '</button>' +
-      favBtn(p) + '</div></div>' +
+      favBtn(p) + '</div></div>' + (two ? sheetDotsHtml(s.slide || 0) : '') +
       '<div class="sheet__head"><div class="sheet__badges">' + badgeHtml(p, true) + promoHtml(p) + '</div>' +
       '<h2 class="sheet__title" id="sheetTitle">' + esc(name(p)) + '</h2>';
     if (p.t === 'w' && p.k > 0) {
@@ -1516,7 +1595,7 @@
 
     var d = desc(p);
     if (d) body += '<p class="sheet__desc">' + esc(d) + '</p>';
-    body += howHtml(p) + compHtml(p) + passportHtml(p) + recipeLinksHtml(p);
+    body += setHtml(p) + howHtml(p) + compHtml(p) + passportHtml(p) + recipeLinksHtml(p);
 
     if (p.a) {
       if (p.t === 'w') {
@@ -1562,6 +1641,73 @@
       '<div class="sheet__grab" aria-hidden="true"></div>' +
       '<div class="sheet__body">' + body + '</div>' + foot;
     el.sheet.querySelector('.sheet__body').scrollTop = top;
+    var strip = el.sheet.querySelector('.sheet__strip');
+    if (strip && s.slide) strip.scrollLeft = strip.clientWidth * s.slide; // шторку перерисовали (количество, фасовка) — остаёмся на том же фото
+  }
+
+  /**
+   * Набор (необязательные поля ks и kp от бэкенда Б2): состав со ссылками и строка «Окремо … · набором …».
+   * ID, которого нет в каталоге, не показываем; ни одного названия — блока нет. Сумму не считаем: kp приходит с сервера.
+   */
+  function setHtml(p) {
+    if (!p || !Array.isArray(p.ks) || !p.ks.length) return '';
+    var seen = {}, list = [];
+    p.ks.forEach(function (id) {
+      var c = product(String(id));
+      if (c && c.id !== p.id && !seen[c.id]) { seen[c.id] = 1; list.push(c); }
+    });
+    var html = '';
+    if (list.length) {
+      html += '<p class="label">' + esc(t('setComp')) + '</p><ul class="setc__list">' + list.map(function (c) {
+        return '<li><button type="button" class="linkbtn setc__link" data-w1="sheet-open" data-pid="' + esc(c.id) + '">' + esc(name(c)) + '</button></li>';
+      }).join('') + '</ul>';
+    }
+    var own = p.t === 'w' ? 0 : Number(p.p) || 0, kp = Number(p.kp);
+    if (p.a && own > 0 && kp > own) html += '<p class="setc__sep">' + esc(tf('setSep', { a: money(kp), b: money(own) })) + '</p>';
+    return html ? '<div class="how setc">' + html + '</div>' : '';
+  }
+
+  /** Второе фото товара: только http(s)-ссылка из необязательного поля i2 и только пока оно не упало при загрузке. Нет — пустая строка. */
+  var badPhoto2 = {};
+  function sheetPhoto2(p) {
+    var u = p && typeof p.i2 === 'string' ? p.i2.trim() : '';
+    if (!u || !p.img || badPhoto2[p.id] || !/^https?:\/\//i.test(u)) return '';
+    return '<img src="' + esc(verUrl(u)) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
+  }
+  function sheetDotsHtml(cur) {
+    // Вся полоска точек — одна кнопка (в Telegram на компьютере свайпа нет): нажатие переключает на другое фото. Свайп остаётся.
+    var h = '<button type="button" class="sheet__dots" data-action="photo-next" aria-label="' + esc(t('photoNext')) + '">';
+    for (var i = 0; i < 2; i++) h += '<span class="sheet__dot' + (i === cur ? ' is-on' : '') + '" aria-hidden="true"></span>';
+    return h + '</button>';
+  }
+  function sheetMarkDot(i) {
+    if (state.sheet) state.sheet.slide = i;
+    [].forEach.call(el.sheet.querySelectorAll('.sheet__dot'), function (d, k) {
+      d.classList.toggle('is-on', k === i);
+    });
+  }
+  function sheetPhotoNext() {
+    var strip = el.sheet.querySelector('.sheet__strip');
+    if (!strip || !state.sheet || !strip.clientWidth) return;
+    var to = state.sheet.slide === 1 ? 0 : 1, calm = false;
+    try { calm = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { /* без matchMedia — плавно */ }
+    sheetMarkDot(to); // отклик сразу, не дожидаясь конца прокрутки
+    state.sheet.goto = to;
+    var sh = state.sheet;
+    setTimeout(function () { if (sh.goto === to) delete sh.goto; }, 700);
+    try { strip.scrollTo({ left: strip.clientWidth * to, behavior: calm ? 'auto' : 'smooth' }); } catch (e) { strip.scrollLeft = strip.clientWidth * to; }
+  }
+  /** Второе фото не загрузилось — убираем слайд и точки, остаётся как с одним фото. */
+  function dropPhoto2() {
+    if (state.sheet && state.sheet.id) badPhoto2[state.sheet.id] = true;
+    var strip = el.sheet.querySelector('.sheet__strip');
+    if (state.sheet) state.sheet.slide = 0;
+    if (strip) {
+      var first = strip.querySelector('.sheet__slide');
+      strip.parentNode.replaceChild(first ? (first.firstChild || document.createTextNode('')) : document.createTextNode(''), strip);
+    }
+    var dots = el.sheet.querySelector('.sheet__dots');
+    if (dots) dots.parentNode.removeChild(dots);
   }
 
   function shareProduct(p) {
@@ -1919,7 +2065,7 @@
     renderTabbar();
     var tabs = !!TAB_VIEWS[state.view] && !typing;
     el.tabbar.hidden = !tabs;
-    document.body.classList.toggle('has-tabbar', tabs);
+    document.body.classList.toggle('has-tabbar', tabs); document.documentElement.classList.toggle('has-tabbar', tabs); // для scroll-padding: scrollIntoView не прячет блок под панелью
 
     var spec = mainSpec();
     if (useNativeMain) {
@@ -1951,7 +2097,7 @@
   }
 
   function renderPage() {
-    if (state.view === 'cart') { el.page.innerHTML = cartHtml(); tweenCartSum(); }
+    if (state.view === 'cart') { el.page.innerHTML = cartHtml(); tweenCartSum(); npCostSync(); }
     else if (state.view === 'checkout') { el.page.innerHTML = checkoutHtml(); syncCheckout(); }
     else if (state.view === 'done') el.page.innerHTML = doneHtml();
     else if (state.view === 'admin') { el.page.innerHTML = adminHtml(); lockAdminForm(); }
@@ -2022,6 +2168,51 @@
     return out.slice(0, 8);
   }
 
+  /* ---- Подсказка в корзине (shop.hint = {tag, id, ua, ru}); нет поля — ничего не меняется ---- */
+  function tagKey(x) { return String(x || '').toLowerCase().replace(/[ʼ’'`]/g, '').replace(/\s+/g, ' ').trim(); }
+  /** Подсказка, которую надо показать сейчас: в корзине есть товар с тегом, нет товара id; товар id есть в каталоге и в наличии. */
+  function activeHint() {
+    var h = shopInfo().hint;
+    if (!h || typeof h !== 'object' || !h.tag || !h.id || !state.catalog) return null;
+    var text = String(state.lang === 'ru' ? (h.ru || h.ua) : (h.ua || h.ru) || '');
+    if (!text) return null;
+    var tag = tagKey(h.tag), id = String(h.id), p = product(id);
+    if (!p || !p.a || !(unitPrice(p, hintGrams(p)) > 0)) return null;
+    var tagged = false, have = false;
+    state.cart.i.forEach(function (l) {
+      if (l.id === id) have = true;
+      var q = product(l.id);
+      if (q && tagsOf(q).some(function (x) { return tagKey(x) === tag; })) tagged = true;
+    });
+    return tagged && !have ? { p: p, text: text } : null;
+  }
+  /** Фасовка для обычной кнопки: у весового — первая, которой хватает на складе (как при открытии шторки). */
+  function hintGrams(p) {
+    if (p.t !== 'w') return 0;
+    for (var i = 0; i < p.v.length; i++) if (maxQty(p, p.v[i][0]) >= 1) return p.v[i][0];
+    return 0;
+  }
+  function cartHintHtml() {
+    var h = activeHint();
+    if (!h) return '';
+    return '<div class="chint" id="cartHint"><p class="chint__text">' + esc(h.text) + '</p>' +
+      '<button type="button" class="btn btn--soft" data-w1="hint-add" data-pid="' + esc(h.p.id) + '">' + esc(t('hintAdd')) + '</button></div>';
+  }
+  function addHint(btn) {
+    var p = product(btn.getAttribute('data-pid')), g = p ? hintGrams(p) : 0;
+    var price = unitPrice(p, g);
+    if (!p || !(price > 0) || maxQty(p, g) < 1) { haptic('error'); return; }
+    btn.disabled = true; btn.classList.add('is-busy');
+    var line = null;
+    state.cart.i.forEach(function (l) { if (l.id === p.id && l.g === g) line = l; });
+    if (line) { line.q = Math.min(MAX_QTY, line.q + 1); line.pr = price; } else state.cart.i.push({ id: p.id, g: g, q: 1, pr: price });
+    saveCart();
+    haptic('success');
+    track('add', p.id, 'hint');
+    afterCartChange(true); // корзина перерисуется, подсказка исчезнет (товар уже в корзине)
+    toast(t('added'));
+  }
+
   function cartHtml() {
     var html = pageHead(t('cart'), true);
     if (state.cartNotice) html += state.cartNoticeInfo
@@ -2057,9 +2248,11 @@
       html += '</li>';
     });
     html += '</ul>';
+    html += cartHintHtml();
     if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
     html += nyUntilHtml() + whCartHtml() + refCartHtml() + cartPerksHtml();
     html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
+    if (state.form.delivery === 'np') html += npCostHtml(); // нет shop.npp — пустая строка, корзина как раньше
     html += railHtml(t('cartMore'), '', crossSell(), true);
     html += '<button type="button" class="btn btn--ghost btn--block" data-action="clear-cart">' + icon('trash-2') + esc(t('clearCart')) + '</button>';
     return html;
@@ -2080,7 +2273,9 @@
   function saveForm() {
     var f = state.form;
     // Комментарий и подпись к подарку тоже хранятся на устройстве (не в облаке): сбой отправки или перезагрузка не стирают текст.
-    store.set(FORM_KEY, JSON.stringify({ name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point, comment: f.comment, giftNote: f.giftNote }));
+    var saved = { name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point, comment: f.comment, giftNote: f.giftNote, ifOut: f.ifOut };
+    if (f.cityRef && f.cityRefFor === f.city) { saved.cityRef = f.cityRef; saved.cityRefFor = f.cityRefFor; } // Ref города из подсказки Новой почты: только пока совпадает с текстом города
+    store.set(FORM_KEY, JSON.stringify(saved));
   }
 
   /** Маска +380 XX XXX XX XX. Понимает ввод с 0, 80 и 380 в начале. */
@@ -2145,7 +2340,7 @@
       '<fieldset class="group"><legend class="label">' + esc(t('delivery')) + '</legend><div class="opts">' +
       option('delivery', 'pickup', 'store', t('pickup')) + option('delivery', 'np', 'truck', t('np')) + '</div>' +
       '<div id="pickupInfo" class="stack">' + pickupHtml(addr, hours) + '</div>' +
-      '<div id="npFields" class="stack">' + npFieldsHtml() + '</div></fieldset>' +
+      '<div id="npFields" class="stack">' + npFieldsHtml() + npCostHtml() + '</div></fieldset>' +
 
       '<fieldset class="group"><legend class="label">' + esc(t('payment')) + '</legend><div class="opts opts--col">' +
       payMethods().map(function (k) { return option('pay', k, '', payName(k)); }).join('') + '</div>' +
@@ -2153,7 +2348,7 @@
 
       '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
       '<textarea class="input input--area" id="f-comment" name="comment" rows="3" maxlength="300" placeholder="' + esc(t('commentPh')) + '">' + esc(f.comment) + '</textarea></div>' +
-      giftNoteHtml() +
+      giftNoteHtml() + ifoHtml() +
 
       '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total js-sum">' + money(cartTotal()) + '</span></div>' +
       '</form>';
@@ -2178,10 +2373,12 @@
       saveForm();
     }
     document.getElementById('cardNote').hidden = state.form.pay !== 'card';
+    npCostSync();
   }
 
   function updateCheckoutSum() {
     Array.prototype.forEach.call(el.page.querySelectorAll('.js-sum'), function (sum) { sum.textContent = money(cartTotal()); });
+    npCostSync();
     if (!(cartTotal() > 0)) go('cart');
   }
 
@@ -2192,6 +2389,7 @@
     f.name = form.elements.name.value.trim();
     f.phone = form.elements.phone.value.trim();
     f.city = form.elements.city.value.trim();
+    var ref = npRefNow(f.city); f.cityRef = ref; f.cityRefFor = ref ? f.city : '';
     f.branch = form.elements.branch.value.trim();
     f.comment = form.elements.comment.value.trim();
     if (form.elements.giftNote) f.giftNote = form.elements.giftNote.value.replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -2199,6 +2397,7 @@
     f.npType = { locker: 'locker', courier: 'courier' }[form.elements.npType ? form.elements.npType.value : ''] || 'branch';
     if (form.elements.point && form.elements.point.value) f.point = form.elements.point.value;
     f.pay = { card: 'card', cod: 'cod' }[form.elements.pay.value] || 'cash';
+    if (form.elements.ifOut) f.ifOut = { replace: 'replace', remove: 'remove' }[form.elements.ifOut.value] || 'call';
     if (f.phone === '+380') f.phone = '';
     saveForm();
   }
@@ -2237,7 +2436,7 @@
   /** Данные заказа в том виде, в каком их получит сервер на этапе 3. Цены сервер считает сам. */
   function buildOrder() {
     var f = state.form;
-    return {
+    var order = {
       items: state.cart.i.filter(function (l) { return lineInfo(l).ok; })
         .map(function (l) { return { id: l.id, g: l.g, q: l.q }; }),
       name: f.name, phone: f.phone.replace(/\s+/g, ''),
@@ -2246,6 +2445,10 @@
       pay: f.pay, comment: f.comment, giftNote: giftNoteOn() ? f.giftNote : '', src: srcStored(), lang: state.lang, total: cartTotal(), ref: refStored(),
       initData: inTelegram ? tg.initData : '', test: DEBUG
     };
+    if (ifoOn()) order.ifOut = f.ifOut === 'replace' || f.ifOut === 'remove' ? f.ifOut : 'call'; // нет флага shop.ifo (старый бэкенд) — поля нет
+    var cref = f.delivery === 'np' ? npRefNow(f.city) : '';
+    if (cref) order.cityRef = cref; // город выбран из подсказки Новой почты (введён руками — поля нет); сервер на цену и сумму его не использует
+    return order;
   }
 
   function newRid() {
@@ -2433,7 +2636,10 @@
       store.set(HASORD_KEY, my.list.length ? '1' : '0');
       if (state.view === 'orders') renderPage();
       // Подборка «Купити знову» появляется на главной, если человек ещё не начал её листать.
-      else if (state.view === 'catalog' && !state.sheet && state.status === 'ready' && isHome() && my.bought.join() !== had && (window.scrollY || 0) < 200) renderMain();
+      else if (state.view === 'catalog' && state.status === 'ready' && isHome() && my.bought.join() !== had && (window.scrollY || 0) < 200) {
+        if (state.sheet) { if (!stale.main) stale.main = 'usual'; } // шторка открыта: перерисуем при закрытии
+        else renderMain();
+      }
     }).catch(function () {
       my.loading = false; my.error = 'myErr';
       if (state.view === 'orders') renderPage();
@@ -2497,7 +2703,7 @@
         '<button type="button" class="btn btn--primary" data-nav="catalog">' + esc(t('toCatalog')) + '</button></div>';
     }
     html += '<ul class="lines">' + my.list.map(function (o) {
-      var items = String(o.items).split('; ').filter(Boolean).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
+      var items = orderItemsHtml(o.items);
       return '<li class="my"><div class="my__head"><span class="ord__num">' + esc(o.num) + '</span>' +
         '<span class="badge ' + (STATUS_BADGE[o.status] || '') + '">' + esc(t('ost_' + o.status) === 'ost_' + o.status ? o.status : t('ost_' + o.status)) + '</span>' +
         '<span class="my__date">' + esc(o.date) + '</span></div>' +
@@ -2513,33 +2719,58 @@
   }
 
   /** «Повторить заказ»: кладём в корзину то, что сейчас можно купить по тем же фасовкам. */
-  function repeatOrder(num) {
-    var order = null;
-    (my.list || []).forEach(function (o) { if (o.num === num) order = o; });
-    if (!order || !order.i) return;
+  function repeatOrder(num, given) {
+    var order = given || null; // given — заказ из ответа «one» (ссылка re-<номер>), его может не быть среди последних 20
+    if (!order) (my.list || []).forEach(function (o) { if (o.num === num) order = o; });
+    if (!order || !order.i) return false;
+    var skipped = []; // названия товаров, которые сейчас купить нельзя: клиент видит, чего нет в корзине
     var added = 0, gone = 0; // gone — товаров больше нет в магазине (в архиве или удалены): их пропускаем
     order.i.forEach(function (it) {
       var id = String(it[0]), g = Number(it[1]) || 0, q = Math.max(1, Math.min(MAX_QTY, Math.floor(Number(it[2])) || 1));
       var p = product(id);
       if (!p) gone++;
       var price = unitPrice(p, g);
-      if (!(price > 0)) return;
+      if (!(price > 0)) { if (p && skipped.indexOf(name(p)) < 0) skipped.push(name(p)); return; }
       var line = null;
       state.cart.i.forEach(function (l) { if (l.id === id && l.g === g) line = l; });
       if (line) { line.q = Math.min(MAX_QTY, line.q + q); line.pr = price; }
       else state.cart.i.push({ id: id, g: g, q: q, pr: price });
       added++;
     });
-    if (!added) { toast(t(gone === order.i.length ? 'repeatGoneAll' : 'repeatNone')); haptic('error'); return; }
+    if (!added) { toast(t(gone === order.i.length ? 'repeatGoneAll' : 'repeatNone') + (skipped.length ? ' ' + tf('repeatSkip', { list: skipped.join(', ') }) : '')); haptic('error'); return false; }
     track('repeat', num, added);
     saveCart();
     haptic('success');
     state.cartNotice = added === order.i.length ? t('repeatOk')
-      : (gone ? t('repeatGone') + ' ' : '') + t(gone === order.i.length - added ? 'repeatAdded' : 'repeatPart').replace('{a}', added).replace('{b}', order.i.length);
+      : (gone ? t('repeatGone') + ' ' : '') + t(gone === order.i.length - added ? 'repeatAdded' : 'repeatPart').replace('{a}', added).replace('{b}', order.i.length) +
+        (skipped.length ? ' ' + tf('repeatSkip', { list: skipped.join(', ') }) : '');
     renderMain();
     go('cart');
     state.cartNoticeInfo = true; // это подсказка, а не ошибка
     renderPage();
+    return true;
+  }
+
+  /**
+   * Повтор заказа по ссылке из сообщения бота: startapp=re-<цифры> (номер заказа P-<цифры>). Один раз за открытие, когда каталог свежий.
+   * Нет поля one в ответе (старый бэкенд, чужой заказ, ошибка сети) — просто «Мої замовлення», без ошибки.
+   */
+  var reNum = (function () {
+    var m = /^re-(\d{1,10})$/.exec(String((inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || params.get('p') || params.get('tgWebAppStartParam') || '').trim().toLowerCase());
+    return m ? m[1] : '';
+  })();
+  var reRan = false;
+  function openReLink() {
+    if (!reNum || reRan || !state.catalog) return;
+    reRan = true;
+    function fallback() { if (state.view === 'catalog' && !state.sheet) go('orders'); }
+    if (!cfg.API_URL || !inTelegram) { fallback(); return; }
+    var want = 'P-' + reNum;
+    postApi('orders.my', { num: want }).then(function (res) {
+      var one = res && res.ok && res.one;
+      if (one && one.num === want && Array.isArray(one.i) && one.i.length && repeatOrder(want, one)) return;
+      fallback();
+    }).catch(fallback);
   }
 
   /* ------------------------------ Админ-панель (этап 5) ------------------------------ */
@@ -2601,7 +2832,7 @@
         store.set(ADMIN_KEY, '1');
         admAt[kind] = Date.now();
         if (res.me) adm.me = res.me;
-        if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; adm.replies = Array.isArray(res.replies) ? res.replies : []; adm.canMsg = Array.isArray(res.replies); fetchToday(); }
+        if (kind === 'orders') { adm.npTtn = res.npTtn === 1 ? 1 : 0; adm.orders = res.orders || []; adm.stats = res.stats || null; adm.replies = Array.isArray(res.replies) ? res.replies : []; adm.canMsg = Array.isArray(res.replies); fetchToday(); }
         else if (kind === 'settings') adm.settings = res.fields || [];
         else if (kind === 'reviews') adm.reviews = res.reviews || [];
         else if (kind === 'admins') { adm.admins = res.admins || []; adm.invites = res.invites || []; adm.permList = res.permList || []; }
@@ -2628,7 +2859,7 @@
     if (kind === 'settings' || admFlight[kind] || adm.busy || Date.now() - (admAt[kind] || 0) < ADMIN_FRESH_MS) return;
     fetchAdmin(kind).then(function (res) {
       if (res && res.ok && state.view === 'admin' && adminKind() === kind && !adm.loading && !adm.busy &&
-          !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !adm.mailEdit && !state.sheet) renderAdminList();
+          !adm.edit && !adm.catEdit && !adm.admEdit && !adm.salesOpen && !adm.logOpen && !adm.archOpen && !adm.mailEdit) { if (state.sheet) stale.admin = true; else renderAdminList(); }
     }).catch(function () { /* останется прежний список */ });
   }
 
@@ -2819,6 +3050,14 @@
     }
     return html + '</div>';
   }
+  /** Строки заказа: «; » между позициями, «\n   · название» — состав набора отдельными строками под позицией. */
+  function orderItemsHtml(items) {
+    return String(items || '').split('; ').map(function (s) {
+      if (!s) return '';
+      var parts = s.split('\n'), head = parts.shift(), sub = parts.map(function (x) { return x.replace(/^\s+/, ''); }).filter(Boolean);
+      return '<li>' + esc(head) + sub.map(function (x) { return '<span class="ord__sub">' + esc(x) + '</span>'; }).join('') + '</li>';
+    }).join('');
+  }
   function orderAddress(o) {
     return [o.city, o.branch].filter(function (x) { return x && String(x).trim(); }).join(', ');
   }
@@ -2843,9 +3082,7 @@
         '<span class="ord__meta">' + esc(o.date) + ' · ' + esc(o.name) + '</span></button>';
       if (open) {
         var addr = orderAddress(o);
-        html += '<div class="ord__body"><ul class="ord__items">' + String(o.items).split('; ').map(function (s) {
-          return s ? '<li>' + esc(s) + '</li>' : '';
-        }).join('') + '</ul>' +
+        html += '<div class="ord__body"><ul class="ord__items">' + orderItemsHtml(o.items) + '</ul>' +
           '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br>' + esc(o.phone) + '</p>' +
           '<p>' + esc(o.delivery) + (o.city ? ': ' + esc(o.city) + ', ' + esc(o.branch) : '') + '<br>' + esc(o.pay) + '</p>' +
           (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) + payAdminHtml(o) +
@@ -3313,11 +3550,11 @@
   /* ---- Настройки магазина ---- */
   /** Группы настроек. Ключ, которого нет ни в одной группе (новый на сервере), попадает в «Інше» — без пояснения. */
   var SET_GROUPS = [
-    ['shop', 'setGShop', /^(notice_|contact$|feature_|father_|home_rails_max$|low_stock$|fresh_days$|src_list$)/],
+    ['shop', 'setGShop', /^(notice_|contact$|feature_|father_|home_rails_max$|low_stock$|fresh_days$|src_list$|hint_)/],
     ['gifts', 'setGGifts', /^(gift_|loyal_|referral_)/],
     ['pay', 'setGPay', /^(pay_|min_order$|address_|hours_)/],
     ['texts', 'setGTexts', /^(bot_|greeting|welcome_|biz_soon_|confirm_|story_|reply_)/],
-    ['remind', 'setGRemind', /^(remind_days$|remind_text_|review_days$|cart_remind_hours$|cart_mute_days$|mail_every_days$)/],
+    ['remind', 'setGRemind', /^(remind_days$|remind_text_|review_days$|cart_remind_hours$|cart_mute_days$|mail_every_days$|followup[12]_|digest_hour$|np_track_hours$)/],
     ['season', 'setGSeason', /^(theme|ny_)/]
   ];
   var SET_SWITCH = /^(pay_|ny_snow$|gift_note$|referral_on$)/; // включено/выключено — переключателем
@@ -3354,6 +3591,10 @@
     var box = document.getElementById('pv-' + k), input = document.getElementById('a-' + k);
     if (box && input) box.innerHTML = previewHtml(k, input.value);
   }
+  var SET_ZERO_OFF = /^(followup[12]_days|np_track_hours)$/;
+  function setOffHtml(k, v) {
+    return SET_ZERO_OFF.test(k) ? '<p class="field__hint field__off" id="off-' + esc(k) + '"' + (String(v).trim() === '0' ? '' : ' hidden') + '>' + esc(t('setOff')) + '</p>' : '';
+  }
   function setHintsHtml(k) {
     var base = setBase(k), h = I18N[state.lang]['sh_' + base] || I18N.ua['sh_' + base] || '';
     var ex = I18N.ua['sx_' + k] || I18N.ua['sx_' + base] || ''; // пример — это образец текста, он на языке самого поля
@@ -3373,15 +3614,16 @@
         setHintsHtml(f.k) + '</div>';
     }
     var inner;
-    if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days' || f.k === 'cart_mute_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+    if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days' || f.k === 'cart_mute_days' || /^(followup[12]_days|digest_hour|np_track_hours)$/.test(f.k)) inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
     else if (/^(gift|loyal)_text_/.test(f.k)) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
     else if (f.k === 'referral_min_order' || f.k === 'mail_every_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+    else if (f.k === 'hint_id' || f.k === 'hint_tag') inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'hint_id' ? 20 : 40) + '" autocapitalize="' + (f.k === 'hint_id' ? 'characters' : 'none') + '"');
     else if (f.k.indexOf('referral_gift') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
     else if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
     else if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
     else inner = fArea(f.k, f.label, f.v, /^reply_/.test(f.k) ? 300 : 500);
     // подсказка и превью — внутрь того же блока поля
-    return inner.replace(/<\/div>$/, setHintsHtml(f.k) + setPreviewBox(f) + '</div>').replace('<div class="field">', '<div class="field sfield">')
+    return inner.replace(/<\/div>$/, setHintsHtml(f.k) + setOffHtml(f.k, f.v) + setPreviewBox(f) + '</div>').replace('<div class="field">', '<div class="field sfield">')
       .replace(' id="a-' + f.k + '"', ' id="a-' + f.k + '"' + (previewKind(f.k) ? ' data-prev="' + f.k + '"' : ''));
   }
   function settingsHtml() {
@@ -3624,6 +3866,7 @@
         }
         return;
       }
+      if (input.id && /^a-(followup[12]_days|np_track_hours)$/.test(input.id)) { var offp = document.getElementById('off-' + input.id.slice(2)); if (offp) offp.hidden = String(input.value).trim() !== '0'; }
       if (input.hasAttribute && input.hasAttribute('data-prev')) refreshPreview(input.getAttribute('data-prev'));
       if (input.id === 'a-loyal_every') { refreshPreview('loyal_text_ua'); refreshPreview('loyal_text_ru'); }
       if (input.id === 'admAQ') { adm.aq = input.value; adm.ap = 1; renderArchiveList(); return; }
@@ -3768,6 +4011,7 @@
     // Битая ссылка на фото → заглушка со знаком гор.
     document.addEventListener('error', function (e) {
       var img = e.target;
+      if (img && img.tagName === 'IMG' && img.parentNode && img.parentNode.classList && img.parentNode.classList.contains('sheet__slide--2')) { dropPhoto2(); return; }
       if (img && img.tagName === 'IMG' && img.parentNode &&
           /(^| )(card|sheet|line|mini|feature|rcard)__img( |$)/.test(img.parentNode.className)) {
         var full = img.getAttribute('data-full');
@@ -3783,6 +4027,7 @@
       var act = e.target.closest('[data-action]');
       var kind = act ? act.getAttribute('data-action') : '';
       if (kind === 'add') { addFromSheet(); return; }
+      if (kind === 'photo-next') { sheetPhotoNext(); return; }
       if (kind === 'share') { var sp = state.sheet && product(state.sheet.id); if (sp) shareProduct(sp); return; }
       if (kind === 'notify') { if (!act.disabled && state.sheet) notifyMe(state.sheet.id, act); return; }
       if (kind === 'fil-apply') { closeSheet(); return; }
@@ -3800,6 +4045,14 @@
       }
       productClick(e); // сердечко и товары из подборки под описанием
     });
+    // Лента фото: точка следует за прокруткой (событие scroll не всплывает — слушаем на захвате).
+    el.sheet.addEventListener('scroll', function (e) {
+      var strip = e.target;
+      if (!strip || !strip.classList || !strip.classList.contains('sheet__strip') || !strip.clientWidth) return;
+      var i = Math.max(0, Math.min(1, Math.round(strip.scrollLeft / strip.clientWidth)));
+      if (state.sheet && state.sheet.goto !== undefined) { if (i !== state.sheet.goto) return; delete state.sheet.goto; } // идёт прокрутка от кнопки: промежуточные значения не мигают точкой
+      if (!state.sheet || state.sheet.slide !== i) sheetMarkDot(i);
+    }, true);
     el.sheet.addEventListener('change', function (e) {
       if (!state.sheet || state.sheet.kind !== 'filter') return;
       var input = e.target;
@@ -4031,6 +4284,13 @@
     var text = nyUntilText();
     return text ? '<p class="note note--opt ny-until" role="note">' + esc(text) + '</p>' : '';
   }
+  /** «Якщо товару немає»: только если бэкенд сказал shop.ifo === 1 (старый бэкенд поля не знает). Сумму не меняет. */
+  function ifoOn() { return Number(shopInfo().ifo) === 1; }
+  function ifoHtml() {
+    if (!ifoOn()) return '';
+    return '<fieldset class="group" id="ifoBox"><legend class="label">' + esc(t('ifoTitle')) + '</legend><div class="opts opts--col">' +
+      option('ifOut', 'call', '', t('ifoCall')) + option('ifOut', 'replace', '', t('ifoReplace')) + option('ifOut', 'remove', '', t('ifoRemove')) + '</div></fieldset>';
+  }
   function giftNoteOn() { return Number(shopInfo().giftNote) === 1; }
   function giftNoteHtml() {
     if (!giftNoteOn()) return '';
@@ -4191,6 +4451,74 @@
   var NP_CITIES = [['Харків', 'Харьков'], ['Київ', 'Киев'], ['Дніпро', 'Днепр'], ['Львів', 'Львов'], ['Одеса', 'Одесса'], ['Запоріжжя', 'Запорожье'], ['Вінниця', 'Винница'], ['Полтава', 'Полтава']];
   var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0, resolving: false, whAt: {}, whPending: {} };
   var NP_TIMEOUT = 5000;
+  var NP_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  /** Ref города Новой почты для текста города city: выбран из подсказки (np.ref) или восстановлен из сохранённой формы; введён руками — пусто. */
+  function npRefNow(city) {
+    var f = state.form;
+    if (np.ref && NP_UUID.test(np.ref)) return np.ref;
+    return f.cityRef && f.cityRefFor === city && NP_UUID.test(f.cityRef) ? f.cityRef : '';
+  }
+
+  /* --- стоимость доставки «≈ 85 ₴ за тарифом Нової пошти» (только при shop.npp = 1; в сумму заказа не входит) --- */
+  var npc = { cache: {}, failAt: {}, timer: null, want: '' };
+  var NPC_DEBOUNCE = 400, NPC_RETRY_MS = 60000;
+  function npCostOn() { return Number(shopInfo().npp) === 1 && !!cfg.API_URL; }
+  /** Что спрашивать у сервера сейчас: город, вес корзины, сумма. null — не хватает данных (нет города с ref, не наш вид доставки, вес хоть одной позиции неизвестен). */
+  function npCostTarget() {
+    if (!npCostOn() || state.form.delivery !== 'np' || !state.catalog) return null;
+    var cityEl = document.getElementById('f-city');
+    var city = cityEl && state.view === 'checkout' ? cityEl.value.trim() : state.form.city;
+    var ref = npRefNow(city);
+    if (!ref) return null;
+    var grams = 0, n = 0;
+    for (var i = 0; i < state.cart.i.length; i++) {
+      var l = state.cart.i[i];
+      if (!lineInfo(l).ok) continue; // позиции, которых нет, в заказ не попадают
+      if (!(l.g > 0)) return null;   // штучный товар: вес неизвестен, цифру не выдумываем
+      grams += l.g * l.q; n++;
+    }
+    if (!n || !(grams > 0)) return null;
+    var step = Math.ceil(grams / 500);
+    return { key: ref.toLowerCase() + '|' + step, ref: ref, grams: grams, sum: Math.round(cartTotal()) };
+  }
+  function npCostText() {
+    var w = npCostTarget();
+    if (!w) return '';
+    var c = npc.cache[w.key];
+    if (typeof c === 'number') return tf('npCost', { n: money(c) });
+    if (c === undefined || (c === 'fail' && Date.now() - (npc.failAt[w.key] || 0) >= NPC_RETRY_MS)) npCostAsk(w); // после ошибки повтор не раньше чем через минуту
+    return '';
+  }
+  function npCostAsk(w) {
+    if (npc.want === w.key) return;          // этот запрос уже ждёт своей очереди или в пути
+    npc.want = w.key;
+    clearTimeout(npc.timer);
+    npc.timer = setTimeout(function () {
+      var c0 = npc.cache[w.key];
+      if (c0 === 'loading' || typeof c0 === 'number') return;
+      npc.cache[w.key] = 'loading';
+      apiGetTimed('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
+        var c = res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0;
+        if (c) npc.cache[w.key] = c; else { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); }
+      }).catch(function () { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); })
+        .then(function () { if (npc.want === w.key) npc.want = ''; npCostSync(); }); // устаревший ответ только ложится в кэш: показывается то, что нужно сейчас
+    }, NPC_DEBOUNCE);
+  }
+  /** Обновляет строки стоимости на экране (корзина и оформление). Нет данных, ошибка или таймаут — строка скрыта. */
+  function npCostSync() {
+    var nodes = el.page.querySelectorAll('.js-npcost');
+    if (!nodes.length) return;
+    var text = npCostText();
+    Array.prototype.forEach.call(nodes, function (n) {
+      n.hidden = !text;
+      var v = n.querySelector('.np-cost__v');
+      if (v) v.textContent = text;
+    });
+  }
+  function npCostHtml() {
+    if (!npCostOn()) return '';
+    return '<div class="np-cost js-npcost" role="status" hidden><p class="np-cost__v"></p><p class="np-cost__n">' + esc(t('npCostNote')) + '</p></div>';
+  }
   function npFieldsHtml() {
     var f = state.form;
     if (!{ branch: 1, locker: 1, courier: 1 }[f.npType]) f.npType = 'branch';
@@ -4247,7 +4575,7 @@
   function npCityTyped(input) {
     clearTimeout(np.timer);
     np.ref = ''; np.seq++; np.resolving = false;
-    npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], '');
+    npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], ''); npCostSync();
     var q = input.value.trim(), key = q.toLowerCase(), seq = np.seq;
     if (q.length < 2) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
     if (np.cities[key]) { npBusy('cityBusy', false); suggShow('citySugg', np.cities[key], 'np-city'); return; }
@@ -4292,7 +4620,7 @@
     city.value = String(x.s).slice(0, 60);
     np.ref = String(x.ref || ''); np.seq++;
     npBusy('cityPick', false); npBusy('cityBusy', false);
-    setError('city', ''); suggShow('citySugg', [], ''); readForm();
+    setError('city', ''); suggShow('citySugg', [], ''); readForm(); npCostSync();
     if (!auto) hapticSelect();
     npLoadWh();
     var br = document.getElementById('f-branch');
@@ -4486,8 +4814,10 @@
   /** ТТН в карточке заказа админ-панели (только для Новой почты). */
   function ttnAdminHtml(o) {
     if (String(o.delivery).toLowerCase().indexOf('пошта') < 0) return '';
-    var html = o.ttn ? '<p>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b></p>' : '';
+    var html = o.ttn ? '<p>' + esc(t('ttn')) + ': <b>' + esc(o.ttn) + '</b>' + (Number(o.ttnTrial) === 1 ? ' <span class="badge badge--opt">' + esc(t('ttnTrial')) + '</span>' : '') + '</p>' : '';
     if (can('st')) {
+      if (adm.npTtn === 1 && !o.ttn) html += '<button type="button" class="btn btn--block" data-w1="ttn-make" data-num="' + esc(o.num) + '">' + esc(t('ttnMake')) + '</button>'; // только если бэкенд включил (ключ и данные отправителя) и ТТН ещё нет
+      if (o.ttnDel === 1 && o.ttn) html += '<button type="button" class="btn btn--block" data-w1="ttn-del" data-num="' + esc(o.num) + '">' + esc(t('ttnDel')) + '</button>'; // бэкенд сам решает, можно ли (создана магазином, моложе 24 ч); старый бэкенд поля не шлёт
       html += '<div class="ttnrow"><input class="input" type="text" inputmode="numeric" maxlength="24" autocomplete="off" placeholder="' + esc(t('ttnPh')) + '" aria-label="' + esc(t('ttnPh')) + '" id="ttn-' + esc(o.num) + '" value="' + esc(o.ttn || '') + '">' +
         '<button type="button" class="btn" data-w1="ttn" data-num="' + esc(o.num) + '">' + esc(t('ttnSave')) + '</button></div>';
     }
@@ -4589,7 +4919,9 @@
     if (!cloudOk()) return;
     var f = state.form;
     try {
-      tg.CloudStorage.setItem('form', JSON.stringify({ name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point }).slice(0, 4000), function () {});
+      var cloud = { name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point };
+      if (f.cityRef && f.cityRefFor === f.city) { cloud.cityRef = f.cityRef; cloud.cityRefFor = f.cityRefFor; }
+      tg.CloudStorage.setItem('form', JSON.stringify(cloud).slice(0, 4000), function () {});
     } catch (e) { /* облако недоступно */ }
   }
   function loadFormCloud() {
@@ -4609,6 +4941,8 @@
     if (f.delivery === 'np' || f.delivery === 'pickup') state.form.delivery = f.delivery;
     if (f.pay === 'cash' || f.pay === 'card' || f.pay === 'cod') state.form.pay = f.pay;
     if (f.npType === 'branch' || f.npType === 'locker' || f.npType === 'courier') state.form.npType = f.npType;
+    if (f.ifOut === 'call' || f.ifOut === 'replace' || f.ifOut === 'remove') state.form.ifOut = f.ifOut;
+    if (NP_UUID.test(String(f.cityRef || '')) && typeof f.cityRefFor === 'string' && f.cityRefFor) { state.form.cityRef = f.cityRef; state.form.cityRefFor = f.cityRefFor.slice(0, 120); }
   }
   function deliveryText(d) {
     if (d.delivery === 'np') return t('np') + (d.npType && d.npType !== 'branch' ? ' · ' + t(d.npType === 'locker' ? 'npLocker' : 'npCourier').toLowerCase() : '');
@@ -4643,6 +4977,10 @@
       openRecipe(b.getAttribute('data-id'));
     } else if (kind === 'rec-add') {
       recipeAdd(b.getAttribute('data-id'));
+    } else if (kind === 'sheet-open') {
+      openSheet(b.getAttribute('data-pid')); // из шторки набора — шторка состава, без смены экрана под ней
+    } else if (kind === 'hint-add') {
+      addHint(b);
     } else if (kind === 'product') {
       go('catalog'); openSheet(b.getAttribute('data-pid'));
     } else if (kind === 'usual') {
@@ -4653,7 +4991,7 @@
       else if (city) { // чип с крупным городом: ref неизвестен — спрашиваем сервер и выбираем точное совпадение
         city.value = b.getAttribute('data-city');
         np.ref = ''; np.seq++; np.resolving = false; suggShow('citySugg', [], ''); npBusy('cityPick', false); suggShow('whSugg', [], '');
-        setError('city', ''); readForm(); hapticSelect();
+        setError('city', ''); readForm(); npCostSync(); hapticSelect();
         npCityResolve(city.value, true);
       }
     } else if (kind === 'np-wh') {
@@ -4670,6 +5008,10 @@
         toast(t('admSaved'));
         renderAdminList();
       }).catch(function () { adm.busy = false; toast(t('admFail')); renderAdminList(); });
+    } else if (kind === 'ttn-make') {
+      ttnMake(b);
+    } else if (kind === 'ttn-del') {
+      ttnDelAsk(b.getAttribute('data-num'));
     } else if (kind === 'ttn') {
       var num = b.getAttribute('data-num');
       var input = document.getElementById('ttn-' + num);
@@ -5377,7 +5719,7 @@
       if (state.view === 'biz' || state.view === 'cart' || state.view === 'orders') renderPage();
       if (was !== wh.on) { // стал или перестал быть оптовиком: строка «для бізнесу» на главной и цены в открытой карточке обновляются
         updateChrome();
-        if (state.view === 'catalog' && state.status === 'ready' && !state.sheet) renderMain();
+        if (state.view === 'catalog' && state.status === 'ready') { if (state.sheet) stale.main = 'force'; else renderMain(); }
         if (state.sheet) renderSheet();
       }
     }).catch(function () { wh.loading = false; if (state.view === 'biz') renderPage(); });
@@ -5793,6 +6135,7 @@
     clearTimeout(toastTimer); el.toast.hidden = true; toastAction = null; // старое сообщение не должно закрывать кнопки подтверждения
     renderSheet();
     showSheet(false);
+    if (o.lock) { var okb = el.sheet.querySelector('[data-action="cf-ok"]'); if (okb) okb.disabled = true; } // кнопка ждёт отметки в шторке
   }
   function confirmSheetHtml(o) {
     return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
@@ -5820,7 +6163,7 @@
       btnFree(act);
       haptic('error');
       var box = document.getElementById('cfErr');
-      if (box) { box.textContent = err; box.hidden = false; }
+      if (box) { box.textContent = err; box.hidden = false; try { box.scrollIntoView({ block: 'nearest' }); } catch (e2) { /* старый браузер */ } } // длинная шторка: ошибка не должна остаться за краем
     });
   });
   /** Текст ошибки по ответу сервера. */
@@ -6121,14 +6464,23 @@
     adm.busy = true; adm.stPending = { num: order.num, code: stCode };
     order.status = stNext;
     renderAdminList();
+    var finished = false, guard = 0;
+    // Один раз и всегда: блокировка снимается, даже если отрисовка или тост упали. Сервер не ответил за 45 с — тоже снимается.
     var stDone = function (text, back) {
+      if (finished) return;
+      finished = true; clearTimeout(guard);
       adm.busy = false; adm.stPending = null;
-      if (back) { order.status = stWas; haptic('error'); }
-      toast(text);
-      if (state.view === 'admin') renderAdminList();
-      fetchToday(true);
+      if (back) order.status = stWas;
+      try {
+        if (back) haptic('error');
+        toast(text);
+        if (state.view === 'admin') renderAdminList();
+        fetchToday(true);
+      } catch (e) { /* блокировка уже снята */ }
     };
+    guard = setTimeout(function () { stDone(t('admStLate'), true); }, 45000);
     api('admin.status', { num: order.num, code: stCode }).then(function (res) {
+      if (finished) return;
       if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
       if (!res || !res.ok) throw new Error('fail');
       order.status = res.status;
@@ -6408,8 +6760,8 @@
     ua: {
       nyGiftsTitle: 'Подарунки до свят', fGiftNote: 'Підпис до подарунка', giftNotePh: 'Наприклад: Мамі від Олени', giftNoteCount: '{n} / 120',
       errSendRetry: 'Не вдалося надіслати — спробуйте ще раз', retryOrder: 'Спробувати ще раз',
-      dupChanged: 'Попереднє замовлення {n} уже прийняте. У кошику зараз усі товари, зокрема вже замовлені. Приберіть зайве й надішліть решту окремим замовленням — або напишіть нам, і ми додамо до першого.',
-      dupChangedNoNum: 'Попереднє замовлення вже прийняте. У кошику зараз усі товари, зокрема вже замовлені. Приберіть зайве й надішліть решту окремим замовленням — або напишіть нам, і ми додамо до першого.',
+      dupChanged: 'Попереднє замовлення {n} уже прийняте. Зміни, зроблені після цього (у кошику чи в параметрах замовлення, наприклад «Якщо товару немає» або місто), до нього не потрапили. Щоб замовити ще — приберіть зайве з кошика й надішліть решту окремим замовленням. Щоб змінити те замовлення — напишіть нам.',
+      dupChangedNoNum: 'Попереднє замовлення вже прийняте. Зміни, зроблені після цього (у кошику чи в параметрах замовлення, наприклад «Якщо товару немає» або місто), до нього не потрапили. Щоб замовити ще — приберіть зайве з кошика й надішліть решту окремим замовленням. Щоб змінити те замовлення — напишіть нам.',
       sendAsNew: 'Надіслати кошик як нове замовлення', dupEditCart: 'Змінити кошик', dupWrite: 'Напишіть нам',
       sendAsNewAsk: 'У кошику можуть бути вже замовлені товари. Надіслати все як нове замовлення?', sendAsNewOk: 'Надіслати все',
       sh_theme: 'Сезонне оформлення магазину. Порожньо — звичайне; доступні newyear (гірлянда, святкова добірка, рядок про строки) і navruz.',
@@ -6494,8 +6846,8 @@
       sh_referral_on: 'Программа «Угости друга»: друг, пришедший по ссылке, получает пробник к первому заказу, а пригласивший — к следующему. Работает, только если ниже вписан пробник.',
       sh_referral_gift: 'Какой пробник дарится (за пробник деньги не берутся, сумма заказа не меняется). Пусто — программа выключена.',
       sh_referral_min_order: 'От какой суммы первого заказа друга дарится пробник, ₴. 0 — без ограничения.',
-      dupChanged: 'Предыдущий заказ {n} уже принят. В корзине сейчас все товары, в том числе уже заказанные. Уберите лишнее и отправьте остальное отдельным заказом — или напишите нам, и мы добавим к первому.',
-      dupChangedNoNum: 'Предыдущий заказ уже принят. В корзине сейчас все товары, в том числе уже заказанные. Уберите лишнее и отправьте остальное отдельным заказом — или напишите нам, и мы добавим к первому.',
+      dupChanged: 'Предыдущий заказ {n} уже принят. Изменения, сделанные после этого (в корзине или в параметрах заказа, например «Если товара нет» или город), в него не попали. Чтобы заказать ещё — уберите лишнее из корзины и отправьте остальное отдельным заказом. Чтобы изменить тот заказ — напишите нам.',
+      dupChangedNoNum: 'Предыдущий заказ уже принят. Изменения, сделанные после этого (в корзине или в параметрах заказа, например «Если товара нет» или город), в него не попали. Чтобы заказать ещё — уберите лишнее из корзины и отправьте остальное отдельным заказом. Чтобы изменить тот заказ — напишите нам.',
       sendAsNew: 'Отправить корзину как новый заказ', dupEditCart: 'Изменить корзину', dupWrite: 'Напишите нам',
       sendAsNewAsk: 'В корзине могут быть уже заказанные товары. Отправить всё как новый заказ?', sendAsNewOk: 'Отправить всё',
       sh_theme: 'Сезонное оформление магазина. Пусто — обычное; доступны newyear (гирлянда, праздничная подборка, строка о сроках) и navruz.',
@@ -6530,6 +6882,312 @@
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_B4[lang]).forEach(function (k) { I18N[lang][k] = I18N_B4[lang][k]; });
   });
+
+  /* Волна Б2, блоки 2–3: наборы, подсказка в корзине, «Якщо товару немає», повтор по ссылке, поиск, настройки. */
+  var I18N_B5 = {
+    ua: {
+      setComp: 'Склад набору', setSep: 'Окремо {a} · набором {b}',
+      hintAdd: 'Додати',
+      ifoTitle: 'Якщо товару немає', ifoCall: 'Зателефонуйте мені', ifoReplace: 'Замініть схожим', ifoRemove: 'Приберіть із замовлення',
+      repeatSkip: 'Немає в наявності, не додано: {list}.',
+      admZero: 'Шукали й не знайшли за 30 днів',
+      sh_hint_tag: 'Підказка в кошику: тег товару (колонка «Теги»), при якому підказка з’являється. Порожньо — підказки немає.',
+      sh_hint_id: 'Підказка в кошику: ID товару, який пропонуємо додати. Він має бути на вітрині й у наявності. Порожньо — підказки немає.',
+      sh_hint_text: 'Текст підказки в кошику. {ціна} замінюється ціною товару з таблиці. Порожньо — підказки немає.',
+      sh_followup1_days: 'Через скільки днів після статусу «Виконано» бот спитає «Як вам замовлення?». Рекомендуємо 3; поки увімкнено, окреме прохання оцінити замовлення не надсилається. 0 — вимкнено.',
+      sh_followup2_days: 'Через скільки днів після статусу «Виконано» бот надішле рецепт до купленого й кнопку «Повторити замовлення». Рекомендуємо 21; поки увімкнено, старе нагадування не надсилається. 0 — вимкнено.',
+      sh_followup2_text: 'Короткий текст другого повідомлення, коли до купленого немає рецепта. Порожньо й рецепта немає — повідомлення не надсилається.',
+      sh_digest_hour: 'О котрій годині (0–23, за часом таблиці) адміни з правом «Статистика» отримують ранкове зведення. Порожньо — зведення вимкнено.',
+      sh_np_track_hours: 'Раз на скільки годин перевіряти, чи посилка Нової пошти прибула у відділення, і писати про це клієнтові. Рекомендуємо 3; 0 — вимкнено. Працює лише з ключем Нової пошти.',
+      sx_hint_tag: 'для плову', sx_hint_id: 'SET-001',
+      sx_hint_text_ua: 'До плову: набір спецій від батька — {ціна}', sx_hint_text_ru: 'К плову: набор специй от отца — {цена}',
+      sx_followup1_days: '3', sx_followup2_days: '21', sx_digest_hour: '9', sx_np_track_hours: '3',
+      sx_followup2_text_ua: 'Вітаємо! Запаси горіхів і сухофруктів, мабуть, закінчуються. Попереднє замовлення можна повторити в один дотик.',
+      sx_followup2_text_ru: 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.'
+    },
+    ru: {
+      setComp: 'Состав набора', setSep: 'Отдельно {a} · набором {b}',
+      hintAdd: 'Добавить',
+      ifoTitle: 'Если товара нет', ifoCall: 'Позвоните мне', ifoReplace: 'Замените похожим', ifoRemove: 'Уберите из заказа',
+      repeatSkip: 'Нет в наличии, не добавлено: {list}.',
+      admZero: 'Искали и не нашли за 30 дней',
+      sh_hint_tag: 'Подсказка в корзине: тег товара (колонка «Теги»), при котором подсказка появляется. Пусто — подсказки нет.',
+      sh_hint_id: 'Подсказка в корзине: ID товара, который предлагаем добавить. Он должен быть на витрине и в наличии. Пусто — подсказки нет.',
+      sh_hint_text: 'Текст подсказки в корзине. {цена} заменяется ценой товара из таблицы. Пусто — подсказки нет.',
+      sh_followup1_days: 'Через сколько дней после статуса «Виконано» бот спросит «Как вам заказ?». Рекомендуем 3; пока включено, отдельная просьба оценить заказ не отправляется. 0 — выключено.',
+      sh_followup2_days: 'Через сколько дней после статуса «Виконано» бот пришлёт рецепт к купленному и кнопку «Повторить заказ». Рекомендуем 21; пока включено, старое напоминание не отправляется. 0 — выключено.',
+      sh_followup2_text: 'Короткий текст второго сообщения, когда к купленному нет рецепта. Пусто и рецепта нет — сообщение не отправляется.',
+      sh_digest_hour: 'В котором часу (0–23, по времени таблицы) админы с правом «Статистика» получают утреннюю сводку. Пусто — сводка выключена.',
+      sh_np_track_hours: 'Раз в сколько часов проверять, прибыла ли посылка Новой почты в отделение, и писать об этом клиенту. Рекомендуем 3; 0 — выключено. Работает только с ключом Новой почты.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B5[lang]).forEach(function (k) { I18N[lang][k] = I18N_B5[lang][k]; });
+  });
+
+  /* Волна Б2, блок 4: Нова пошта — стоимость доставки и «Створити ТТН». */
+  var I18N_B6 = {
+    ua: {
+      npCost: '≈ {n} за тарифом Нової пошти', npCostNote: 'У суму замовлення не входить. Точну суму рахує перевізник.',
+      ttnMake: 'Створити ТТН', ttnMkTitle: 'Створити накладну Нової пошти', ttnMkErrTitle: 'Накладну не створено',
+      ttnMkManual: 'Можна створити ТТН вручну в кабінеті Нової пошти й ввести номер у поле «Номер ТТН» у замовленні.',
+      ttnMkFail: 'Не вдалося створити накладну. Спробуйте пізніше або введіть ТТН вручну.',
+      ttnPayer: 'Доставку оплачує', ttnPayerRecv: 'отримувач', setOff: 'Зараз вимкнено.', ttnRecv: 'Отримувач', ttnPhone: 'Телефон', ttnCity: 'Місто', ttnBranchW: 'Відділення', ttnBranchP: 'Поштомат', ttnCod: 'Накладений платіж', ttnNoCod: 'без накладеного платежу',
+      ttnWeight: 'Вага посилки, г', ttnWeightHint: 'Від {a} до {b} г', ttnWeightAsk: 'Вагу в замовленні не збережено: вкажіть її.',
+      ttnName: 'Прізвище та ім’я отримувача', ttnNameHint: 'У замовленні вказано не повне ім’я. Нова пошта вимагає прізвище та ім’я.',
+      ttnDesc: 'Опис вантажу', ttnCreate: 'Створити накладну',
+      ttnBadW: 'Вкажіть вагу від {a} до {b} г', ttnBadName: 'Вкажіть прізвище та ім’я (два-три слова)',
+      ttnMade: 'Накладну створено: {n}.', ttnTold: 'Клієнту надіслано номер.',
+      ttnCityDiff: 'Місто в замовленні («{a}») не збігається з містом Нової пошти («{b}»). Перевірте перед створенням.', ttnCityOk: 'Місто правильне',
+      ttnSaveFailed: 'Накладну створено: {n}. Номер не записався в таблицю — впишіть його вручну.', ttnSaveFailedNoNum: 'Накладну, можливо, створено, але номер не записався в таблицю. Перевірте кабінет Нової пошти й впишіть номер вручну.',
+      ttnBusy: 'Перевірте кабінет Нової пошти: накладну могло бути створено. Не створюйте її повторно зараз.', ttnUnknown: 'Відповідь Нової пошти не отримано. Перевірте кабінет Нової пошти й не створюйте накладну повторно зараз.', ttnMadeTitle: 'Накладну створено',
+      ttnDimW: 'Ширина, см', ttnDimL: 'Довжина, см', ttnDimH: 'Висота, см', ttnDimHint: 'Необов’язково. Якщо заповнюєте — усі три, від 1 до 120 см.',
+      ttnDimPart: 'Заповніть усі три розміри або очистіть усі.', ttnBadDims: 'Розміри — числа від 1 до 120 см',
+      ttnQuiet: 'Пробна накладна: не надсилати номер клієнту', ttnQuietDone: 'Клієнту номер не надсилали.', ttnQuietNote: 'Пробну можна видалити з панелі протягом 24 годин. Справжню — лише в кабінеті Нової пошти.',
+      ttnStep1: 'Не вдалося створити отримувача в Новій пошті', ttnStep2: 'Не вдалося створити накладну',
+      ttnDel: 'Видалити накладну', ttnDelTitle: 'Видалити накладну', ttnDelText: 'Пробну накладну № {n} буде видалено в Новій пошті, номер у замовленні — стерто. Клієнту нічого не надсилається.',
+      ttnDelDone: 'Накладну видалено. Номер у замовленні стерто.', ttnDelErrTitle: 'Накладну не видалено',
+      ttnDelPartial: 'У Новій пошті накладну видалено, але номер у замовленні лишився. Зітріть номер у колонці „ТТН“ цього замовлення; інші комірки не чіпайте.',
+      ttnDelInfoTitle: 'Номер не змінено', ttnTrial: 'пробна',
+      ttnLast: 'Прізвище', ttnFirst: 'Ім’я', ttnMiddle: 'По батькові (необов’язково)',
+      ttnNameCheck: 'Перевірте: покупці часто пишуть спочатку ім’я. Якщо навпаки — поміняйте.', ttnSwap: 'Поміняти місцями',
+      ttnNameShort: 'Прізвище та ім’я — не менше 2 знаків кожне',
+      ttnDimReq: 'Обов’язково: ширина, довжина й висота, см (від 1 до 120).', ttnDimMin: 'Мінімум, наприклад, 10×10×4 см.', ttnDimNeed: 'Заповніть ширину, довжину й висоту.',
+      ttnBranchWrote: 'Покупець написав', ttnBranchFound: 'Знайдено в Новій пошті', ttnWhGuess: 'Номер відділення взято з тексту покупця — перевірте.',
+      ttnQuietWarn: 'Сама Нова пошта може надіслати отримувачу SMS або сповіщення — пробну робіть лише на власне замовлення.',
+      admStLate: 'Сервер не відповів. Оновіть список замовлень і перевірте статус.'
+    },
+    ru: {
+      npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'В сумму заказа не входит. Точную сумму считает перевозчик.',
+      ttnMake: 'Создать ТТН', ttnMkTitle: 'Создать накладную Новой почты', ttnMkErrTitle: 'Накладная не создана',
+      ttnMkManual: 'Можно создать ТТН вручную в кабинете Новой почты и ввести номер в поле «Номер ТТН» в заказе.',
+      ttnMkFail: 'Не удалось создать накладную. Попробуйте позже или введите ТТН вручную.',
+      ttnPayer: 'Доставку оплачивает', ttnPayerRecv: 'получатель', setOff: 'Сейчас выключено.', ttnRecv: 'Получатель', ttnPhone: 'Телефон', ttnCity: 'Город', ttnBranchW: 'Отделение', ttnBranchP: 'Почтомат', ttnCod: 'Наложенный платёж', ttnNoCod: 'без наложенного платежа',
+      ttnWeight: 'Вес посылки, г', ttnWeightHint: 'От {a} до {b} г', ttnWeightAsk: 'Вес в заказе не сохранён: укажите его.',
+      ttnName: 'Фамилия и имя получателя', ttnNameHint: 'В заказе указано неполное имя. Новая почта требует фамилию и имя.',
+      ttnDesc: 'Описание груза', ttnCreate: 'Создать накладную',
+      ttnBadW: 'Укажите вес от {a} до {b} г', ttnBadName: 'Укажите фамилию и имя (два-три слова)',
+      ttnMade: 'Накладная создана: {n}.', ttnTold: 'Клиенту отправлен номер.',
+      ttnCityDiff: 'Город в заказе («{a}») не совпадает с городом Новой почты («{b}»). Проверьте перед созданием.', ttnCityOk: 'Город правильный',
+      ttnSaveFailed: 'Накладная создана: {n}. Номер не записался в таблицу — впишите его вручную.', ttnSaveFailedNoNum: 'Накладная, возможно, создана, но номер не записался в таблицу. Проверьте кабинет Новой почты и впишите номер вручную.',
+      ttnBusy: 'Проверьте кабинет Новой почты: накладная могла быть создана. Не создавайте её повторно сейчас.', ttnUnknown: 'Ответ Новой почты не получен. Проверьте кабинет Новой почты и не создавайте накладную повторно сейчас.', ttnMadeTitle: 'Накладная создана',
+      ttnDimW: 'Ширина, см', ttnDimL: 'Длина, см', ttnDimH: 'Высота, см', ttnDimHint: 'Необязательно. Если заполняете — все три, от 1 до 120 см.',
+      ttnDimPart: 'Заполните все три размера или очистите все.', ttnBadDims: 'Размеры — числа от 1 до 120 см',
+      ttnQuiet: 'Пробная накладная: не отправлять номер клиенту', ttnQuietDone: 'Клиенту номер не отправляли.', ttnQuietNote: 'Пробную можно удалить из панели в течение 24 часов. Настоящую — только в кабинете Новой почты.',
+      ttnStep1: 'Не удалось создать получателя в Новой почте', ttnStep2: 'Не удалось создать накладную',
+      ttnDel: 'Удалить накладную', ttnDelTitle: 'Удалить накладную', ttnDelText: 'Пробная накладная № {n} будет удалена в Новой почте, номер в заказе — стёрт. Клиенту ничего не отправляется.',
+      ttnDelDone: 'Накладная удалена. Номер в заказе стёрт.', ttnDelErrTitle: 'Накладная не удалена',
+      ttnDelPartial: 'В Новой почте накладная удалена, но номер в заказе остался. Сотрите номер в колонке «ТТН» этого заказа; другие ячейки не трогайте.',
+      ttnDelInfoTitle: 'Номер не изменён', ttnTrial: 'пробная',
+      ttnLast: 'Фамилия', ttnFirst: 'Имя', ttnMiddle: 'Отчество (необязательно)',
+      ttnNameCheck: 'Проверьте: покупатели часто пишут сначала имя. Если наоборот — поменяйте.', ttnSwap: 'Поменять местами',
+      ttnNameShort: 'Фамилия и имя — не короче 2 знаков каждое',
+      ttnDimReq: 'Обязательно: ширина, длина и высота, см (от 1 до 120).', ttnDimMin: 'Минимум, например, 10×10×4 см.', ttnDimNeed: 'Заполните ширину, длину и высоту.',
+      ttnBranchWrote: 'Покупатель написал', ttnBranchFound: 'Найдено в Новой почте', ttnWhGuess: 'Номер отделения взят из текста покупателя — проверьте.',
+      ttnQuietWarn: 'Сама Новая почта может отправить получателю SMS или уведомление — пробную делайте только на собственный заказ.',
+      admStLate: 'Сервер не ответил. Обновите список заказов и проверьте статус.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B6[lang]).forEach(function (k) { I18N[lang][k] = I18N_B6[lang][k]; });
+  });
+
+  /** Текст ошибки из ответа сервера (msg.ua / msg.ru); неизвестный код — общий текст. Выводится только через textContent. */
+  function ttnSrvMsg(res) {
+    var m = res && res.msg;
+    return m && typeof m === 'object' ? String((state.lang === 'ru' ? (m.ru || m.ua) : (m.ua || m.ru)) || '') : '';
+  }
+  function ttnMsg(res) { return ttnSrvMsg(res) || t('ttnMkFail'); }
+  /** Габариты: все три пустые — null; все три числа 1…120 — [ш, д, в]; иначе 'part' (не все заполнены) или 'bad' (не числа). */
+  function ttnDims(vals) {
+    var f = vals.filter(function (v) { return String(v).trim() !== ''; });
+    if (!f.length) return null;
+    if (f.length < 3) return 'part';
+    var n = vals.map(function (v) { var s = String(v).trim().replace(',', '.'); return /^\d+(\.\d+)?$/.test(s) ? Number(s) : NaN; });
+    return n.some(function (x) { return !(x >= 1 && x <= 120); }) ? 'bad' : n;
+  }
+  /** Нажатия внутри шторки подтверждения: o.sync() пересчитывает доступность «ОК» и подсказки. */
+  function sheetSync(e) {
+    var o = state.sheet && state.sheet.kind === 'confirm' && state.sheet.o;
+    if (o && o.sync && e.target && e.target.closest && e.target.closest('.ttnc')) o.sync();
+  }
+  el.sheet.addEventListener('input', sheetSync);
+  el.sheet.addEventListener('change', sheetSync);
+  el.sheet.addEventListener('click', function (e) {
+    var sw = e.target && e.target.closest && e.target.closest('[data-ttn-swap]');
+    if (!sw) return;
+    var a = document.getElementById('ttnLN'), b = document.getElementById('ttnFN');
+    if (a && b) { var v = a.value; a.value = b.value; b.value = v; hapticLight(); }
+    sheetSync(e);
+  });
+  var ttnFlight = false;
+  /** «Створити ТТН»: сначала admin.ttn.preview (ничего не меняет), потом шторка подтверждения. */
+  function ttnMake(btn) {
+    if (ttnFlight || adm.busy) return;
+    var num = btn.getAttribute('data-num');
+    ttnFlight = true; btnBusy(btn);
+    api('admin.ttn.preview', { num: num }).then(function (res) {
+      ttnFlight = false; btnFree(btn);
+      if (res && res.ok && res.ttn) { if (res.payer && !res.ttn.payer) res.ttn.payer = res.payer; ttnConfirm(res.ttn); return; }
+      haptic('error');
+      if (res && res.error === 'no_perm') { toast(t('admNoPerm')); return; }
+      askConfirm({ title: t('ttnMkErrTitle'), text: ttnMsg(res), warn: t('ttnMkManual') });
+    }).catch(function () { ttnFlight = false; btnFree(btn); haptic('error'); toast(t('admFail')); });
+  }
+  function ttnRow(label, value) {
+    return '<p class="ttnc__row"><span>' + esc(label) + '</span><b>' + esc(value) + '</b></p>';
+  }
+  /** Накладная создана, но номер не записан в таблицу: шторка с крупным номером (текстом, не HTML). */
+  function showTtnSaved(num, tn) {
+    var html = (tn ? '<p class="ttnc__big" id="ttnSavedNum"></p>' : '') + '<p class="note note--out">' + esc(tn ? tf('ttnSaveFailed', { n: tn }) : t('ttnSaveFailedNoNum')) + '</p>';
+    askConfirm({ title: t('ttnMadeTitle') + ' ' + num, html: html });
+    var big = document.getElementById('ttnSavedNum');
+    if (big) big.textContent = tn;
+  }
+  function ttnConfirm(d) {
+    var minG = Number(d.minG) || 100, maxG = Number(d.maxG) || 30000;
+    var wg = Number(d.weightG) > 0 ? Math.round(Number(d.weightG)) : '';
+    var cod = Math.round(Number(d.cod) || 0);
+    var diff = Number(d.cityDiff) === 1, dimReq = Number(d.dimsReq) === 1;
+    // Имя: догадка сервера (nameParts); старый ответ без неё — первое слово в «Прізвище», второе в «Ім'я», остальное — по батькові.
+    var np = { last: '', first: '', middle: '' };
+    if (d.nameParts && typeof d.nameParts === 'object') {
+      np.last = String(d.nameParts.last || ''); np.first = String(d.nameParts.first || ''); np.middle = String(d.nameParts.middle || '');
+    } else {
+      var ws = String(d.name || '').trim().split(/\s+/).filter(Boolean);
+      np.last = ws[0] || ''; np.first = ws[1] || ''; np.middle = ws.slice(2).join(' ');
+    }
+    var html = '<div class="ttnc">' +
+      (diff ? '<div class="ttnc__warn" role="alert"><p>' + esc(tf('ttnCityDiff', { a: d.city || '', b: d.npCity || '' })) + '</p>' +
+        '<label class="check"><input type="checkbox" id="ttnCityOk"><span>' + esc(t('ttnCityOk')) + '</span></label></div>' : '') +
+      ttnRow(t('ttnPhone'), d.phone) + ttnRow(t('ttnCity'), d.city) +
+      (d.branch ? ttnRow(t('ttnBranchWrote'), d.branch) : '') +
+      (d.npWarehouse ? ttnRow(t('ttnBranchFound'), d.npWarehouse) : '') +
+      (Number(d.whGuess) === 1 ? '<div class="ttnc__warn" role="alert"><p>' + esc(t('ttnWhGuess')) + '</p></div>' : '') +
+      ttnRow(t('ttnCod'), cod > 0 ? money(cod) : t('ttnNoCod')) +
+      (d.payer === 'recipient' ? ttnRow(t('ttnPayer'), t('ttnPayerRecv')) : '') +
+      '<div class="field"><label class="label" for="ttnLN">' + esc(t('ttnLast')) + '</label><input class="input" id="ttnLN" type="text" autocomplete="off" maxlength="40" value="' + esc(np.last) + '"></div>' +
+      '<div class="field"><label class="label" for="ttnFN">' + esc(t('ttnFirst')) + '</label><input class="input" id="ttnFN" type="text" autocomplete="off" maxlength="40" value="' + esc(np.first) + '"></div>' +
+      '<div class="field"><label class="label" for="ttnMN">' + esc(t('ttnMiddle')) + '</label><input class="input" id="ttnMN" type="text" autocomplete="off" maxlength="40" value="' + esc(np.middle) + '"></div>' +
+      '<p class="ttnc__hint ttnc__hint--warn">' + esc(t('ttnNameCheck')) + '</p>' +
+      '<button type="button" class="btn btn--block" data-ttn-swap="1">' + esc(t('ttnSwap')) + '</button>' +
+      '<p class="ttnc__hint ttnc__hint--warn" id="ttnNameShort" role="status" hidden>' + esc(t('ttnNameShort')) + '</p>' +
+      '<div class="field"><label class="label" for="ttnW">' + esc(t('ttnWeight')) + '</label><input class="input" id="ttnW" type="text" inputmode="numeric" autocomplete="off" maxlength="6" value="' + esc(wg) + '">' +
+      '<p class="ttnc__hint">' + esc(wg === '' ? t('ttnWeightAsk') + ' ' : '') + esc(tf('ttnWeightHint', { a: minG, b: maxG })) + '</p></div>' +
+      '<div class="field"><label class="label" for="ttnD">' + esc(t('ttnDesc')) + '</label><input class="input" id="ttnD" type="text" autocomplete="off" maxlength="100" value="' + esc(d.desc || '') + '"></div>' +
+      '<div class="ttnc__dims">' + [['ttnDW', 'ttnDimW'], ['ttnDL', 'ttnDimL'], ['ttnDH', 'ttnDimH']].map(function (x) {
+        return '<div class="field"><label class="label" for="' + x[0] + '">' + esc(t(x[1])) + '</label><input class="input" id="' + x[0] + '" type="text" inputmode="decimal" autocomplete="off" maxlength="6"></div>';
+      }).join('') + '</div>' +
+      '<p class="ttnc__hint' + (dimReq ? ' ttnc__hint--warn' : '') + '" id="ttnDimHint">' + esc(dimReq ? t('ttnDimReq') + ' ' + t('ttnDimMin') : t('ttnDimHint')) + '</p><p class="ttnc__hint ttnc__hint--warn" id="ttnDimPart" role="status" hidden>' + esc(t('ttnDimPart')) + '</p>' +
+      '<label class="check"><input type="checkbox" id="ttnQuiet"><span>' + esc(t('ttnQuiet')) + '</span></label><p class="ttnc__hint">' + esc(t('ttnQuietNote')) + '</p><p class="ttnc__hint ttnc__hint--warn">' + esc(t('ttnQuietWarn')) + '</p></div>';
+    var val = function (id) { var n = document.getElementById(id); return n ? String(n.value || '').trim() : ''; };
+    var dimVals = function () { return [val('ttnDW'), val('ttnDL'), val('ttnDH')]; };
+    var nameBad = function () { return val('ttnLN').length < 2 || val('ttnFN').length < 2; };
+    var o = {
+      title: t('ttnMkTitle') + ' ' + d.num, html: html, ok: t('ttnCreate'), lock: true,
+      sync: function () {
+        var cb = document.getElementById('ttnCityOk'), okb = el.sheet.querySelector('[data-action="cf-ok"]');
+        var dv = ttnDims(dimVals());
+        var part = dv === 'part' || (dimReq && !dv), hint = document.getElementById('ttnDimPart');
+        var nb = nameBad(), nh = document.getElementById('ttnNameShort'); if (nh) nh.hidden = !nb;
+        if (hint) {
+          var was = hint.hidden; hint.hidden = dv !== 'part';
+          if (dv === 'part' && was) try { hint.scrollIntoView({ block: 'nearest' }); } catch (e) { /* старый браузер */ } // подсказка не должна остаться под кнопками
+        }
+        if (okb && !okb.classList.contains('is-busy')) okb.disabled = part || nb || (diff && !(cb && cb.checked));
+      },
+      run: function (done) {
+        var w = Math.round(Number(val('ttnW').replace(/\s+/g, '')));
+        if (!(w >= minG && w <= maxG)) { done(tf('ttnBadW', { a: minG, b: maxG })); return; }
+        var dm = ttnDims(dimVals());
+        if (nameBad()) { done(t('ttnNameShort')); return; }
+        if (dimReq && !dm) { done(t('ttnDimNeed')); return; }
+        if (dm === 'part') { done(t('ttnDimPart')); return; }
+        if (dm === 'bad') { done(t('ttnBadDims')); return; }
+        var body = { num: d.num, weight: w, confirm: true, cod: cod };
+        if (dm) { body.width = dm[0]; body.length = dm[1]; body.height = dm[2]; }
+        var quiet = !!(document.getElementById('ttnQuiet') || {}).checked;
+        if (quiet) body.quiet = true;
+        if (diff) {
+          var cb = document.getElementById('ttnCityOk');
+          if (!cb || !cb.checked) { done(t('ttnCityOk')); return; }
+          body.cityOk = true;
+        }
+        body.lastName = val('ttnLN').replace(/\s+/g, ' '); body.firstName = val('ttnFN').replace(/\s+/g, ' ');
+        var mn = val('ttnMN').replace(/\s+/g, ' '); if (mn) body.middleName = mn;
+        if (!(d.nameParts && typeof d.nameParts === 'object')) body.name = body.lastName + ' ' + body.firstName + (mn ? ' ' + mn : ''); // старый ответ без nameParts: бэкенд знает только name
+        var ds = val('ttnD'); if (ds) body.desc = ds.slice(0, 100);
+        api('admin.ttn.create', body).then(function (res) {
+          if (res && res.ok && res.ttn) {
+            (adm.orders || []).forEach(function (o) { if (o.num === d.num) o.ttn = String(res.ttn); });
+            done();
+            renderAdminList();
+            haptic('success');
+            toast(tf('ttnMade', { n: res.ttn }) + ' ' + (res.quiet === true || (quiet && res.told !== true) ? t('ttnQuietDone') : res.told === false ? t('admNotTold') : t('ttnTold')));
+            return;
+          }
+          var code = res && res.error, tn = res && res.ttn ? String(res.ttn).slice(0, 40) : '';
+          if (code === 'save_failed' || tn) {
+            // Накладная у Нової пошти создана, а в таблицу номер не попал: показываем номер крупно, не теряем.
+            if (tn) (adm.orders || []).forEach(function (o) { if (o.num === d.num) o.ttn = tn; });
+            haptic('error');
+            done();
+            showTtnSaved(d.num, tn);
+            renderAdminList();
+            return;
+          }
+          var step = Number(res && res.step), msg;
+          if ((code === 'np_api' || code === 'np_error') && (step === 1 || step === 2)) {
+            msg = t(step === 1 ? 'ttnStep1' : 'ttnStep2') + (ttnSrvMsg(res) ? '. ' + ttnSrvMsg(res) : '');
+          } else {
+            msg = code === 'no_perm' ? t('admNoPerm') : code === 'busy' ? t('ttnBusy') : code === 'np_unknown' ? t('ttnUnknown') : code === 'bad_dims' ? (ttnSrvMsg(res) || t('ttnBadDims')) : ttnMsg(res);
+          }
+          if (code === 'np_api' && res.np) msg += ': ' + String(res.np).slice(0, 300);
+          done(msg);
+        }).catch(function () { done(t('admFail')); });
+      }
+    };
+    askConfirm(o);
+    o.sync();
+  }
+
+  /** «Видалити накладну»: подтверждение шторкой, потом admin.ttn.delete с confirm:true. Клиенту ничего не уходит. */
+  function ttnDelAsk(num) {
+    var ord = (adm.orders || []).filter(function (x) { return x.num === num; })[0];
+    if (!ord || adm.busy) return;
+    askConfirm({
+      title: t('ttnDelTitle') + ' ' + num, text: tf('ttnDelText', { n: ord.ttn || '' }), ok: t('ttnDel'), danger: true,
+      run: function (done) {
+        api('admin.ttn.delete', { num: num, confirm: true }).then(function (res) {
+          if (res && res.ok) {
+            ord.ttn = ''; delete ord.ttnDel; delete ord.ttnTrial;
+            done(); renderAdminList(); haptic('success');
+            toast(res.done === 'del_done' && ttnSrvMsg(res) ? ttnSrvMsg(res) : t('ttnDelDone')); // «вже видалено»: текст сервера, это успех
+            return;
+          }
+          var code = res && res.error;
+          if (code === 'del_other') {
+            // В заказе уже другой номер, его не трогали: это сообщение, а не тревога. Карточку обновляем с сервера.
+            delete ord.ttnDel;
+            done(); renderAdminList(); haptic('warning');
+            askConfirm({ title: t('ttnDelInfoTitle'), text: ttnSrvMsg(res) });
+            fetchAdmin('orders').then(function () { if (state.view === 'admin' && adm.tab === 'orders') renderAdminList(); }).catch(function () { /* останется прежняя карточка */ });
+            return;
+          }
+          if (code === 'del_partial') {
+            // В НП накладной уже нет: повторять нельзя, номер админ стирает вручную. Текст — с сервера, запасной — для старого ответа.
+            delete ord.ttnDel;
+            done(); renderAdminList(); haptic('error');
+            askConfirm({ title: t('ttnDelErrTitle'), warn: ttnSrvMsg(res) || t('ttnDelPartial') });
+            return;
+          }
+          var msg = code === 'no_perm' ? t('admNoPerm') : ttnSrvMsg(res) || t('admFail');
+          if (code === 'np_api' && res.np) msg += ': ' + String(res.np).slice(0, 300);
+          done(msg);
+        }).catch(function () { done(t('admFail')); });
+      }
+    });
+  }
 
   // Шторка «Написати»: счётчик знаков и нажатия внутри шторки.
   el.sheet.addEventListener('input', function (e) { if (e.target.id === 'msgText') msgCount(); });

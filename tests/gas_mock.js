@@ -42,7 +42,16 @@ class Sheet {
   constructor(name, rows, ops, trace) { this.name = name; this.rows = rows || []; this.ops = ops || null; this.trace = trace || null; }
   // trace — общий журнал (lockLog): записи листа попадают в него как { kind: 'sheet', op, sheet }, чтобы видеть порядок «блокировка → запись»
   _op(kind) { if (this.ops) this.ops[kind] = (this.ops[kind] || 0) + 1; if (this.trace && kind !== 'read') this.trace.push({ kind: 'sheet', op: kind, sheet: this.name }); }
+  // Размер листа как в настоящих Таблицах: maxC/maxR (по умолчанию — «достаточно», без предела). Запись за пределы бросает ошибку.
+  getMaxColumns() { return this.maxC === undefined ? Infinity : this.maxC; }
+  getMaxRows() { return this.maxR === undefined ? Infinity : this.maxR; }
+  insertColumnsAfter(pos, n) { this._op('write'); if (this.maxC !== undefined) this.maxC = Math.max(this.maxC, pos + n); }
+  insertRowsAfter(pos, n) { this._op('write'); if (this.maxR !== undefined) this.maxR = Math.max(this.maxR, pos + n); }
+  // «Тесный» лист: ровно по ширине заголовков и по числу заполненных строк
+  tighten() { this.maxC = this.getLastColumn(); this.maxR = Math.max(1, this.getLastRow()); return this; }
   _set(r, c, v) {
+    if (this.maxC !== undefined && c > this.maxC) throw new Error('Exception: The coordinates of the range are outside the dimensions of the sheet (column ' + c + ' > ' + this.maxC + ')');
+    if (this.maxR !== undefined && r > this.maxR) throw new Error('Exception: The coordinates of the range are outside the dimensions of the sheet (row ' + r + ' > ' + this.maxR + ')');
     while (this.rows.length < r) this.rows.push([]);
     const row = this.rows[r - 1];
     while (row.length < c) row.push('');
@@ -63,6 +72,7 @@ class Sheet {
   appendRow(row) {
     this._op('append');
     const at = this.getLastRow() + 1;
+    if (this.maxR !== undefined && at > this.maxR) this.maxR = at; // appendRow сам добавляет строку, как в Таблицах
     row.forEach((v, j) => this._set(at, j + 1, v));
     return this;
   }
