@@ -4,7 +4,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_PATH || 'playwright');
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { start } = require('./serve');
+const { start: startRaw } = require('./serve');
+const PORT_OFF = Number(process.env.E2E_PORT_OFFSET || 0); // сдвиг портов стенда, если рядом идёт другой прогон
+const start = (port, ...rest) => startRaw(port + PORT_OFF, ...rest);
 const { open, OUT } = require('./shot');
 
 // Бэкенд выпуска А (до волны Б1): в main теперь уже бэкенд Б1, поэтому для проверок «без admin.message / без блоков источников» берём коммит слияния выпуска А.
@@ -3367,7 +3369,11 @@ const smallTargets = page => page.evaluate(() => {
     const e1 = items();
     ok(e1.length === 1 && /boom1/.test(e1[0].m) && !/123 45 67|\+380 50/.test(e1[0].m) && e1[0].m.length <= 200, 'ошибка скрипта уходит записью err; телефон из текста вычищен', e1);
     const body1 = JSON.stringify(errReqs[0]);
+<<<<<<< HEAD
     ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '27' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (27); без initData и данных покупателя', body1);
+=======
+    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '27' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (23); без initData и данных покупателя', body1);
+>>>>>>> stage9b4-errors
     ok(await c.page.evaluate(() => /^[a-z0-9]{8,32}$/.test(localStorage.getItem('pamir_did'))), 'did — случайная строка в хранилище устройства');
     // одинаковые подряд не дублируются
     await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');
@@ -3384,7 +3390,7 @@ const smallTargets = page => page.evaluate(() => {
     // неудачный запрос к API
     await c.page.route(/\/api$/, route => { try { const b = JSON.parse(route.request().postData() || '{}'); if (b.action === 'orders.my') return route.abort(); } catch (e) { /* пусто */ } return route.continue(); });
     await c.page.click('.tabbar [data-go="orders"]').catch(() => {});
-    await c.page.waitForTimeout(3300);
+    await c.page.waitForTimeout(4600); // чтение: автоповтор через 1 с, затем запись уходит через 2,5 с
     ok(items().some(x => /^net orders\.my: network$/.test(x.m)), 'неудачный запрос к API (сеть) уходит записью без данных запроса', items().map(x => x.m));
     // лимит: не больше 5 записей в час
     for (let i = 0; i < 8; i++) { await boom('лимит-' + i); await c.page.waitForTimeout(150); }
@@ -3413,6 +3419,318 @@ const smallTargets = page => page.evaluate(() => {
     await co.page.waitForTimeout(3300);
     ok(so.log.filter(x => x.action === 'err').length === 1 && co.errors.every(e => /old-boom/.test(e)) && await count(co.page, '#grid .card') === 20, 'старый бэкенд: запись err отправлена, ответ-ошибка молча игнорируется, витрина работает', co.errors);
     await co.ctx.close(); so.server.close(); st.server.close();
+  }
+
+  console.log('Ложные «network» (б4): уход в фон, отмена, автоповтор чтения, Worker и откат каталога');
+  {
+    const setHidden = (page, h) => page.evaluate(v => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => v });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => v ? 'hidden' : 'visible' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, h);
+    const hiddenFromStart = page => page.addInitScript(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    });
+    const workerCfg = page => page.route('**/config.js*', r => r.fulfill({ contentType: 'application/javascript', body: "window.PAMIR_CONFIG = { API_URL: location.origin + '/api', BOT: 'pamir_test_bot', APP: 'shop', CATALOG_URL: location.origin + '/cat' };" }));
+    // plan.fn(action, n) → 'ok' | 'abort' | '500'; n — номер вызова этого действия (POST на /api)
+    const mkApi = async (st, uid, o = {}) => {
+      const errReqs = [], calls = {}, plan = { fn: null };
+      const c = await open(browser, st.url, Object.assign({ uid, w: 360, h: 640, before: async page => {
+        if (o.before) await o.before(page);
+        page.on('request', r => { if (r.method() === 'POST' && /\/api$/.test(r.url())) { try { const b = JSON.parse(r.postData()); if (b.action === 'err') errReqs.push(b); } catch (e) { /* не JSON */ } } });
+        await page.route(/\/api$/, route => {
+          let a = ''; try { a = JSON.parse(route.request().postData() || '{}').action; } catch (e) { /* пусто */ }
+          if (route.request().method() !== 'POST' || !a || a === 'err') return route.fallback();
+          calls[a] = (calls[a] || 0) + 1;
+          const v = plan.fn ? plan.fn(a, calls[a]) : 'ok';
+          if (v === 'abort') return route.abort();
+          if (v === '500') return route.fulfill({ status: 500, contentType: 'text/plain', body: 'oops' });
+          return route.fallback();
+        });
+      } }, o.open || {}));
+      return { c, calls, plan, items: () => errReqs.reduce((a, b) => a.concat(b.items || []), []) };
+    };
+    const myErrShown = page => page.evaluate(() => /Не вдалося завантажити замовлення/.test(document.body.innerText));
+    const openFirstOrder = async A => {
+      await A.c.page.waitForSelector('.ord'); // ?admin=1 открывает панель сразу
+      await A.c.page.locator('.ord__head').first().click();
+      await A.c.page.waitForSelector('[data-st="c"]:not([disabled])');
+    };
+    const st = await start(8975, undefined, s => { withPhotos(s); });
+
+    // 1. запись (действие админа): автоповтора нет никогда; страница скрыта — записи нет, видима — одна запись
+    {
+      const A = await mkApi(st, 900, { open: { query: '?admin=1' } });
+      await openFirstOrder(A);
+      A.plan.fn = a => a === 'admin.status' ? 'abort' : 'ok';
+      await setHidden(A.c.page, true);
+      await A.c.page.click('[data-st="c"]');
+      await A.c.page.waitForTimeout(500);
+      await setHidden(A.c.page, false);
+      await A.c.page.waitForTimeout(3600);
+      ok(A.calls['admin.status'] === 1 && A.items().length === 0, 'запись админа оборвана, пока страница скрыта: один запрос, в сводке ничего', [A.calls['admin.status'], A.items()]);
+      await A.c.page.waitForFunction(() => !!document.querySelector('.ord__acts [data-st="c"]') && !document.querySelector('.ord__acts [data-st="c"]').disabled, null, { timeout: 8000 });
+      await A.c.page.waitForTimeout(1600); // хвост после возвращения прошёл
+      await A.c.page.click('[data-st="c"]');
+      await A.c.page.waitForTimeout(4200);
+      ok(A.calls['admin.status'] === 2 && A.items().length === 1 && /^net admin\.status: network$/.test(A.items()[0].m), 'запись админа при видимой странице: без автоповтора (один запрос на нажатие), одна запись network', [A.calls['admin.status'], A.items()]);
+      ok(A.c.errors.length === 0, 'запись админа: в консоли нет ошибок', A.c.errors);
+      await A.c.ctx.close();
+    }
+    // 1б. запись: ответ сервера с ошибкой (HTTP 500) пишется всегда, даже если страница пряталась; обрыв при скрытой странице — нет
+    {
+      const A = await mkApi(st, 900, { open: { query: '?admin=1' } });
+      await openFirstOrder(A);
+      A.plan.fn = a => a === 'admin.status' ? '500' : 'ok';
+      await setHidden(A.c.page, true);
+      await A.c.page.click('[data-st="c"]');
+      await A.c.page.waitForTimeout(500);
+      await setHidden(A.c.page, false);
+      await A.c.page.waitForTimeout(3600);
+      ok(A.calls['admin.status'] === 1 && A.items().length === 1 && /^net admin\.status: HTTP 500$/.test(A.items()[0].m), 'запись админа: HTTP 500 при скрытой странице записан (ответ сервера не глушится), без автоповтора', [A.calls['admin.status'], A.items()]);
+      await A.c.ctx.close();
+    }
+    {
+      const A = await mkApi(st, 900, { open: { query: '?admin=1' } });
+      await openFirstOrder(A);
+      A.plan.fn = a => a === 'admin.status' ? '500' : 'ok';
+      await setHidden(A.c.page, true); await A.c.page.waitForTimeout(100); await setHidden(A.c.page, false);
+      await A.c.page.click('[data-st="c"]'); // сразу после возвращения (хвост < 1,5 с)
+      await A.c.page.waitForTimeout(4200);
+      ok(A.calls['admin.status'] === 1 && A.items().length === 1 && /^net admin\.status: HTTP 500$/.test(A.items()[0].m), 'запись админа: HTTP 500 в первые 1,5 с после возвращения записан', [A.calls['admin.status'], A.items()]);
+      await A.c.ctx.close();
+    }
+    // 2. хвост после возвращения: запрос оборвался через 0,7 с после возвращения из фона — не ошибка
+    {
+      const A = await mkApi(st, 900, { open: { query: '?admin=1' } });
+      await openFirstOrder(A);
+      await A.c.page.route(/\/api$/, async route => {
+        let a = ''; try { a = JSON.parse(route.request().postData() || '{}').action; } catch (e) { /* пусто */ }
+        if (a === 'admin.status') { await new Promise(r => setTimeout(r, 700)); return route.abort().catch(() => {}); }
+        return route.fallback();
+      });
+      await setHidden(A.c.page, true); await A.c.page.waitForTimeout(100); await setHidden(A.c.page, false);
+      await A.c.page.click('[data-st="c"]');
+      await A.c.page.waitForTimeout(4200);
+      ok(A.items().length === 0, 'ошибка пришла в первые 1,5 с после возвращения из фона — хвост, в сводке ничего', A.items());
+      await A.c.ctx.close();
+    }
+    // 3. чтение: первый сбой + успешный автоповтор — записей нет, пользователь ничего не видит
+    {
+      const A = await mkApi(st, 762);
+      await A.c.page.waitForSelector('.card');
+      A.plan.fn = (a, n) => a === 'orders.my' && n === 1 ? 'abort' : 'ok';
+      await A.c.page.click('.tabbar [data-go="orders"]');
+      await A.c.page.waitForTimeout(4500);
+      ok(A.calls['orders.my'] === 2 && A.items().length === 0 && !(await myErrShown(A.c.page)), 'чтение: первый обрыв, автоповтор прошёл — два запроса, записей нет, ошибки на экране нет', [A.calls['orders.my'], A.items()]);
+      await A.c.ctx.close();
+    }
+    // 4. чтение: два сбоя подряд при видимой странице — ровно одна запись; HTTP 500 тоже
+    for (const mode of ['abort', '500']) {
+      const A = await mkApi(st, mode === 'abort' ? 763 : 764);
+      await A.c.page.waitForSelector('.card');
+      A.plan.fn = a => a === 'orders.my' ? mode : 'ok';
+      await A.c.page.click('.tabbar [data-go="orders"]');
+      await A.c.page.waitForFunction(() => /Не вдалося завантажити замовлення/.test(document.body.innerText), null, { timeout: 8000 });
+      await A.c.page.waitForTimeout(3300);
+      const want = mode === 'abort' ? /^net orders\.my: network$/ : /^net orders\.my: HTTP 500$/;
+      ok(A.calls['orders.my'] === 2 && A.items().length === 1 && want.test(A.items()[0].m) && Object.keys(A.items()[0]).sort().join() === 'm,s,v', 'чтение (' + mode + '): два сбоя подряд — ровно одна запись, формат m,s,v', [A.calls['orders.my'], A.items()]);
+      ok(await myErrShown(A.c.page) && await count(A.c.page, '.form__err') <= 1, 'чтение (' + mode + '): сообщение об ошибке на экране одно, не удвоено');
+      await A.c.ctx.close();
+    }
+    // 5. чтение при скрытой странице: автоповтор ждёт возвращения; вернулись, повтор прошёл — записей нет
+    {
+      const A = await mkApi(st, 765);
+      await A.c.page.waitForSelector('.card');
+      A.plan.fn = (a, n) => a === 'orders.my' && n === 1 ? 'abort' : 'ok';
+      await setHidden(A.c.page, true);
+      await A.c.page.click('.tabbar [data-go="orders"]');
+      await A.c.page.waitForTimeout(1800);
+      const waiting = A.calls['orders.my'];
+      await setHidden(A.c.page, false);
+      await A.c.page.waitForTimeout(4500);
+      ok(waiting === 1 && A.calls['orders.my'] === 2 && A.items().length === 0 && !(await myErrShown(A.c.page)), 'чтение при скрытой странице: повтор ждёт возвращения, после возвращения проходит, записей нет', [waiting, A.calls['orders.my'], A.items()]);
+      await A.c.ctx.close();
+    }
+    // 6. чтение: страница скрыта на всём протяжении (сбой и повтор) — записей нет
+    {
+      const A = await mkApi(st, 766, { before: hiddenFromStart });
+      await A.c.page.waitForSelector('.card');
+      A.plan.fn = a => a === 'orders.my' ? 'abort' : 'ok';
+      await A.c.page.click('.tabbar [data-go="orders"]');
+      await A.c.page.waitForTimeout(8000 + 1000 + 3600);
+      ok(A.calls['orders.my'] === 2 && A.items().length === 0, 'чтение: страница скрыта на всём протяжении — оба сбоя не пишутся', [A.calls['orders.my'], A.items()]);
+      await A.c.ctx.close();
+    }
+    // 6б. Telegram сворачивает Mini App без visibilitychange: события deactivated / activated и поле isActive считаются «страница скрыта»
+    {
+      const tgEvents = page => page.addInitScript(() => {
+        window.__tgEv = {}; let v;
+        Object.defineProperty(window, 'Telegram', { configurable: true, get: () => v, set: x => { v = x; if (x && x.WebApp) { const o = x.WebApp.onEvent; x.WebApp.onEvent = function (n, f) { (window.__tgEv[n] = window.__tgEv[n] || []).push(f); return o && o.apply(this, arguments); }; } } });
+      });
+      const fireTg = (page, n) => page.evaluate(n => (window.__tgEv[n] || []).forEach(f => f()), n);
+      const A = await mkApi(st, 771, { before: tgEvents });
+      await A.c.page.waitForSelector('.card');
+      ok(await A.c.page.evaluate(() => (window.__tgEv.deactivated || []).length > 0 && (window.__tgEv.activated || []).length > 0), 'витрина подписана на события Telegram activated и deactivated');
+      A.plan.fn = (a, n) => a === 'orders.my' && n === 1 ? 'abort' : 'ok';
+      await fireTg(A.c.page, 'deactivated');
+      await A.c.page.click('.tabbar [data-go="orders"]');
+      await A.c.page.waitForTimeout(1800);
+      const waiting = A.calls['orders.my'];
+      await fireTg(A.c.page, 'activated');
+      await A.c.page.waitForTimeout(4500);
+      ok(waiting === 1 && A.calls['orders.my'] === 2 && A.items().length === 0 && !(await myErrShown(A.c.page)), 'Telegram deactivated: повтор чтения ждёт activated, потом проходит, записей нет', [waiting, A.calls['orders.my'], A.items()]);
+      await A.c.ctx.close();
+      const B = await mkApi(st, 772, { before: page => page.addInitScript(() => { let v; Object.defineProperty(window, 'Telegram', { configurable: true, get: () => v, set: x => { v = x; if (x && x.WebApp) x.WebApp.isActive = false; } }); }) });
+      await B.c.page.waitForSelector('.card');
+      B.plan.fn = a => a === 'orders.my' ? 'abort' : 'ok';
+      await B.c.page.click('.tabbar [data-go="orders"]');
+      await B.c.page.waitForTimeout(8000 + 1000 + 3600);
+      ok(B.calls['orders.my'] === 2 && B.items().length === 0, 'Telegram.WebApp.isActive === false: оба сбоя чтения не пишутся', [B.calls['orders.my'], B.items()]);
+      await B.c.ctx.close();
+    }
+    // 7. заказ: не повторяется автоматически; скрыта — записи нет; видима — одна запись network; кнопка «повторить» на месте
+    for (const [hide, mode] of [[true, 'abort'], [false, 'abort'], [true, '500']]) {
+      const A = await mkApi(st, hide ? (mode === '500' ? 769 : 767) : 768);
+      await A.c.page.waitForSelector('#grid .card');
+      await toCard(A.c.page, 'NUT-007');
+      await A.c.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+      await A.c.page.click('.tabbar [data-go="cart"]');
+      await A.c.page.waitForSelector('.line');
+      await A.c.page.evaluate(() => window.__tg.main.cb());
+      await A.c.page.waitForSelector('#f-phone');
+      await A.c.page.fill('#f-phone', '0501234567');
+      A.plan.fn = a => a === 'order' ? mode : 'ok';
+      if (hide) await setHidden(A.c.page, true);
+      await A.c.page.evaluate(() => window.__tg.main.cb());
+      await A.c.page.waitForSelector('#formErr:not([hidden]) [data-action="retry-order"]');
+      if (hide) await setHidden(A.c.page, false);
+      await A.c.page.waitForTimeout(3900);
+      ok(A.calls.order === 1 && (hide && mode === 'abort' ? A.items().length === 0 : A.items().length === 1 && (mode === '500' ? /^net order: HTTP 500$/ : /^net order: network$/).test(A.items()[0].m)), 'заказ (' + (hide ? 'страница скрыта' : 'страница видна') + ', ' + mode + '): один запрос без автоповтора, ' + (hide && mode === 'abort' ? 'обрыв не пишется' : 'одна запись (ответ сервера пишется всегда)'), [A.calls.order, A.items()]);
+      ok(await count(A.c.page, '[data-action="retry-order"]') === 1, 'заказ: кнопка «повторить» на месте, как прежде');
+      A.plan.fn = null;
+      await A.c.page.click('[data-action="retry-order"]');
+      await A.c.page.waitForSelector('.done', { timeout: 10000 });
+      ok(A.calls.order === 2, 'заказ: повтор по кнопке проходит, один новый запрос', A.calls.order);
+      await A.c.ctx.close();
+    }
+    // 8. каталог через Worker
+    {
+      const sc = await start(8976, undefined, s => { withPhotos(s); });
+      const modes = {
+        'Worker недоступен': r => r.abort(), 'Worker HTTP 500': r => r.fulfill({ status: 500, body: 'x' }),
+        'Worker отдал не JSON': r => r.fulfill({ status: 200, contentType: 'text/html', body: '<html>x</html>' }),
+        'Worker отдал пустое тело': r => r.fulfill({ status: 200, contentType: 'application/json', body: '' }),
+        'Worker отдал JSON без products': r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' })
+      };
+      let uid = 770, idx = 0;
+      for (const name of Object.keys(modes)) {
+        sc.log.length = 0;
+        const A = await mkApi(sc, uid++, { before: async page => { await workerCfg(page); await page.route('**/cat', modes[name]); } });
+        await A.c.page.waitForSelector('#grid .card', { timeout: 15000 });
+        await A.c.page.waitForTimeout(3600);
+        const marks = A.items().filter(x => x.m === 'worker_fallback');
+        ok(sc.log.filter(x => x.action === 'GET catalog').length === 1 && A.items().every(x => !/^net catalog/.test(x.m)) && marks.length === 1 && marks[0].s === 'catalog' && Object.keys(marks[0]).sort().join() === 'm,s,v' && !(await A.c.page.evaluate(() => /Немає з’єднання/.test(document.body.innerText))),
+          name + ': откат на Apps Script, каталог показан, «net catalog» нет, одна метка worker_fallback (s=catalog)', [A.items(), sc.log.length]);
+        if (idx++ === 0) { // метка не чаще одной в час: после перезагрузки при том же сбое второй нет
+          await A.c.page.reload({ waitUntil: 'networkidle' });
+          await A.c.page.waitForSelector('#grid .card');
+          await A.c.page.waitForTimeout(3600);
+          ok(A.items().filter(x => x.m === 'worker_fallback').length === 1, 'метка worker_fallback — не чаще одной в час с устройства', A.items());
+        }
+        await A.c.ctx.close();
+      }
+      { // оба упали: после автоповтора — ровно одна запись net catalog: network; метки fallback нет; экран ошибки с кнопкой повтора
+        const A = await mkApi(sc, 780, { before: async page => { await workerCfg(page); await page.route('**/cat', r => r.abort()); await page.route(/\/api\?action=catalog/, r => r.abort()); } });
+        await A.c.page.waitForSelector('[data-action="retry"]', { timeout: 15000 });
+        await A.c.page.waitForTimeout(3600);
+        ok(A.items().length === 1 && /^net catalog: network$/.test(A.items()[0].m) && A.items()[0].s === 'catalog', 'Worker и Apps Script не ответили (после автоповтора): ровно одна запись net catalog: network', A.items());
+        await A.c.ctx.close();
+      }
+      { // Worker упал, первая попытка Apps Script оборвалась, автоповтор прошёл
+        let n = 0;
+        const A = await mkApi(sc, 781, { before: async page => { await workerCfg(page); await page.route('**/cat', r => r.abort()); await page.route(/\/api\?action=catalog/, r => (++n === 1 ? r.abort() : r.fallback())); } });
+        await A.c.page.waitForSelector('#grid .card', { timeout: 15000 });
+        await A.c.page.waitForTimeout(3600);
+        ok(n === 2 && A.items().every(x => !/^net catalog/.test(x.m)), 'каталог: Worker упал, Apps Script с автоповтором ответил — «net catalog» нет', [n, A.items()]);
+        await A.c.ctx.close();
+      }
+      { // оба упали, страница скрыта: записей нет
+        const A = await mkApi(sc, 782, { before: async page => { await hiddenFromStart(page); await workerCfg(page); await page.route('**/cat', r => r.abort()); await page.route(/\/api\?action=catalog/, r => r.abort()); } });
+        await A.c.page.waitForTimeout(8000 + 1000 + 3600);
+        ok(A.items().length === 0, 'каталог: оба не ответили, но страница скрыта — ни net catalog, ни метки', A.items());
+        await A.c.ctx.close();
+      }
+      { // без Worker: обрыв каталога + автоповтор — записей нет
+        let n = 0;
+        const A = await mkApi(sc, 783, { before: async page => { await page.route(/\/api\?action=catalog/, r => (++n === 1 ? r.abort() : r.fallback())); } });
+        await A.c.page.waitForSelector('#grid .card', { timeout: 15000 });
+        await A.c.page.waitForTimeout(3600);
+        ok(n === 2 && A.items().length === 0, 'без Worker: обрыв каталога + автоповтор — один успешный повтор, записей нет', [n, A.items()]);
+        await A.c.ctx.close();
+      }
+      { // зависший каталог: свой таймаут (тут 2 с вместо 20) — один запрос, ошибка сразу, без автоповтора; одна запись net catalog: timeout
+        let n = 0;
+        const A = await mkApi(sc, 785, { before: async page => { await page.addInitScript(() => { window.__CAT_TIMEOUT_MS = 2000; }); await page.route(/\/api\?action=catalog/, async r => { n++; await new Promise(res => setTimeout(res, 12000)); await r.abort().catch(() => {}); }); } });
+        const t0 = Date.now();
+        await A.c.page.waitForSelector('[data-action="retry"]', { timeout: 9000 });
+        const dt = Date.now() - t0;
+        await A.c.page.waitForTimeout(3600 + 1500);
+        ok(n === 1 && dt < 4500 && A.items().length === 1 && /^net catalog: timeout$/.test(A.items()[0].m), 'зависший каталог: один запрос, ошибка через свой таймаут (без повтора), одна запись net catalog: timeout', [n, dt, A.items()]);
+        await A.c.ctx.close();
+      }
+      { // без Worker, оба обрыва при видимой странице — настоящая ошибка: два запроса (оба оборваны сетью, не нами), одна запись
+        const failed = [];
+        const A = await mkApi(sc, 786, { before: async page => { page.on('requestfailed', q => { if (/action=catalog/.test(q.url())) failed.push(q.failure() && q.failure().errorText); }); await page.route(/\/api\?action=catalog/, r => r.abort()); } });
+        await A.c.page.waitForSelector('[data-action="retry"]', { timeout: 15000 });
+        await A.c.page.waitForTimeout(3600);
+        ok(failed.length === 2 && A.items().length === 1 && /^net catalog: network$/.test(A.items()[0].m), 'контроль: два обрыва каталога сетью при видимой странице (не нашей отменой) — запись есть', [failed, A.items()]);
+        await A.c.ctx.close();
+      }
+      { // собственная отмена: устаревший запрос каталога витрина обрывает сама («ціни змінилися» → loadCatalog(true)) — запрос завершается обрывом, записи и сообщения нет
+        let hang = false, hung = 0;
+        const failed = [];
+        const A = await mkApi(sc, 784, { before: async page => {
+          page.on('requestfailed', q => { if (/action=catalog/.test(q.url())) failed.push(q.failure() && q.failure().errorText); });
+          await page.route(/\/api\?action=catalog/, async r => { if (hang) { hung++; await new Promise(res => setTimeout(res, 15000)); return r.abort().catch(() => {}); } return r.fallback(); });
+        } });
+        await A.c.page.waitForSelector('#grid .card');
+        hang = true;
+        await A.c.page.reload({ waitUntil: 'domcontentloaded' }); // каталог из сохранённой копии, свежий запрос «зависает»
+        await A.c.page.waitForSelector('#grid .card');
+        await toCard(A.c.page, 'NUT-007');
+        await A.c.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+        await A.c.page.click('.tabbar [data-go="cart"]');
+        await A.c.page.waitForSelector('.line');
+        await A.c.page.evaluate(() => window.__tg.main.cb());
+        await A.c.page.waitForSelector('#f-phone');
+        await A.c.page.fill('#f-phone', '0501234567');
+        await A.c.page.route(/\/api$/, route => { let b = null; try { b = JSON.parse(route.request().postData() || '{}'); } catch (e) { /* пусто */ } return b && b.action === 'order' ? route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ ok: false, error: 'changed' }) }) : route.fallback(); });
+        hang = false;
+        const before = failed.length;
+        await A.c.page.evaluate(() => window.__tg.main.cb());
+        await A.c.page.waitForFunction(() => /Ціни|ціни|змін/.test(document.body.innerText) && !!document.querySelector('.line'), null, { timeout: 10000 }).catch(() => {});
+        await A.c.page.waitForTimeout(4200);
+        ok(hung === 1 && failed.length - before === 1 && A.items().length === 0 && !(await A.c.page.evaluate(() => /Немає з.єднання/.test(document.body.innerText) || !!document.querySelector('[data-action="retry"]'))), 'устаревший запрос каталога отменён самой витриной: запрос завершился обрывом (requestfailed), записи нет, сообщения нет', [hung, failed, A.items()]);
+        await A.c.ctx.close();
+      }
+      sc.server.close();
+    }
+    // 9. старый бэкенд: автоповтор чтения работает без регрессий
+    {
+      const oldCode = path.join(require('os').tmpdir(), 'Code.old4.gs');
+      fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
+      const so = await start(8977, oldCode, s => { withPhotos(s); });
+      const A = await mkApi(so, 790);
+      await A.c.page.waitForSelector('#grid .card');
+      A.plan.fn = (a, n) => a === 'orders.my' && n === 1 ? 'abort' : 'ok';
+      await A.c.page.click('.tabbar [data-go="orders"]');
+      await A.c.page.waitForTimeout(4500);
+      ok(A.calls['orders.my'] === 2 && A.items().length === 0 && A.c.errors.length === 0 && !(await myErrShown(A.c.page)), 'старый бэкенд: автоповтор чтения работает, записей нет, ошибок в консоли нет', [A.calls['orders.my'], A.c.errors]);
+      await A.c.ctx.close(); so.server.close();
+    }
+    st.server.close();
   }
 
   /* ---------------- Исправления Б1: повтор заказа (dup_changed), снег под содержимым, превью со знаком $ ---------------- */

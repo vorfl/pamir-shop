@@ -582,10 +582,12 @@
     openSheet(found.id);
   }
 
-  /** Один запрос каталога с таймаутом; ответ без ok и списка товаров — ошибка. */
-  function fetchCatalog(url, ms, isApi) {
+  /** Один запрос каталога с таймаутом; ответ без ok и списка товаров — ошибка. box — «коробка» запроса: если витрина сама его отменила (box.own), ошибка помечается own и в сводку не идёт. */
+  function fetchCatalog(url, ms, box) {
     var ctrl = window.AbortController ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, ms);
+    if (box) box.ctrl = ctrl;
+    var timedOut = false;
+    var timer = setTimeout(function () { timedOut = true; if (ctrl) ctrl.abort(); }, ms);
     return fetch(url, ctrl ? { signal: ctrl.signal } : undefined).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
@@ -594,15 +596,34 @@
       if (!data || !data.ok || !Array.isArray(data.products)) throw new Error('bad catalog');
       return data;
     }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) {
-      if (isApi) reportNet('catalog', err);
+      if (box && box.own) throw ownAbort();
+      if (timedOut && err && typeof err === 'object') err.ownTimeout = true; // оборвано нашим таймером, а не сетью: повторять не нужно
       throw err;
     });
   }
-  /** Если в config.js задан CATALOG_URL (Worker), сначала идём туда (6 с); любая неудача — тот же запрос в Apps Script. */
+  var catGen = 0, catBox = null; // номер последней загрузки каталога и её «коробка»: устаревший запрос отменяется, его ответ не применяется
+  function catCancel() {
+    if (!catBox) return;
+    catBox.own = true;
+    try { if (catBox.ctrl) catBox.ctrl.abort(); } catch (e) { /* уже закончен */ }
+  }
+  /** Если в config.js задан CATALOG_URL (Worker), сначала идём туда (6 с); любая неудача — тот же запрос в Apps Script (с одним автоповтором). Сбой Worker при удачном откате — не ошибка, а метка worker_fallback. */
   function requestCatalog(direct) {
-    var apiLoad = function () { return fetchCatalog(catalogUrl(), 20000, !!cfg.API_URL); };
+    catCancel();
+    var box = catBox = { ctrl: null, own: false };
+    var one = function (url, ms) { return box.own ? Promise.reject(ownAbort()) : fetchCatalog(url, ms, box); };
+    var apiLoad = function () {
+      // первая попытка — до 20 с (после собственного таймаута повтора нет), вторая — короткая (NET_RETRY_LIMIT_MS)
+      var run = function (limit) { return one(catalogUrl(), limit || Number(window.__CAT_TIMEOUT_MS) || 20000); };
+      return cfg.API_URL ? netGuard('catalog', run) : run();
+    };
     if (direct || !cfg.API_URL || !/^https?:\/\//.test(String(cfg.CATALOG_URL || ''))) return apiLoad(); // direct: после «ціни змінилися» Worker мог ещё держать прежние цены
-    return fetchCatalog(cfg.CATALOG_URL, 6000, false).catch(apiLoad);
+    var ws = netStart();
+    return one(cfg.CATALOG_URL, 6000).catch(function (err) {
+      if (err && err.own) throw err;
+      var real = !netSuspect(ws, true) && navigator.onLine !== false; // обрыв при скрытой странице — не вина Worker
+      return apiLoad().then(function (data) { if (real) reportWorkerFallback(); return data; });
+    });
   }
 
   function loadCatalog(direct) {
@@ -619,8 +640,10 @@
     openDeepLink();
     captureSrc();
 
+    var gen = ++catGen;
     return requestCatalog(direct === true)
       .then(function (data) {
+        if (gen !== catGen) return; // за это время началась более новая загрузка
         if (state.offline) { state.offline = false; renderBanner(); }
         var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
         var old = state.catalog
@@ -636,7 +659,8 @@
         captureSrc();
         openReLink();
       })
-      .catch(function () {
+      .catch(function (err) {
+        if ((err && err.own) || gen !== catGen) return; // отменено самой витриной: новая загрузка уже идёт
         if (!state.catalog) {
           state.status = 'error';
           renderMain();
@@ -933,8 +957,110 @@
   /** Неудачный запрос к API (сеть, таймаут, HTTP-ошибка). Отмену пользователем (не наш таймаут) не считаем. */
   function reportNet(action, err) {
     var msg = err && err.message ? String(err.message) : '';
-    if (err && err.name === 'AbortError' && !msg) return;
+    if (err && (err.own || err.name === 'AbortError' && !msg)) return;
     reportError('net ' + String(action).replace(/[^\w.]/g, '').slice(0, 24) + ': ' + (/^HTTP \d{3}$/.test(msg) ? msg : err && err.name === 'AbortError' ? 'timeout' : 'network'));
+  }
+
+  /* --- Ложные «network»: обрывы при уходе Telegram в фон и короткие пропадания сети в сводку не идут --- */
+  var NET_RETRY_MS = 1000;   // пауза перед автоповтором чтения
+  var NET_WAIT_MS = 8000;    // сколько ждём возвращения на экран или сети перед автоповтором
+  var NET_TAIL_MS = 1500;    // хвост оборванных запросов после возвращения из фона
+  /** Запросы только на чтение: их безопасно повторить один раз. Всё остальное (заказ, корзина, действия админов, err, события) не повторяется никогда. */
+  var NET_READ = { catalog: 1, 'orders.my': 1, 'admin.orders': 1, 'admin.products': 1, 'admin.settings': 1, 'admin.admins': 1, 'admin.reviews': 1,
+    'admin.wh': 1, 'admin.mail': 1, 'admin.log': 1, 'admin.today': 1, 'admin.archiveList': 1, 'admin.statusPreview': 1, 'wh.prices': 1 };
+  // Не в списке (не повторяются): admin.stats — переписывает лист «Статистика» под блокировкой; admin.ttn.preview — ходит в Нову пошту и тратит лимит; всё остальное — запись, отправка или заказ.
+  var NET_RETRY_LIMIT_MS = 9000; // предел второй попытки: покупатель ждёт не дольше прежнего максимума + ~10 с
+  var vis = { lastHide: 0, lastShow: 0, tg: null, waiters: [] }; // tg: true — Telegram сообщил «свёрнуто» (deactivated), false — «активно», null — не знаем
+  function tgInactive() {
+    try { return vis.tg !== null ? vis.tg : !!(tg && tg.isActive === false); } catch (e) { return false; }
+  }
+  function pageHiddenNow() {
+    try { return !!document.hidden || document.visibilityState === 'hidden' || tgInactive(); } catch (e) { return false; }
+  }
+  function visNotify() { vis.waiters.slice().forEach(function (f) { try { f(); } catch (e) { /* ждун не должен ломать остальных */ } }); }
+  function visMark() { if (pageHiddenNow()) vis.lastHide = Date.now(); else vis.lastShow = Date.now(); visNotify(); }
+  // Новые версии Telegram сворачивают Mini App без visibilitychange: слушаем activated / deactivated.
+  try {
+    if (tg && typeof tg.onEvent === 'function') {
+      tg.onEvent('deactivated', function () { vis.tg = true; visMark(); });
+      tg.onEvent('activated', function () { vis.tg = false; visMark(); });
+    }
+  } catch (e) { /* старый Telegram — только visibilitychange */ }
+  if (pageHiddenNow()) vis.lastHide = Date.now();
+  document.addEventListener('visibilitychange', visMark);
+  window.addEventListener('pagehide', function () { vis.lastHide = Date.now(); });
+  window.addEventListener('freeze', function () { vis.lastHide = Date.now(); });
+  window.addEventListener('pageshow', function (ev) { if (ev && ev.persisted && !pageHiddenNow()) vis.lastShow = Date.now(); }); // возврат из кэша страниц; обычная загрузка — не «возвращение»
+  document.addEventListener('resume', function () { if (!pageHiddenNow()) vis.lastShow = Date.now(); });
+  function ownAbort() { var e = new Error('cancelled'); e.own = true; return e; }
+  function netStart() { return { t: Date.now(), hid: pageHiddenNow() }; }
+  /** Запрос мог оборваться из-за ухода в фон: страница скрыта сейчас или была скрыта за время запроса; при tail — ещё и вернулась меньше 1,5 с назад. */
+  function netSuspect(s, tail) {
+    if (s.hid || pageHiddenNow() || vis.lastHide >= s.t) return true;
+    return !!(tail && vis.lastShow && Date.now() - vis.lastShow < NET_TAIL_MS);
+  }
+  /** Ответ сервера (HTTP 4xx/5xx, не JSON) — это не обрыв сети: для записи его не глушим, даже если страница пряталась. Обрыв — исключение fetch или abort. */
+  function isServerReply(err) {
+    var m = err && err.message ? String(err.message) : '';
+    return /^HTTP \d{3}$/.test(m) || !!(err && err.name === 'SyntaxError');
+  }
+  function netFail(action, err, s, tail, write) {
+    if (write && isServerReply(err)) { reportNet(action, err); return; }
+    if (netSuspect(s, tail) || navigator.onLine === false) return; // устройство без сети — не ошибка магазина
+    reportNet(action, err);
+  }
+  /** Ждём, пока страница снова видна и есть сеть (не дольше NET_WAIT_MS), затем короткая пауза. */
+  function netReady() {
+    return new Promise(function (resolve) {
+      var done = false, cap = null;
+      function ready() { return !pageHiddenNow() && navigator.onLine !== false; }
+      function go() {
+        if (done) return;
+        done = true;
+        clearTimeout(cap);
+        var wi = vis.waiters.indexOf(check); if (wi >= 0) vis.waiters.splice(wi, 1);
+        document.removeEventListener('visibilitychange', check);
+        window.removeEventListener('online', check);
+        setTimeout(resolve, NET_RETRY_MS);
+      }
+      function check() { if (ready()) go(); }
+      if (ready()) { go(); return; }
+      document.addEventListener('visibilitychange', check);
+      vis.waiters.push(check);
+      window.addEventListener('online', check);
+      cap = setTimeout(go, NET_WAIT_MS);
+    });
+  }
+  /**
+   * Запрос к API: run() делает одну попытку. Чтение при сбое повторяется один раз; «network» уходит в сводку, только если не прошла и вторая попытка.
+   * Запись не повторяется никогда. Ошибка не пишется, если страница была скрыта, запрос отменён самой витриной или это хвост после возвращения из фона.
+   */
+  function netGuard(action, run) {
+    var s1 = netStart();
+    return run().catch(function (err) {
+      if (err && err.own) throw err;
+      if (!NET_READ[action]) { netFail(action, err, s1, true, true); throw err; }
+      // Автоповтор только после быстрого сбоя сети (обрыв, ошибка fetch, HTTP 5xx). Свой таймаут при видимой странице — ошибка сразу; «ответ не тот» (4xx, не JSON) — тоже.
+      var fast = !!err && !err.ownTimeout && (err.name === 'TypeError' || /^HTTP 5\d\d$/.test(String(err.message || '')));
+      var hiddenTimeout = !!err && !!err.ownTimeout && netSuspect(s1, false); // таймаут, пока страница была скрыта: покупатель не ждал
+      if (!fast && !hiddenTimeout) { netFail(action, err, s1, true); throw err; }
+      return netReady().then(function () {
+        var s2 = netStart();
+        return run(NET_RETRY_LIMIT_MS).catch(function (e2) { if (!(e2 && e2.own)) netFail(action, e2, s2, false); throw e2; });
+      });
+    });
+  }
+  /** Worker не ответил, но каталог из Apps Script получен: покупатель ничего не заметил. Метка — не чаще раза в час с устройства, в лимит 5 записей не входит. */
+  var WFB_KEY = 'pamir_wfb_v1';
+  function reportWorkerFallback() {
+    try {
+      if (!cfg.API_URL) return;
+      var hour = String(Math.floor(Date.now() / 3600000));
+      if (store.get(WFB_KEY) === hour) return;
+      store.set(WFB_KEY, hour);
+      errQueue.push({ m: 'worker_fallback', s: 'catalog', v: SCRIPT_V });
+      if (!errTimer) errTimer = setTimeout(function () { flushErrors(false); }, 2500);
+    } catch (e) { /* метка не должна ломать магазин */ }
   }
   window.addEventListener('error', function (ev) {
     var file = String(ev && ev.filename || '').split(/[?#]/)[0].split('/').pop();
@@ -2464,6 +2590,7 @@
     order.rid = state.rid;
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 45000);
+    var st = netStart(); // заказ не повторяется автоматически (ключ rid и кнопка «повторить»), но ложную ошибку не пишем
     return fetch(cfg.API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -2473,7 +2600,7 @@
       clearTimeout(timer);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) { reportNet('order', err); throw err; });
+    }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) { netFail('order', err, st, true, true); throw err; });
   }
 
   /** Просим разрешение писать клиенту в Telegram: иначе бот не сможет сообщить статус. */
@@ -2609,12 +2736,19 @@
   /* ------------------------------ Мои заказы (этап 6) ------------------------------ */
   var my = { list: null, loading: false, error: '', bought: [], done: null };
 
+  /** Один POST к API. limit (мс) задаётся только второй попытке чтения; у первой своего таймаута нет. */
+  function postFetch(body, limit) {
+    var ctrl = limit && window.AbortController ? new AbortController() : null, timedOut = false;
+    var timer = ctrl ? setTimeout(function () { timedOut = true; ctrl.abort(); }, limit) : null;
+    return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (d) { clearTimeout(timer); return d; }, function (err) { clearTimeout(timer); if (timedOut && err && typeof err === 'object') err.ownTimeout = true; throw err; });
+  }
+
   function postApi(action, data) {
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
     Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
-    return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .catch(function (err) { reportNet(action, err); throw err; });
+    return netGuard(action, function (limit) { return postFetch(body, limit); });
   }
 
   /** quiet — фоновая загрузка при старте: нужна для подборки «Купити знову» и программы для постоянных клиентов. */
@@ -2804,12 +2938,7 @@
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
     Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
     var started = Date.now();
-    return fetch(cfg.API_URL, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body)
-    }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }).catch(function (err) { reportNet(action, err); throw err; }).then(function (res) {
+    return netGuard(action, function (limit) { return postFetch(body, limit); }).then(function (res) {
       if (res && res._t) perfShow(action, Date.now() - started, res._t); // замер включён на сервере (PERF_LOG = 1)
       return res;
     });
