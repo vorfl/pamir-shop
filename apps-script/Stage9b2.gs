@@ -337,7 +337,7 @@ function fuMarkSent_(uid) { return fuClientWrite_(uid, true, undefined); }
  * при несовпадении строка ищется заново по номеру; нет такой — отметка не ставится. Для f1/f2 рядом пишется время ft (мс): по нему
  * лимит 14 дней видит отправку, даже если «Останнє повідомлення» записать не удалось.
  */
-function fuSetSvcMark_(sheet, col, rowIdx, mark, num) {
+function fuSetSvcMark_(sheet, col, rowIdx, mark, num, ttn) { // ttn (необязательно) — номер, по которому спрашивали НП: в ячейке другой — отметку не ставим
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return false;
   try {
@@ -358,6 +358,7 @@ function fuSetSvcMark_(sheet, col, rowIdx, mark, num) {
     var cur = {};
     try { cur = JSON.parse(String(sheet.getRange(rowIdx, col.svc + 1).getValues()[0][0] || '{}')) || {}; } catch (err) { return false; }
     if (cur[mark]) return false;
+    if (ttn !== undefined && String(cur.ttn || '') !== String(ttn)) return false;
     cur[mark] = 1;
     if (mark === 'f1' || mark === 'f2') cur.ft = Date.now();
     sheet.getRange(rowIdx, col.svc + 1).setValue(JSON.stringify(cur));
@@ -803,8 +804,16 @@ var NP_MSG = {
   del_no: ['Цю накладну не можна видалити звідси: її створено не через магазин. Видаліть її в кабінеті Нової пошти', 'Эту накладную нельзя удалить отсюда: она создана не через магазин. Удалите её в кабинете Новой почты'],
   del_real: ['Видалити з панелі можна лише пробну накладну. Справжню — у кабінеті Нової пошти', 'Удалить из панели можно только пробную накладную. Настоящую — в кабинете Новой почты'],
   del_old: ['Минуло понад 24 години після створення. Видаліть накладну в кабінеті Нової пошти', 'Прошло больше 24 часов после создания. Удалите накладную в кабинете Новой почты'],
-  del_partial: ['Накладну видалено в Нової пошти, але номер у замовленні не стерся. Очистіть колонку «ТТН» і службову комірку вручну', 'Накладная удалена в Новой почте, но номер в заказе не стёрся. Очистите колонку «ТТН» и служебную ячейку вручную']
+  del_partial: ['У Новій пошті накладну видалено, але номер у замовленні лишився. Зітріть номер у колонці «ТТН» цього замовлення; інші комірки не чіпайте.', 'В Новой почте накладная удалена, но номер в заказе остался. Сотрите номер в колонке «ТТН» этого заказа; другие ячейки не трогайте.'],
+  del_other: ['Пробну накладну в Новій пошті видалено. У замовленні вже інший номер — його не чіпали.', 'Пробная накладная в Новой почте удалена. В заказе уже другой номер — его не трогали.'],
+  del_done: ['Накладну вже видалено, нічого робити не треба', 'Накладная уже удалена, делать ничего не нужно']
 };
+
+/** Накладной в заказе уже нет: для витрины это успех (ok:true), с поясняющим текстом. */
+function npDelDone_() {
+  var m = NP_MSG.del_done;
+  return { ok: true, done: 'del_done', msg: { ua: m[0], ru: m[1] } };
+}
 
 function npFail_(code, extra) {
   var m = NP_MSG[code] || ['Помилка', 'Ошибка'];
@@ -1418,22 +1427,45 @@ function npTtnDelete_(body) {
   if (!(t > 0) || now - t > NP_TTN_DEL_MS) return npFail_('del_old');
   if (Number(svc.tp) > 0 && now - Number(svc.tp) < NP_TTN_BUSY_MS) return npFail_('busy'); // создание ещё идёт
   if (body.confirm !== true) return npFail_('not_confirmed');
+  // Метка «удаление идёт» (svc.td) — под блокировкой до запроса к НП: второе одновременное удаление не уйдёт в НП (busy).
+  var bad = npSvcEdit_(num, function (sv) {
+    if (!sv.tr && !sv.ttn) return 'del_done';                                              // уже стёрто (в т.ч. вручную колонку «ТТН»)
+    if (String(sv.tr || '') !== ref || Number(sv.tq) !== 1 || String(sv.ttn || '') !== String(sv.tn || '')) return 'del_real';
+    if (Number(sv.td) > 0 && Date.now() - Number(sv.td) < NP_TTN_BUSY_MS) return 'busy';
+    sv.td = Date.now();
+    return '';
+  });
+  if (bad === 'del_done') return npDelDone_();
+  if (bad) return npFail_(bad);
   var eo = {};
   var data = npCall_('delete', { DocumentRefs: ref }, { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
-  if (!data) return eo.api === true ? npFail_('np_api', { np: eo.text || '' }) : npFail_('np_error');
-  var was = '', lock = LockService.getScriptLock();
-  if (!lock.tryLock(10000)) return npFail_('del_partial');
+  if (!data) {
+    npSvcEdit_(num, function (sv) { if (!sv.td) return 'x'; delete sv.td; return ''; });   // НП не удалила: метку снимаем, повтор безопасен
+    return eo.api === true ? npFail_('np_api', { np: eo.text || '' }) : npFail_('np_error');
+  }
+  // Накладной в НП уже нет. Дальше — только заказ; НП больше не спрашиваем. Две попытки взять блокировку.
+  var was = '', lock = LockService.getScriptLock(), got = lock.tryLock(10000) || lock.tryLock(10000);
+  if (!got) return npFail_('del_partial');
   try {
     var f2 = findOrder_(num);
     if (!f2 || f2.col.svc < 0) return npFail_('del_partial');
     var sv;
     try { sv = JSON.parse(f2.o.svc || '{}') || {}; } catch (err2) { sv = {}; }
     was = String(sv.ttn || '');
-    if (String(sv.tr || '') !== ref || Number(sv.tq) !== 1 || String(sv.ttn || '') !== String(sv.tn || '')) return npFail_('del_partial'); // за время запроса номер заменили: чужое не стираем
-    ['ttn', 'tr', 'tc', 'tn', 'tq', 'tp', 'ar', 'nd'].forEach(function (k) { delete sv[k]; });
-    f2.sheet.getRange(f2.rowIndex, f2.col.svc + 1).setValue(JSON.stringify(sv));
-    if (f2.col.ttn >= 0) f2.sheet.getRange(f2.rowIndex, f2.col.ttn + 1).setValue('');
-    SpreadsheetApp.flush();
+    if (!sv.ttn && !sv.tr) return npDelDone_();                                            // в заказе уже ничего нет
+    if (String(sv.tr || '') !== ref || Number(sv.tq) !== 1 || was !== String(sv.tn || '')) { // админ успел вписать другой номер: чужое не стираем
+      if (sv.td) { delete sv.td; try { f2.sheet.getRange(f2.rowIndex, f2.col.svc + 1).setValue(JSON.stringify(sv)); SpreadsheetApp.flush(); } catch (err5) { /* метка устареет сама */ } }
+      return npFail_('del_other');
+    }
+    try {
+      ['ttn', 'tr', 'tc', 'tn', 'tq', 'tp', 'ar', 'nd', 'td'].forEach(function (k) { delete sv[k]; });
+      f2.sheet.getRange(f2.rowIndex, f2.col.svc + 1).setValue(JSON.stringify(sv));
+      if (f2.col.ttn >= 0) f2.sheet.getRange(f2.rowIndex, f2.col.ttn + 1).setValue('');
+      SpreadsheetApp.flush();
+    } catch (err6) {
+      console.warn('np ttn delete: write failed ' + safeErr_(err6));
+      return npFail_('del_partial'); // стёртой «ТТН» достаточно: svcLive_ при чтении считает накладную магазина стёртой
+    }
     logAction_('Замовлення: ТТН видалено', num, was, '');
   } finally {
     lock.releaseLock();
@@ -1506,9 +1538,9 @@ function npTrackJob_() {
     data.forEach(function (x) { if (x && x.Number !== undefined) codeOf[String(x.Number).replace(/\s+/g, '')] = String(x.StatusCode); });
     chunk.forEach(function (x) {
       var code = codeOf[x.ttn];
-      if (NP_DONE_CODES.indexOf(code) >= 0) { fuSetSvcMark_(sheet, col, x.r, 'nd', x.num); return; } // конец пути без прибытия: больше не опрашиваем, не пишем
+      if (NP_DONE_CODES.indexOf(code) >= 0) { fuSetSvcMark_(sheet, col, x.r, 'nd', x.num, x.ttn); return; } // конец пути без прибытия: больше не опрашиваем, не пишем
       if (NP_ARRIVED_CODES.indexOf(code) < 0) return;
-      if (!fuSetSvcMark_(sheet, col, x.r, 'ar', x.num)) return; // уже отмечено (или блокировка занята): второго сообщения не будет
+      if (!fuSetSvcMark_(sheet, col, x.r, 'ar', x.num, x.ttn)) return; // уже отмечено (или блокировка занята): второго сообщения не будет
       var locker = code === '8';
       var res = tg_(token, 'sendMessage', {
         chat_id: x.uid,

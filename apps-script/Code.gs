@@ -1332,7 +1332,7 @@ function handleMyOrders_(body) {
       items: cell_(row, col.items),
       total: toNum_(col.total >= 0 ? row[col.total] : 0),
       delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
-      i: again, ttn: svcTtnClient_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch),
+      i: again, ttn: svcTtnClient_(svcLive_(cell_(row, col.svc), cell_(row, col.ttn), col.ttn >= 0)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch),
       paid: paidCode_(cell_(row, col.paid))
     };
     if (wantNum && !one && entry.num === wantNum) one = entry;
@@ -1432,6 +1432,7 @@ function findOrder_(num) {
     if (String(values[r][col.num]).trim() !== num) continue;
     var row = values[r];
     var get = function (key) { return cell_(row, col[key]); };
+    var svcLiveText = svcLive_(get('svc'), get('ttn'), col.ttn >= 0); // стёрли «ТТН» вручную — накладная магазина считается стёртой
     var delivery = get('delivery');
     var pay = get('pay');
     var payCode = 'cash';
@@ -1443,7 +1444,7 @@ function findOrder_(num) {
         name: get('name'), phone: get('phone'), delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
         city: get('city'), branch: get('branch'), pay: payCode, comment: get('comment'),
         items: get('items'), total: toNum_(col.total >= 0 ? row[col.total] : 0),
-        lang: get('lang') === 'ru' ? 'ru' : 'ua', source: get('source'), svc: get('svc'), paid: get('paid'),
+        lang: get('lang') === 'ru' ? 'ru' : 'ua', source: get('source'), svc: svcLiveText, paid: get('paid'),
         npType: parseDelivery_(delivery).npType, point: parseDelivery_(delivery).point,
         ifOut: ifOutCode_(get('ifOut')) || svcIfOut_(get('svc'))
       }
@@ -1485,7 +1486,7 @@ function adminText_(o, statusNote) {
   var ifOut = o.ifOut || svcIfOut_(o.svc);
   if (isIfOut_(ifOut)) lines.push('❓ Якщо немає: ' + IFOUT_UA[ifOut]);
   var ttn = o.ttn || svcTtn_(o.svc);
-  if (ttn) lines.push('📮 ТТН: ' + escHtml_(ttn));
+  if (ttn) lines.push('📮 ТТН: ' + escHtml_(ttn) + (svcTrial_(o.svc) ? ' (пробна)' : '')); // только админам
   if (o.comment) lines.push('💬 ' + escHtml_(o.comment));
   if (o.giftNote) lines.push('🎁 Підпис до подарунка: ' + escHtml_(o.giftNote)); // только в первом сообщении; позже подпись читается из «Коментар»
   return lines.join('\n').slice(0, 4000);
@@ -2288,11 +2289,12 @@ function listOrders_() {
         status: status, uid: cell_(row, col.uid), username: cell_(row, col.username), name: cell_(row, col.name),
         phone: cell_(row, col.phone), delivery: cell_(row, col.delivery), city: cell_(row, col.city),
         branch: cell_(row, col.branch), pay: cell_(row, col.pay), comment: cell_(row, col.comment),
-        items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(cell_(row, col.svc)),
+        items: cell_(row, col.items), total: total, test: source.indexOf('test') >= 0, ttn: svcTtn_(svcLive_(cell_(row, col.svc), cell_(row, col.ttn), col.ttn >= 0)),
         paid: paidCode_(cell_(row, col.paid)), wh: orderIsWh_({ svc: cell_(row, col.svc) }) ? 1 : 0,
         lang: cell_(row, col.lang).toLowerCase() === 'ru' ? 'ru' : 'ua'
       });
-      var svcCell = col.svc >= 0 ? cell_(row, col.svc) : '';
+      var svcCell = col.svc >= 0 ? svcLive_(cell_(row, col.svc), cell_(row, col.ttn), col.ttn >= 0) : '';
+      if (svcTrial_(svcCell)) orders[orders.length - 1].ttnTrial = 1; // пробная накладная: пометка только для админа
       if (svcCell.indexOf('"tr"') >= 0 && typeof npDelOk_ === 'function' && npDelOk_(svcCell, now.getTime())) orders[orders.length - 1].ttnDel = 1; // Stage9b2.gs: накладную можно удалить (создана магазином, моложе 24 ч)
     }
   }
@@ -4074,6 +4076,24 @@ function svcTtnClient_(svcText) {
 function svcTtn_(svcText) {
   try { return String((JSON.parse(svcText || '{}') || {}).ttn || ''); } catch (err) { return ''; }
 }
+/** Пробная накладная (svc.tq) с номером: только для админа, клиенту не отдаётся. */
+function svcTrial_(svcText) {
+  try { var s = JSON.parse(svcText || '{}') || {}; return !!(s.tq && s.ttn); } catch (err) { return false; }
+}
+/**
+ * Колонка «ТТН» только пишется, а читается svc.ttn. Если накладную создал магазин (есть svc.tr), а админ стёр колонку «ТТН»,
+ * считаем накладную стёртой: номер и метки (ttn/tr/tc/tn/tq/ar/nd) не видны ни в одном чтении и не мешают новому созданию.
+ * Без колонки «ТТН» в таблице или с непустой ячейкой — текст без изменений.
+ */
+function svcLive_(svcText, ttnCell, hasCol) {
+  if (!hasCol || String(ttnCell === null || ttnCell === undefined ? '' : ttnCell).trim() || !svcText || String(svcText).indexOf('"tr"') < 0) return svcText;
+  try {
+    var s = JSON.parse(svcText) || {};
+    if (!s.tr) return svcText;
+    ['ttn', 'tr', 'tc', 'tn', 'tq', 'ar', 'nd', 'td'].forEach(function (k) { delete s[k]; });
+    return JSON.stringify(s);
+  } catch (err) { return svcText; }
+}
 
 /* ------------------------------ Настройки витрины этапа 8 ------------------------------ */
 
@@ -4750,7 +4770,7 @@ function setTtn_(num, ttn, token, quiet, meta) { // quiet: true — клиент
     try { svc = JSON.parse(found.o.svc || '{}') || {}; } catch (err) { svc = {}; }
     was = String(svc.ttn || '');
     if (was !== ttn || (svc.tn && String(svc.tn) !== ttn)) { // другой номер (опечатка, ручной ввод): метки прежней накладной и отслеживания сбрасываются
-      ['tr', 'tc', 'tn', 'tq', 'ar', 'nd'].forEach(function (k) { delete svc[k]; });
+      ['tr', 'tc', 'tn', 'tq', 'ar', 'nd', 'td'].forEach(function (k) { delete svc[k]; });
     }
     svc.ttn = ttn;
     if (meta && meta.tr) { svc.tr = meta.tr; svc.tc = meta.tc; svc.tn = ttn; if (meta.tq) svc.tq = 1; } // одним проходом с номером: удаление не успеет между ними
@@ -4982,7 +5002,10 @@ function npSafeReason_(text, key, max) {
     if (d.length >= 9 && k === 'NP_SENDER_PHONE') phones.push(d.slice(-9));
   });
   if (phones.length) { // телефон отправителя в любой записи: пробелы, дефисы, скобки, +38, 0XX…
-    s = s.replace(/\+?\d[\d\s().\-]{7,}\d/g, function (m) { var dg = m.replace(/\D/g, ''); return dg.length >= 9 && phones.indexOf(dg.slice(-9)) >= 0 ? '***' : m; });
+    s = s.replace(/\+?\d[\d\s().\-]{7,}\d/g, function (m) { // 9 цифр телефона — подстрока цифр отрезка (не только хвост: «0501234567 доб. 12»); маскируется весь отрезок
+      var dg = m.replace(/\D/g, '');
+      return dg.length >= 9 && phones.some(function (p) { return dg.indexOf(p) >= 0; }) ? '***' : m;
+    });
   }
   if (typeof npSecretValues_ === 'function') { try { npSecretValues_().forEach(function (v) { if (v && v.length >= 7) s = s.replace(new RegExp(String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '***'); }); } catch (err2) { /* только прежняя очистка */ } }
   return s.replace(/https?:\/\/\S+/gi, '[url]').replace(/\s+/g, ' ').trim().slice(0, max || 120);

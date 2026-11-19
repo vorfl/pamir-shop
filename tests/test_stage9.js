@@ -1233,6 +1233,7 @@ function npStub9(g, o) {
       return { success: true, data: [{ Ref: NPCP, ContactPerson: { success: true, data: [{ Ref: NPCT }] } }] };
     }
     if (payload.calledMethod === 'getCounterpartyContactPersons') return { success: true, data: p.Ref === NPCP ? [{ Ref: NPCT, Description: 'Іваненко Олена' }] : [] };
+    if (payload.calledMethod === 'delete' && st.onDelete) st.onDelete(p);
     if (payload.calledMethod === 'delete') return st.del === 'reject' ? { success: false, errors: ['Document not found'], data: [] } : { success: true, data: [{ Ref: p.DocumentRefs }] };
     if (payload.calledMethod === 'save') {
       if (st.save === 'net') throw new Error('network down https://api.novaposhta.ua/v2.0/json/?k=' + payload.apiKey);
@@ -1241,6 +1242,7 @@ function npStub9(g, o) {
       return { success: true, data: [{ Ref: DOCREF, IntDocNumber: st.ttnNext, CostOnSite: '70' }] };
     }
     if (payload.calledMethod === 'getStatusDocuments') {
+      if (st.onStatus) st.onStatus(p);
       return { success: true, data: p.Documents.map(d => ({ Number: d.DocumentNumber, StatusCode: st.status[d.DocumentNumber] || '1', Status: 'x' })) };
     }
     return { success: true, data: [] };
@@ -2131,6 +2133,81 @@ console.log('Доработка НП: modelName/calledMethod семи вызов
   ok(need.every(([a, b]) => src.indexOf(a) >= 0 && (!b || src.indexOf(b) >= 0)), 'в коде: InternetDocument.getDocumentPrice/save/delete, Address.getWarehouses/getCities, Counterparty.getCounterparties/getCounterpartyContactPersons/save, TrackingDocument.getStatusDocuments');
   ok(!/AfterpaymentOnGoodsCost/.test(src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')), 'AfterpaymentOnGoodsCost не используется');
   ok(/BackwardDeliveryData[^\n]*НЕ СВЕРЕН|НЕ СВЕРЕНА с документацией/.test(src), 'BackwardDeliveryData помечен в коде «не сверено с документацией»');
+}
+
+console.log('Волна Б2, мелочи 3-го аудита: удаление пробной (коды), стёртая колонка ТТН, гонка трекинга, маскирование, ttnTrial');
+{
+  const mk = (o) => {
+    const g = npWorld(); const st = npStub9(g, o);
+    const rows = g.sheets['Замовлення'].rows; rows[0].push('ТТН'); rows.slice(1).forEach(r => r.push(''));
+    return { g, st, cr: (n, x) => admP(g, 900, 'admin.ttn.create', Object.assign({ num: n, weight: 1000, confirm: true }, x || {})), del: (n) => admP(g, 900, 'admin.ttn.delete', { num: n, confirm: true }) };
+  };
+  const rowOf = (g, n) => g.sheets['Замовлення'].rows.find(r => r[0] === n);
+  const TC = (g) => g.sheets['Замовлення'].rows[0].indexOf('ТТН');
+  const setSvc = (g, num, f) => { const row = rowOf(g, num); const s = JSON.parse(row[16] || '{}'); f(s); row[16] = JSON.stringify(s); };
+  const noClean = (m) => !/службов|служебн/i.test(m.ua + ' ' + m.ru);
+  // 1a. в заказе уже ничего нет (параллельное удаление) — успех
+  const a = mk(); a.cr('P-0101', { quiet: true });
+  a.st.onDelete = () => setSvc(a.g, 'P-0101', s => { ['ttn', 'tr', 'tc', 'tn', 'tq', 'td'].forEach(k => delete s[k]); });
+  const ra = a.del('P-0101');
+  ok(ra.ok === true && ra.done === 'del_done' && /вже видалено/.test(ra.msg.ua) && /уже удалена/.test(ra.msg.ru), 'в заказе уже пусто: ok:true, del_done с текстом UA и RU', ra);
+  // 1b. вписали другой номер
+  const b = mk(); b.cr('P-0101', { quiet: true });
+  b.st.onDelete = () => admP(b.g, 900, 'admin.ttn', { num: 'P-0101', ttn: '20450000000999' });
+  const rb = b.del('P-0101');
+  ok(rb.ok === false && rb.error === 'del_other' && rb.msg.ua === 'Пробну накладну в Новій пошті видалено. У замовленні вже інший номер — його не чіпали.' && /другой номер/.test(rb.msg.ru) && noClean(rb.msg), 'другой номер в заказе: del_other, тексты UA и RU', rb);
+  ok(svcB(b.g, 'P-0101').ttn === '20450000000999' && rowOf(b.g, 'P-0101')[TC(b.g)] !== '' && svcB(b.g, 'P-0101').td === undefined, 'del_other: чужой номер и колонка не тронуты, метки удаления нет');
+  // 1c. запись не удалась: del_partial; стирания одной колонки достаточно
+  const c = mk(); c.cr('P-0101', { quiet: true });
+  const realFind = c.g.sandbox.findOrder_;
+  let failW = false;
+  c.st.onDelete = () => { failW = true; };
+  c.g.sandbox.findOrder_ = function (n) { const f = realFind(n); if (failW && f) f.sheet = { getRange: () => { throw new Error('write failed'); } }; return f; };
+  const rc = c.del('P-0101');
+  c.g.sandbox.findOrder_ = realFind; failW = false;
+  ok(rc.ok === false && rc.error === 'del_partial' && /колонці «ТТН»/.test(rc.msg.ua) && /інші комірки не чіпайте/.test(rc.msg.ua) && noClean(rc.msg) && /колонке «ТТН»/.test(rc.msg.ru), 'сбой записи: del_partial, просят стереть только «ТТН», о служебной ячейке ни слова', rc);
+  ok(svcB(c.g, 'P-0101').ttn === TTN1, 'подготовка: после сбоя записи svc.ttn остался');
+  rowOf(c.g, 'P-0101')[TC(c.g)] = '';   // админ стёр колонку «ТТН»
+  const oc = admP(c.g, 900, 'admin.orders').orders.find(x => x.num === 'P-0101');
+  ok(oc.ttn === '' && !('ttnDel' in oc) && !('ttnTrial' in oc), 'после стирания колонки админ не видит номера, флагов нет');
+  ok(c.g.post({ action: 'orders.my', initData: c.g.initData(U(501)) }).orders.find(x => x.num === 'P-0101').ttn === '', 'клиент номера не видит');
+  c.st.ttnNext = '20450000000052';
+  const rc2 = c.cr('P-0101', { quiet: true });
+  ok(rc2.ok === true && rc2.ttn === '20450000000052' && svcB(c.g, 'P-0101').tq === 1, 'после стирания колонки накладную можно создать заново (не has_ttn)', rc2);
+  const d = mk();
+  admP(d.g, 900, 'admin.ttn', { num: 'P-0101', ttn: '20450000000777' }); rowOf(d.g, 'P-0101')[TC(d.g)] = '';
+  ok(admP(d.g, 900, 'admin.orders').orders.find(x => x.num === 'P-0101').ttn === '20450000000777', 'ручной номер (без svc.tr): стирание колонки поведение не меняет');
+  // 1d. два одновременных удаления: второе не идёт в НП
+  const e = mk(); e.cr('P-0101', { quiet: true });
+  let second = null;
+  e.st.onDelete = () => { if (!second) second = e.del('P-0101'); };
+  const re = e.del('P-0101');
+  ok(second && second.error === 'busy' && npOf(e.st, 'delete').length === 1 && re.ok === true, 'второе удаление во время первого: busy, в НП ровно один delete', { second, n: npOf(e.st, 'delete').length });
+  ok(svcB(e.g, 'P-0101').td === undefined && rowOf(e.g, 'P-0101')[TC(e.g)] === '', 'после удаления метки td нет, колонка пуста');
+  const f = mk({ del: 'reject' }); f.cr('P-0101', { quiet: true });
+  f.del('P-0101'); f.st.del = 'ok';
+  ok(svcB(f.g, 'P-0101').td === undefined && f.del('P-0101').ok === true, 'отказ НП снимает метку удаления: повтор проходит');
+  // 2. гонка трекинга: номер сменили, пока спрашивали НП
+  const orders = [
+    { num: 'P-0501', uid: 851, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000501' } },
+    { num: 'P-0502', uid: 852, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000502' } }
+  ];
+  const g2 = fuWorld({ props: { NP_API_KEY: NPK }, settings: { np_track_hours: 3 }, orders }); const st2 = npStub9(g2, { status: { '20450000000501': '7', '20450000000502': '9' } });
+  st2.onStatus = () => { setSvc(g2, 'P-0501', s => { s.ttn = '20450000000511'; }); setSvc(g2, 'P-0502', s => { s.ttn = '20450000000512'; }); };
+  const n2 = g2.call('npTrackJob_');
+  ok(n2 === 0 && toChat(g2, 851).length === 0 && svcB(g2, 'P-0501').ar === undefined && svcB(g2, 'P-0502').nd === undefined, 'номер сменили во время запроса: ar/nd не ставятся, «прибуло» не уходит');
+  // 3. телефон отправителя внутри отрезка цифр
+  const t = a.g.sandbox.npSafeReason_('x 0671112233 доб 12 y +38 067 111 22 33 12 z 380671112233 99 w 099 111 22 33 12', NPK, 400);
+  ok(!/067|1112233|111 22 33 12 z/.test(t) && /099 111 22 33 12/.test(t), 'npSafeReason_: телефон внутри отрезка цифр скрыт целиком, чужой номер остался', t);
+  // 4. ttnTrial
+  const h = mk(); h.cr('P-0101', { quiet: true }); h.cr('P-0102', { name: 'Петренко Іван' });
+  const ao = admP(h.g, 900, 'admin.orders').orders;
+  ok(ao.find(x => x.num === 'P-0101').ttnTrial === 1 && !('ttnTrial' in ao.find(x => x.num === 'P-0102')) && !('ttnTrial' in ao.find(x => x.num === 'P-0103')), 'admin.orders: ttnTrial: 1 только у пробной');
+  const txt = h.g.sandbox.adminText_(h.g.call('findOrder_', 'P-0101').o, ''), txt2 = h.g.sandbox.adminText_(h.g.call('findOrder_', 'P-0102').o, '');
+  ok(txt.indexOf('ТТН: ' + TTN1 + ' (пробна)') >= 0 && !/пробна/.test(txt2), 'карточка админа: «(пробна)» у пробной, у настоящей нет');
+  const myc = JSON.stringify(h.g.post({ action: 'orders.my', initData: h.g.initData(U(501)) }));
+  ok(!/ttnTrial|пробна|пробная/.test(myc), 'клиенту пометки пробной нет');
+  ok(noSecrets(JSON.stringify([ra, rb, rc, rc2, second]) + npAll(a.g) + npAll(b.g) + npAll(c.g)), 'в ответах и логах секретов нет');
 }
 
 console.log('\n' + pass + ' ok, ' + fail + ' fail');
