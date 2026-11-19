@@ -6960,7 +6960,7 @@
     return m && typeof m === 'object' ? String((state.lang === 'ru' ? (m.ru || m.ua) : (m.ua || m.ru)) || '') : '';
   }
   function ttnMsg(res) { return ttnSrvMsg(res) || t('ttnMkFail'); }
-  /** Габариты: все три пустые — null; все три числа 1…300 — [ш, д, в]; иначе 'part' (не все заполнены) или 'bad' (не числа). */
+  /** Габариты: все три пустые — null; все три числа 1…120 — [ш, д, в]; иначе 'part' (не все заполнены) или 'bad' (не числа). */
   function ttnDims(vals) {
     var f = vals.filter(function (v) { return String(v).trim() !== ''; });
     if (!f.length) return null;

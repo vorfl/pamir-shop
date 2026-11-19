@@ -4426,6 +4426,7 @@ const smallTargets = page => page.evaluate(() => {
           const cr = calls.create[0];
           ok(calls.create.length === 1 && cr.width === 30 && cr.length === 20 && cr.height === 10.5 && cr.quiet === true && cr.confirm === true && cr.weight === 1500, 'ТТН габариты (' + theme + '): в create — width, length, height (числа) и quiet: true', cr);
           ok(/Накладну створено: 20450000333333/.test(await text(A.page, '.toast')) && /Клієнту номер не надсилали/.test(await text(A.page, '.toast')) && !/Клієнту надіслано номер/.test(await text(A.page, '.toast')), 'ТТН quiet (' + theme + '): после успеха «Клієнту номер не надсилали»', await text(A.page, '.toast'));
+          await A.page.screenshot({ path: OUT + '/b9-ttn-quiet-result-' + theme + '.png' });
           ok(A.errors.length === 0, 'ТТН габариты (' + theme + '): в консоли нет ошибок', A.errors);
           await A.ctx.close();
         }
@@ -4503,6 +4504,11 @@ const smallTargets = page => page.evaluate(() => {
           await R.page.waitForFunction(() => /20450000333333/.test(document.querySelector('.ord__body').innerText));
           ok(/Клиенту номер не отправляли/.test(await text(R.page, '.toast')) && rc.create.length === 1 && rc.create[0].quiet === true, 'ТТН quiet RU: «Клиенту номер не отправляли», quiet в запросе');
           await R.ctx.close();
+          const { A: RL } = await openAdmin(stA, { npTtn: true, preview: PREV(), create: OKC }, { lc: 'ru', theme: 'light' });
+          await openSheet(RL);
+          await RL.page.fill('#ttnDW', '10');
+          await RL.page.waitForTimeout(450); await RL.page.screenshot({ path: OUT + '/b9-ttn-dims-ru-light.png' });
+          await RL.ctx.close();
         }
       }
       {
