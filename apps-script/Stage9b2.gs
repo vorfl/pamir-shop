@@ -22,7 +22,8 @@ var S9B2_PHOTO2_FORBIDDEN = [
 
 function stage9b2Menu_(menu) {
   return menu.addItem('Етап 9Б2: записати другі фото', 'stage9b2Photos')
-    .addItem('Етап 9Б2: налаштувати', 'stage9b2Setup');
+    .addItem('Етап 9Б2: налаштувати', 'stage9b2Setup')
+    .addItem('Етап 9Б2: перевірити Нову пошту', 'stage9b2CheckNp');
 }
 
 /* ======================= «Етап 9Б2: налаштувати»: список шагов ======================= */
@@ -647,14 +648,18 @@ function s9b2StepIfOut_(ss) {
 /* Волна Б2, блок 4: Нова пошта дальше (стоимость доставки, «Створити ТТН», «посылка прибыла»)               */
 /* ======================================================================================================== */
 /*
- * Всё работает только с NP_API_KEY (Code.gs) и данными отправителя из Script Properties (в ответы и логи не попадают):
- *   NP_SENDER_CITY    Ref города отправителя         — нужен для np.price и для «Створити ТТН»
- *   NP_SENDER_REF     Ref контрагента-отправителя     — только «Створити ТТН»
- *   NP_SENDER_CONTACT Ref контактного лица
- *   NP_SENDER_ADDRESS Ref отделения отправителя
- *   NP_SENDER_PHONE   телефон отправителя (380XXXXXXXXX)
+ * Всё работает только с NP_API_KEY (Code.gs). Данные отправителя (в ответы и логи не попадают):
+ *   Вводит владелец:  NP_SENDER_PHONE (380XXXXXXXXX, с «+», «0…», пробелами — всё равно),
+ *                     NP_SENDER_WAREHOUSE (номер отделения, например 34), NP_SENDER_CITY_NAME (необязательно, по умолчанию «Харків»).
+ *   Ручное переопределение (необязательно; заданное используется без запросов к API): NP_SENDER_CITY, NP_SENDER_ADDRESS, NP_SENDER_REF, NP_SENDER_CONTACT.
+ *   Служебные (пишет код): NP_SENDER_CACHE (Ref-ы и отпечаток входных значений, не секрет), NP_ALERT_LAST, NP_TRACK_LAST.
+ * Ref города, отделения, контрагента и контакта находятся через API и кэшируются (CacheService 6 ч + NP_SENDER_CACHE 30 дней).
+ * Сетевых запросов в каталоге и в админ-панели нет: отправитель разрешается в hourlyJob (npSenderJob_) и из меню «Етап 9Б2: перевірити Нову пошту».
  * Нет ключа или данных — всё как раньше: нет полей shop.npp, orders.npTtn, действий и сообщений.
- * Названия методов и полей API Новой почты НЕ сверены с живой документацией (нет доступа) и ни разу не вызывались с настоящим ключом.
+ *
+ * Сверка с документацией (на 2026-11): официально подтверждены endpoint, формат ответа и TrackingDocument.getStatusDocuments с кодами статусов
+ * (api-portal.novapost.com). Методы Address.*, Counterparty.*, InternetDocument.* на портале не описаны (developers.novaposhta.ua недоступен):
+ * они собраны по открытым клиентским библиотекам и помечены в коде «не сверено с документацией».
  */
 
 var NP_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -663,45 +668,141 @@ var NP_PRICE_TTL = 4 * 3600;        // кэш стоимости, секунды
 var NP_PRICE_MAX_PER_HOUR = 150;    // свои вызовы np.price в час (общий лимит 600 — ещё и у подсказок городов и отделений)
 var NP_W_MIN_G = 100, NP_W_MAX_G = 30000; // вес посылки, граммы
 var NP_TTN_BUSY_MS = 5 * 60 * 1000; // отметка «создание идёт» живёт столько
+var NP_TTN_DEL_MS = 24 * 3600 * 1000; // «пробную» накладную можно удалить из админки в течение суток
 var NP_TRACK_DAYS = 30;             // заказы старше — не опрашиваем
 var NP_TRACK_BATCH = 100, NP_TRACK_MAX_BATCHES = 5;
 var NP_DESC_DEFAULT = 'Харчові продукти';
+var NP_SENDER_CACHE_KEY = 'np_sender';
+var NP_SENDER_TTL_MS = 30 * 24 * 3600 * 1000;      // кэш Ref-ов отправителя действует 30 дней
+var NP_SENDER_REFRESH_MS = 25 * 24 * 3600 * 1000;  // hourlyJob обновляет его заранее
+var NP_SENDER_CITY_DEFAULT = 'Харків';
 
 function npProp_(name) {
   try { return String(scriptProps_().getProperty(name) || '').trim(); } catch (err) { return ''; }
 }
 
-/** Есть ключ и город отправителя: можно считать стоимость (shop.npp). */
-function npPriceOn_() { return !!(npKey_() && npProp_('NP_SENDER_CITY')); }
+/** Телефон в виде 380XXXXXXXXX из «380…», «+380…», «0XXXXXXXXX», «80…», с пробелами, скобками, дефисами. Иное — null («нет данных»). */
+function npPhone_(v) {
+  var d = String(v === null || v === undefined ? '' : v).replace(/\D/g, '');
+  if (/^380\d{9}$/.test(d)) return d;
+  if (/^80\d{9}$/.test(d)) return '3' + d;
+  if (/^0\d{9}$/.test(d)) return '38' + d;
+  return null;
+}
 
-/** Есть ключ и все пять NP_SENDER_*: можно создавать накладные (orders.npTtn в админ-панели). */
+/** Номер отделения отправителя из NP_SENDER_WAREHOUSE («34», «№34», «відділення 34») или 0. */
+function npSenderWhNum_() {
+  var m = npProp_('NP_SENDER_WAREHOUSE').match(/\d{1,5}/);
+  var n = m ? parseInt(m[0], 10) : 0;
+  return n > 0 ? n : 0;
+}
+
+function npSenderCityName_() { return npProp_('NP_SENDER_CITY_NAME') || NP_SENDER_CITY_DEFAULT; }
+
+/** Отпечаток входных значений: номер отделения, город, хэш телефона (HMAC по ключу НП: самого телефона в кэше нет). */
+function npSenderFp_() {
+  var phone = npPhone_(npProp_('NP_SENDER_PHONE')), h = '-';
+  if (phone) {
+    try {
+      var sig = Utilities.computeHmacSha256Signature(Utilities.newBlob(phone).getBytes(), Utilities.newBlob(npKey_() || 'np').getBytes());
+      h = sig.slice(0, 6).map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+    } catch (err) { h = 'x'; }
+  }
+  return [npSenderWhNum_() || '-', npCityNorm_(npSenderCityName_()), h].join('|');
+}
+
+function npSenderCacheOk_(c, fp, now) {
+  return !!(c && typeof c === 'object' && c.fp === fp && Number(c.at) > 0 && now - Number(c.at) <= NP_SENDER_TTL_MS && Number(c.at) <= now + 3600000);
+}
+
+/** Кэш отправителя, если он свежий и собран для текущих входных значений. Без сети. */
+function npSenderCacheRead_() {
+  var fp = npSenderFp_(), now = Date.now(), c = null;
+  var cache = CacheService.getScriptCache();
+  try { var raw = cache.get(NP_SENDER_CACHE_KEY); if (raw) c = JSON.parse(raw); } catch (e1) { c = null; }
+  if (npSenderCacheOk_(c, fp, now)) return c;
+  c = null;
+  try { var p = scriptProps_().getProperty('NP_SENDER_CACHE'); if (p) c = JSON.parse(p); } catch (e2) { c = null; }
+  if (!npSenderCacheOk_(c, fp, now)) return null;
+  try { cache.put(NP_SENDER_CACHE_KEY, JSON.stringify(c), 21600); } catch (e3) { /* не критично */ }
+  return c;
+}
+
+function npSenderCacheWrite_(c) {
+  var text = JSON.stringify(c);
+  try { CacheService.getScriptCache().put(NP_SENDER_CACHE_KEY, text, 21600); } catch (e1) { /* не критично */ }
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return false; // свойство обновится при следующем запуске; кэш на 6 часов уже есть
+  try { scriptProps_().setProperty('NP_SENDER_CACHE', text); } finally { lock.releaseLock(); }
+  return true;
+}
+
+/**
+ * Отправитель из свойств-переопределений и кэша. Сетевых вызовов нет.
+ * {city, address, ref, contact — Ref-ы или '', phone — 380XXXXXXXXX или null, at — время сборки кэша, cached — есть ли поля из кэша}.
+ */
+function npSenderState_() {
+  var s = { city: npProp_('NP_SENDER_CITY'), address: npProp_('NP_SENDER_ADDRESS'), ref: npProp_('NP_SENDER_REF'), contact: npProp_('NP_SENDER_CONTACT'),
+    phone: npPhone_(npProp_('NP_SENDER_PHONE')), at: 0, cached: false };
+  if (!npKey_()) return s;
+  var c = npSenderCacheRead_();
+  if (c) {
+    s.at = Number(c.at) || 0;
+    ['city', 'address', 'ref', 'contact'].forEach(function (k) { if (!s[k] && c[k] && /^[\w-]{8,64}$/.test(String(c[k]))) { s[k] = String(c[k]); s.cached = true; } });
+  }
+  return s;
+}
+
+/** Функция из ТЗ: отправитель целиком, без сети (свойства → кэш). Для разрешения через API — npSenderResolve_. */
+function npSender_() { return npSenderState_(); }
+
+/** Значения, которые нельзя показывать в текстах: телефон отправителя и Ref-ы отправителя. Используется npSafeReason_ (Code.gs). */
+function npSecretValues_() {
+  var out = [], ph = npPhone_(npProp_('NP_SENDER_PHONE'));
+  if (ph) { out.push(ph, ph.slice(-9)); }
+  try {
+    var s = npSenderState_();
+    ['city', 'address', 'ref', 'contact'].forEach(function (k) { if (s[k] && s[k].length >= 8) out.push(s[k]); });
+  } catch (err) { /* только то, что есть */ }
+  return out;
+}
+
+/** Есть ключ и город отправителя (из свойства или кэша): можно считать стоимость (shop.npp). */
+function npPriceOn_() { return !!(npKey_() && npSenderState_().city); }
+
+/** Есть ключ и отправитель разрешён целиком (город, отделение, контрагент, контакт, телефон): можно создавать накладные. */
 function npTtnOn_() {
   if (!npKey_()) return false;
-  return NP_SENDER_PROPS.every(function (k) { return !!npProp_(k); });
+  var s = npSenderState_();
+  return !!(s.city && s.address && s.ref && s.contact && s.phone);
 }
 
 var NP_MSG = {
-  off: ['Нова пошта не налаштована', 'Новая почта не настроена'],
+  off: ['Нова пошта не налаштована або дані відправника ще не визначено. Запустіть у таблиці меню PAMIR → «Етап 9Б2: перевірити Нову пошту»', 'Новая почта не настроена или данные отправителя ещё не определены. Запустите в таблице меню PAMIR → «Етап 9Б2: перевірити Нову пошту»'],
   busy: ['Зараз триває інша дія із замовленням. Зачекайте хвилину', 'Сейчас идёт другое действие с заказом. Подождите минуту'],
   not_found: ['Замовлення не знайдено', 'Заказ не найден'],
   test: ['Тестове замовлення: ТТН не створюється', 'Тестовый заказ: ТТН не создаётся'],
   bad_status: ['Для цього статусу замовлення ТТН не створюється', 'Для этого статуса заказа ТТН не создаётся'],
   not_np: ['Це замовлення не на Нову пошту', 'Этот заказ не на Новую почту'],
   courier: ['Кур’єрська доставка: ТТН створіть вручну в кабінеті Нової пошти й введіть номер', 'Курьерская доставка: создайте ТТН вручную в кабинете Новой почты и введите номер'],
-  locker: ['Для поштомата накладну створіть у кабінеті НП і впишіть номер вручну', 'Для почтомата накладную создайте в кабинете НП и впишите номер вручную'],
+  locker: ['Доставка в поштомат: накладну створіть вручну в кабінеті Нової пошти (там вказують розміри місця) і впишіть її номер у замовлення', 'Доставка в почтомат: накладную создайте вручную в кабинете Новой почты (там указывают размеры места) и впишите её номер в заказ'],
   has_ttn: ['У замовлення вже є ТТН', 'У заказа уже есть ТТН'],
   no_ref: ['У замовлення немає коду міста Нової пошти (зроблене до оновлення). Створіть ТТН вручну й введіть номер', 'У заказа нет кода города Новой почты (сделан до обновления). Создайте ТТН вручную и введите номер'],
   wh_unknown: ['Не вдалося однозначно знайти відділення за номером. Створіть ТТН вручну й введіть номер', 'Не удалось однозначно найти отделение по номеру. Создайте ТТН вручную и введите номер'],
   np_error: ['Нова пошта не відповіла. Спробуйте пізніше або створіть ТТН вручну', 'Новая почта не ответила. Попробуйте позже или создайте ТТН вручную'],
-  np_api: ['Нова пошта відхилила накладну', 'Новая почта отклонила накладную'],
+  np_api: ['Нова пошта відхилила запит', 'Новая почта отклонила запрос'],
   np_unknown: ['Відповідь Нової пошти не отримано: накладна могла бути створена. Перевірте кабінет Нової пошти перед повтором (захист від дубля діє 5 хвилин)', 'Ответ Новой почты не получен: накладная могла быть создана. Проверьте кабинет Новой почты перед повтором (защита от дубля действует 5 минут)'],
   save_failed: ['Накладну створено, але номер не записано в замовлення. Введіть номер вручну', 'Накладная создана, но номер не записан в заказ. Введите номер вручную'],
   bad_phone: ['Телефон отримувача не українського формату (+380…). Створіть ТТН вручну', 'Телефон получателя не украинского формата (+380…). Создайте ТТН вручную'],
   bad_name: ['Вкажіть отримувача: прізвище та ім’я (два-три слова)', 'Укажите получателя: фамилия и имя (два-три слова)'],
   bad_weight: ['Вкажіть вагу від 100 г до 30 кг', 'Укажите вес от 100 г до 30 кг'],
+  bad_dims: ['Вкажіть ширину, довжину й висоту в сантиметрах (числа від 1 до 300) або залиште всі три поля порожніми', 'Укажите ширину, длину и высоту в сантиметрах (числа от 1 до 300) или оставьте все три поля пустыми'],
   bad_amount: ['Сума не збігається із замовленням. Відкрийте підтвердження ще раз', 'Сумма не совпадает с заказом. Откройте подтверждение ещё раз'],
   not_confirmed: ['Потрібне підтвердження', 'Нужно подтверждение'],
-  city_diff: ['Місто в замовленні не збігається з містом Нової пошти за кодом. Перевірте адресу й підтвердіть створення ще раз', 'Город в заказе не совпадает с городом Новой почты по коду. Проверьте адрес и подтвердите создание ещё раз']
+  city_diff: ['Місто в замовленні не збігається з містом Нової пошти за кодом. Перевірте адресу й підтвердіть створення ще раз', 'Город в заказе не совпадает с городом Новой почты по коду. Проверьте адрес и подтвердите создание ещё раз'],
+  del_no: ['Цю накладну не можна видалити звідси: її створено не через магазин. Видаліть її в кабінеті Нової пошти', 'Эту накладную нельзя удалить отсюда: она создана не через магазин. Удалите её в кабинете Новой почты'],
+  del_old: ['Минуло понад 24 години після створення. Видаліть накладну в кабінеті Нової пошти', 'Прошло больше 24 часов после создания. Удалите накладную в кабинете Новой почты'],
+  del_partial: ['Накладну видалено в Нової пошти, але номер у замовленні не стерся. Очистіть колонку «ТТН» і службову комірку вручну', 'Накладная удалена в Новой почте, но номер в заказе не стёрся. Очистите колонку «ТТН» и служебную ячейку вручную']
 };
 
 function npFail_(code, extra) {
@@ -711,12 +812,300 @@ function npFail_(code, extra) {
   return out;
 }
 
+/* ---------- 0. Общие запросы: страницы списков ---------- */
+
+/**
+ * Список методом с перебором страниц (Page — по открытым библиотекам; не сверено с документацией). Останавливается на пустой странице,
+ * на странице без новых записей (если Page игнорируется) и на maxPages. limit (если задан) — размер страницы в Limit.
+ * Возвращает {items} или {err: {api, text, nocall}}. Все запросы — админский счётчик, без кэша ответа.
+ */
+function npPaged_(model, method, base, maxPages, limit) {
+  var items = [], seen = {};
+  for (var page = 1; page <= maxPages; page++) {
+    var props = {};
+    Object.keys(base).forEach(function (k) { props[k] = base[k]; });
+    props.Page = String(page);
+    if (limit) props.Limit = String(limit);
+    var eo = {};
+    var data = npCall_(method, props, { model: model, noCache: true, quiet: true, admin: true, errOut: eo });
+    if (!data) return { items: items, err: { api: eo.api === true, text: eo.text || '', nocall: eo.nocall === true } };
+    if (!data.length) break;
+    var fresh = 0;
+    data.forEach(function (x) {
+      var id = x && x.Ref ? String(x.Ref) : JSON.stringify(x);
+      if (seen[id]) return;
+      seen[id] = true; fresh++; items.push(x);
+    });
+    if (!fresh) break;
+    if (limit && data.length < limit) break;
+  }
+  return { items: items };
+}
+
+/**
+ * Отделение (или почтомат) города по номеру. Сначала узкий запрос (CityRef + WarehouseId = номер строкой), если точного совпадения нет — полный перебор страниц города.
+ * Результат всегда проверяется на своей стороне: Number === номер, CityRef города (если поле есть в ответе), тип, один результат.
+ * Возвращает {ref, num, desc, city, cityRu} или {error: 'wh_unknown'|'np_error'|'np_api', text}.
+ * Не сверено с документацией: имена полей Number, CityRef, CategoryOfWarehouse, Description и параметры Page/Limit/WarehouseId — по библиотекам и указанию владельца.
+ */
+function npFindWarehouse_(cityRef, num, locker) {
+  cityRef = String(cityRef || '');
+  if (!NP_UUID_RE.test(cityRef) || !(num > 0)) return { error: 'wh_unknown' };
+  function pick(items) {
+    return items.filter(function (w) {
+      if (!w || parseInt(w.Number, 10) !== num || !NP_UUID_RE.test(String(w.Ref || ''))) return false;
+      if (w.CityRef && String(w.CityRef).toLowerCase() !== cityRef.toLowerCase()) return false;
+      var isLocker = String(w.CategoryOfWarehouse || '') === 'Postomat' || /по[чш]тома[тн]/i.test(String(w.Description || ''));
+      return isLocker === !!locker;
+    });
+  }
+  var hits = null;
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var base = { CityRef: cityRef };
+    if (attempt === 0) base.WarehouseId = String(num); // узкий запрос (WarehouseId по указанию владельца); результат всё равно проверяется ниже
+    var r = npPaged_('Address', 'getWarehouses', base, attempt === 0 ? 3 : 12, NP_WH_PAGE);
+    if (r.err) return { error: r.err.api ? 'np_api' : 'np_error', text: r.err.text };
+    hits = pick(r.items);
+    if (hits.length) break;
+  }
+  if (hits.length !== 1) return { error: 'wh_unknown' };
+  var w = hits[0];
+  return { ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60), cityRu: String(w.CityDescriptionRu || '').slice(0, 60) };
+}
+
+/* ---------- 0б. Отправитель: разрешение через API, кэш, тревога ---------- */
+
+var NP_SMSG = {
+  no_key: ['Ключ Нової пошти (NP_API_KEY) не задано', 'Ключ Новой почты (NP_API_KEY) не задан'],
+  api: ['Нова пошта відхилила запит', 'Новая почта отклонила запрос'],
+  net: ['Нова пошта не відповіла', 'Новая почта не ответила'],
+  city_none: ['Місто відправника не знайдено у Нової пошти. Перевірте NP_SENDER_CITY_NAME або впишіть код міста в NP_SENDER_CITY', 'Город отправителя не найден в Новой почте. Проверьте NP_SENDER_CITY_NAME или впишите код города в NP_SENDER_CITY'],
+  city_many: ['Знайдено кілька міст з такою назвою. Впишіть код потрібного міста в NP_SENDER_CITY', 'Найдено несколько городов с таким названием. Впишите код нужного города в NP_SENDER_CITY'],
+  wh_none: ['Відділення з номером із NP_SENDER_WAREHOUSE не знайдено в цьому місті (або їх кілька). Перевірте номер або впишіть код відділення в NP_SENDER_ADDRESS', 'Отделение с номером из NP_SENDER_WAREHOUSE не найдено в этом городе (или их несколько). Проверьте номер или впишите код отделения в NP_SENDER_ADDRESS'],
+  cp_none: ['У кабінеті Нової пошти немає контрагента-відправника. Впишіть його код у NP_SENDER_REF', 'В кабинете Новой почты нет контрагента-отправителя. Впишите его код в NP_SENDER_REF'],
+  cp_many: ['У кабінеті кілька відправників: який саме — невідомо. Впишіть код потрібного в NP_SENDER_REF', 'В кабинете несколько отправителей: какой именно — неизвестно. Впишите код нужного в NP_SENDER_REF'],
+  ct_none: ['У відправника немає контактної особи. Впишіть її код у NP_SENDER_CONTACT', 'У отправителя нет контактного лица. Впишите её код в NP_SENDER_CONTACT'],
+  ct_many: ['Контактних осіб кілька, а телефон із NP_SENDER_PHONE не підійшов ні до однієї. Перевірте телефон або впишіть код контакту в NP_SENDER_CONTACT', 'Контактных лиц несколько, а телефон из NP_SENDER_PHONE не подошёл ни к одной. Проверьте телефон или впишите код контакта в NP_SENDER_CONTACT'],
+  phone_bad: ['NP_SENDER_PHONE має неправильний формат (потрібно 380XXXXXXXXX, +380XXXXXXXXX або 0XXXXXXXXX)', 'NP_SENDER_PHONE в неправильном формате (нужно 380XXXXXXXXX, +380XXXXXXXXX или 0XXXXXXXXX)'],
+  bad_resp: ['Відповідь Нової пошти має незвичний вигляд', 'Ответ Новой почты имеет необычный вид']
+};
+
+function npSmsg_(code, lang, text) {
+  var m = NP_SMSG[code] || ['Помилка', 'Ошибка'];
+  var s = lang === 'ru' ? m[1] : m[0];
+  if (text && (code === 'api' || code === 'net')) s += ' (' + npSafeReason_(text, npKey_(), 120) + ')';
+  return s;
+}
+
+/** Итог шага запроса к API → ошибка шага. */
+function npStepErr_(err) { return { code: err.api ? 'api' : 'net', text: err.text || '' }; }
+
+/**
+ * Разрешает отправителя через API (читающие запросы) и сохраняет кэш. Вызывать ВНЕ LockService. Заданные свойства-переопределения не запрашиваются.
+ * Возвращает { ok, errs: [{code, text, n}], steps: {city, wh, cp, ct, phone}, sender }, где у шага: state 'override'|'ok'|'kept'|'err'|'skip', name (для меню).
+ * Что нашлось — сохраняется, даже если другие шаги не удались (город уже позволяет считать стоимость).
+ */
+function npSenderResolve_() {
+  var res = { ok: true, errs: [], steps: {}, sender: null };
+  if (!npKey_()) { res.ok = false; res.errs.push({ code: 'no_key' }); return res; }
+  var fp = npSenderFp_(), now = Date.now(), old = npSenderCacheRead_();
+  var out = { city: '', address: '', ref: '', contact: '' };
+  var ov = { city: npProp_('NP_SENDER_CITY'), address: npProp_('NP_SENDER_ADDRESS'), ref: npProp_('NP_SENDER_REF'), contact: npProp_('NP_SENDER_CONTACT') };
+  var whNum = npSenderWhNum_();
+  function bad(step, code, extra) {
+    var e = { code: code }; if (extra) Object.keys(extra).forEach(function (k) { e[k] = extra[k]; });
+    res.errs.push(e); res.steps[step] = { state: 'err', code: code }; res.ok = false;
+  }
+  function keep(k, step) { // этап не удался: прежнее значение из кэша (если оно свежее) лучше, чем ничего
+    if (old && old[k] && /^[\w-]{8,64}$/.test(String(old[k]))) { out[k] = String(old[k]); res.steps[step].state = 'kept'; }
+  }
+
+  // 1. Город: getCities(FindByString), точное совпадение названия (не сверено с документацией)
+  var cityRef = ov.city;
+  if (ov.city) res.steps.city = { state: 'override' };
+  else {
+    var name = npSenderCityName_(), want = npCityNorm_(name);
+    var rc = npPaged_('Address', 'getCities', { FindByString: name }, 3, 0);
+    if (rc.err) bad('city', rc.err.api ? 'api' : 'net', { text: rc.err.text });
+    else {
+      var cm = rc.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')) && (npCityNorm_(c.Description) === want || npCityNorm_(c.DescriptionRu) === want); });
+      if (cm.length === 0) bad('city', 'city_none');
+      else if (cm.length > 1) bad('city', 'city_many');
+      else { cityRef = String(cm[0].Ref); out.city = cityRef; res.steps.city = { state: 'ok', name: String(cm[0].Description || name).slice(0, 60) }; }
+    }
+    if (res.steps.city.state === 'err') { keep('city', 'city'); cityRef = out.city; }
+  }
+
+  // 2. Отделение по номеру: getWarehouses по городу, точная проверка Number и CityRef
+  if (ov.address) res.steps.wh = { state: 'override' };
+  else if (!whNum) res.steps.wh = { state: 'skip' };
+  else if (!cityRef) { res.steps.wh = { state: 'skip', dep: 'city' }; keep('address', 'wh'); }
+  else {
+    var wh = npFindWarehouse_(cityRef, whNum, false);
+    if (wh.error) { bad('wh', wh.error === 'wh_unknown' ? 'wh_none' : wh.error === 'np_api' ? 'api' : 'net', { text: wh.text, n: whNum }); keep('address', 'wh'); }
+    else { out.address = wh.ref; res.steps.wh = { state: 'ok', name: wh.desc, n: whNum }; }
+  }
+
+  // 3. Контрагент-отправитель: ровно один (не сверено с документацией: CounterpartyProperty 'Sender')
+  var cpRef = ov.ref;
+  if (ov.ref) res.steps.cp = { state: 'override' };
+  else {
+    var rp = npPaged_('Counterparty', 'getCounterparties', { CounterpartyProperty: 'Sender' }, 2, 0);
+    if (rp.err) bad('cp', rp.err.api ? 'api' : 'net', { text: rp.err.text });
+    else {
+      var cps = rp.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')); });
+      if (cps.length === 0) bad('cp', 'cp_none');
+      else if (cps.length > 1) bad('cp', 'cp_many');
+      else { cpRef = String(cps[0].Ref); out.ref = cpRef; res.steps.cp = { state: 'ok', name: String(cps[0].Description || '').slice(0, 60) }; }
+    }
+    if (res.steps.cp.state === 'err') { keep('ref', 'cp'); cpRef = out.ref; }
+  }
+
+  // 4. Контактное лицо: телефон совпал с NP_SENDER_PHONE; нет совпадения, но контакт один — он (не сверено: Counterparty.getCounterpartyContactPersons, поле Phones)
+  var phoneRaw = npProp_('NP_SENDER_PHONE'), phone = npPhone_(phoneRaw);
+  if (ov.contact) res.steps.ct = { state: 'override' };
+  else if (!cpRef) { res.steps.ct = { state: 'skip', dep: 'cp' }; keep('contact', 'ct'); }
+  else {
+    var rt = npPaged_('Counterparty', 'getCounterpartyContactPersons', { Ref: cpRef }, 2, 0);
+    if (rt.err) { bad('ct', rt.err.api ? 'api' : 'net', { text: rt.err.text }); keep('contact', 'ct'); }
+    else {
+      var cts = rt.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')); });
+      var picked = null;
+      if (phone) {
+        var tail = phone.slice(-9);
+        cts.forEach(function (c) { if (!picked && String(c.Phones || c.Phone || '').replace(/\D/g, '').indexOf(tail) >= 0) picked = c; });
+      }
+      if (!picked && cts.length === 1) picked = cts[0];
+      if (picked) { out.contact = String(picked.Ref); res.steps.ct = { state: 'ok', name: String(picked.Description || '').slice(0, 60) }; }
+      else { bad('ct', cts.length ? 'ct_many' : 'ct_none'); keep('contact', 'ct'); }
+    }
+  }
+
+  // 5. Телефон: только проверка формата (по API он не находится)
+  if (phoneRaw && !phone) { res.steps.phone = { state: 'err', code: 'phone_bad' }; res.errs.push({ code: 'phone_bad' }); res.ok = false; }
+  else res.steps.phone = { state: phone ? 'ok' : 'skip' };
+
+  // Кэш: только то, что нашлось через API (переопределения читаются из свойств каждый раз)
+  var any = out.city || out.address || out.ref || out.contact;
+  if (any) {
+    var complete = res.ok;
+    var hadCity = !!npSenderState_().city;
+    npSenderCacheWrite_({ fp: fp, at: complete || !old ? now : Number(old.at) || now, city: out.city, address: out.address, ref: out.ref, contact: out.contact });
+    if (!hadCity && out.city && typeof clearCatalogCache_ === 'function') { try { clearCatalogCache_(); } catch (err) { /* кэш каталога обновится сам */ } }
+  }
+  res.sender = npSenderState_();
+  return res;
+}
+
+/** Текст проблемы отправителя из итога npSenderResolve_: [ua, ru]. */
+function npSenderProblemText_(res) {
+  var ua = [], ru = [];
+  res.errs.forEach(function (e) { ua.push(npSmsg_(e.code, 'ua', e.text)); ru.push(npSmsg_(e.code, 'ru', e.text)); });
+  var tailUa = 'Магазин працює як раніше; вартість доставки та «Створити ТТН» вимкнені, поки це не виправлено. Запустіть у таблиці меню PAMIR → «Етап 9Б2: перевірити Нову пошту».';
+  var tailRu = 'Магазин работает как раньше; стоимость доставки и «Створити ТТН» выключены, пока это не исправлено. Запустите в таблице меню PAMIR → «Етап 9Б2: перевірити Нову пошту».';
+  return ['Нова пошта: не вдалося визначити дані відправника.\n- ' + ua.join('\n- ') + '\n' + tailUa, 'Новая почта: не удалось определить данные отправителя.\n- ' + ru.join('\n- ') + '\n' + tailRu];
+}
+
+/** Служебная тревога админам с правом «Замовлення: статуси»: не чаще раза в 24 часа (NP_ALERT_LAST). Возвращает true, если отправлено. */
+function npAlertAdmins_(ua, ru) {
+  try {
+    var props = scriptProps_(), day = 24 * 3600 * 1000, now = Date.now();
+    if (now - (Number(props.getProperty('NP_ALERT_LAST')) || 0) < day) return false;
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(3000)) return false;
+    try {
+      if (now - (Number(props.fresh('NP_ALERT_LAST')) || 0) < day) return false; // кто-то успел раньше
+      props.setProperty('NP_ALERT_LAST', String(now));
+    } finally {
+      lock.releaseLock();
+    }
+    var token = props.getProperty('BOT_TOKEN');
+    if (!token) return false;
+    var ids = adminList_(props).filter(function (a) { return a.active && a.perms && a.perms.st; }).map(function (a) { return a.id; });
+    var text = npSafeReason_(ua, npKey_(), 1500).length ? ua + '\n\n' + ru : '';
+    ids.forEach(function (id) { tg_(token, 'sendMessage', { chat_id: id, text: text }); });
+    return ids.length > 0;
+  } catch (err) {
+    console.warn('np alert failed');
+    return false;
+  }
+}
+
+/**
+ * Из hourlyJob: если есть ключ и NP_SENDER_WAREHOUSE или NP_SENDER_PHONE, а Ref-ов в свойствах и кэше не хватает (или кэшу больше 25 дней) —
+ * разрешает отправителя через API. Не удалось — админам одно сообщение в сутки; витрина остаётся без стоимости доставки и ТТН.
+ * Возвращает 1, если запрашивали API.
+ */
+function npSenderJob_() {
+  if (!npKey_()) return 0;
+  var whNum = npSenderWhNum_(), hasPhone = !!npProp_('NP_SENDER_PHONE');
+  if (!whNum && !hasPhone) return 0;
+  var s = npSenderState_();
+  var need = !s.city || !s.ref || !s.contact || (whNum > 0 && !s.address);
+  var stale = s.cached && s.at > 0 && Date.now() - s.at > NP_SENDER_REFRESH_MS;
+  if (need || stale) {
+    var res = npSenderResolve_();
+    if (res.errs.length) { var t = npSenderProblemText_(res); npAlertAdmins_(t[0], t[1]); }
+    return 1;
+  }
+  if (hasPhone && !s.phone) { var t2 = npSenderProblemText_({ errs: [{ code: 'phone_bad' }] }); npAlertAdmins_(t2[0], t2[1]); }
+  return 0;
+}
+
+/* ---------- 0в. Меню «Етап 9Б2: перевірити Нову пошту»: только читающие запросы ---------- */
+
+function stage9b2CheckNp() {
+  var lines = [], key = npKey_();
+  if (!key) {
+    var no = 'Ключ: немає.\nВпишіть ключ Нової пошти в Script Properties під назвою NP_API_KEY і запустіть цей пункт ще раз.';
+    s9Alert_(no);
+    return { ok: false, message: no };
+  }
+  lines.push('Ключ: є');
+  var res = npSenderResolve_(), st = res.steps;
+  function nm(s) { return s && s.name ? ' (' + npSafeReason_(s.name, key, 90) + ')' : ''; }
+  function why(e) { return ': ' + npSmsg_(e.code, 'ua', e.text); }
+  function errOf(step) { var r = ''; res.errs.forEach(function (e) { if (st[step] && st[step].code === e.code && !r) r = why(e); }); return r; }
+  var cityName = npSafeReason_(npSenderCityName_(), key, 60);
+  lines.push('Місто відправника: ' + (st.city.state === 'override' ? 'задано вручну (NP_SENDER_CITY)' : st.city.state === 'ok' ? 'знайдено' + nm(st.city) : st.city.state === 'kept' ? 'використано збережене значення (запит не вдався)' + errOf('city') : 'не знайдено «' + cityName + '»' + errOf('city')));
+  var whLabel = 'Відділення' + (npSenderWhNum_() ? ' №' + npSenderWhNum_() : '');
+  lines.push(whLabel + ': ' + (st.wh.state === 'override' ? 'задано вручну (NP_SENDER_ADDRESS)' : st.wh.state === 'ok' ? 'знайдено' + nm(st.wh) : st.wh.state === 'kept' ? 'використано збережене значення (запит не вдався)' + errOf('wh')
+    : st.wh.state === 'skip' ? (st.wh.dep ? 'не перевірено: немає міста' : 'не задано NP_SENDER_WAREHOUSE (номер відділення): «Створити ТТН» вимкнено') : 'не знайдено' + errOf('wh')));
+  lines.push('Відправник: ' + (st.cp.state === 'override' ? 'задано вручну (NP_SENDER_REF)' : st.cp.state === 'ok' ? 'знайдено' + nm(st.cp) : st.cp.state === 'kept' ? 'використано збережене значення (запит не вдався)' + errOf('cp') : 'не визначено' + errOf('cp')));
+  lines.push('Контакт: ' + (st.ct.state === 'override' ? 'задано вручну (NP_SENDER_CONTACT)' : st.ct.state === 'ok' ? 'знайдено' : st.ct.state === 'kept' ? 'використано збережене значення (запит не вдався)' + errOf('ct') : st.ct.state === 'skip' ? 'не перевірено: немає відправника' : 'не визначено' + errOf('ct')));
+  lines.push('Телефон відправника: ' + (st.phone.state === 'ok' ? 'задано' : st.phone.state === 'err' ? 'неправильний формат (NP_SENDER_PHONE)' : 'не задано (NP_SENDER_PHONE): «Створити ТТН» вимкнено'));
+  // Пробная стоимость: Харьков → Киев, 1 кг (читающий запрос)
+  var s = res.sender || npSenderState_();
+  if (!s.city) lines.push('Вартість доставки 1 кг до Києва: не перевірено, бо невідоме місто відправника');
+  else {
+    var kyiv = npPaged_('Address', 'getCities', { FindByString: 'Київ' }, 2, 0), kref = '';
+    if (!kyiv.err) { var km = kyiv.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')) && (npCityNorm_(c.Description) === 'київ' || npCityNorm_(c.DescriptionRu) === 'киев'); }); if (km.length === 1) kref = String(km[0].Ref); }
+    if (!kref) lines.push('Вартість доставки 1 кг до Києва: не вдалося визначити Київ у Нової пошти' + (kyiv.err ? ': ' + npSmsg_(kyiv.err.api ? 'api' : 'net', 'ua', kyiv.err.text) : ''));
+    else {
+      var eo = {};
+      var pr = npCall_('getDocumentPrice', { CitySender: s.city, CityRecipient: kref, Weight: '1', ServiceType: 'WarehouseWarehouse', Cost: '200', CargoType: 'Parcel', SeatsAmount: '1' },
+        { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
+      var price = pr && pr[0] ? Math.round(Number(pr[0].Cost)) : 0;
+      lines.push('Вартість доставки 1 кг до Києва: ' + (price > 0 ? String(price).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' ₴' : 'не вдалося дізнатися' + (eo.text ? ': ' + npSmsg_(eo.api ? 'api' : 'net', 'ua', eo.text) : '')));
+    }
+  }
+  var price1 = !!(npKey_() && s.city), ttn1 = npTtnOn_();
+  lines.push('');
+  lines.push(price1 ? 'Вартість доставки на сайті: увімкнено.' : 'Вартість доставки на сайті: вимкнено.');
+  lines.push(ttn1 ? 'Кнопка «Створити ТТН»: увімкнено.' : 'Кнопка «Створити ТТН»: вимкнено (потрібні місто, відділення, відправник, контакт і телефон).');
+  lines.push('У Нової пошти нічого не створено: були лише запити на читання.');
+  var text = lines.join('\n');
+  s9Alert_(text);
+  return { ok: true, message: text, price: price1, ttn: ttn1 };
+}
+
 /* ---------- 1. Стоимость доставки: ?action=np.price&city=<Ref>&w=<граммы>&sum=<сумма корзины> ---------- */
 
 /**
  * Ответ {ok:true, cost:целое ₴} или {ok:false, error:'off'|'bad_form'|'busy'|'np_error'}. Вес — в граммах, округляется вверх до 0,5 кг
  * и ограничивается 0,5…30 кг. sum — только объявленная стоимость для тарифа: ограничена 200…50 000 и округлена вверх до 500,
  * на цены и суммы заказа не влияет. Кэш — по (город, вес, ступень суммы).
+ * InternetDocument.getDocumentPrice: поля запроса и ответа — по библиотекам, не сверено с документацией.
  */
 function npPrice_(city, w, sum) {
   if (!npPriceOn_()) return { ok: false, error: 'off' };
@@ -737,7 +1126,7 @@ function npPrice_(city, w, sum) {
   if (calls >= NP_PRICE_MAX_PER_HOUR) return { ok: false, error: 'busy' };
   cache.put('npp_calls', (calls + 1) + '|' + t0, 3600);
   var data = npCall_('getDocumentPrice', {
-    CitySender: npProp_('NP_SENDER_CITY'), CityRecipient: city, Weight: String(kg), ServiceType: 'WarehouseWarehouse',
+    CitySender: npSenderState_().city, CityRecipient: city, Weight: String(kg), ServiceType: 'WarehouseWarehouse',
     Cost: String(cost), CargoType: 'Parcel', SeatsAmount: '1'
   }, { model: 'InternetDocument', noCache: true, quiet: true });
   var price = data && data[0] ? Math.round(Number(data[0].Cost)) : 0;
@@ -761,12 +1150,6 @@ function npOrderWeightG_(svc) {
   return sum > 0 ? Math.round(sum) : null;
 }
 
-/** Телефон 380XXXXXXXXX из «+380…» или null. */
-function npPhone_(v) {
-  var d = String(v === null || v === undefined ? '' : v).replace(/\D/g, '');
-  return /^380\d{9}$/.test(d) ? d : null;
-}
-
 function npName_(v) {
   var s = String(v === null || v === undefined ? '' : v).replace(/\s+/g, ' ').trim();
   var words = s.split(' ');
@@ -775,19 +1158,31 @@ function npName_(v) {
   return s;
 }
 
-/** Отделение (или почтомат) города по номеру: ровно одно совпадение, иначе ошибка. */
+/**
+ * Габариты места из тела запроса (необязательные width, length, height в см). Ничего не передано — {m3: null} (VolumeGeneral не шлём, ничего не выдумываем).
+ * Передано что-то одно или не число 1…300 — {error:'bad_dims'}. Иначе {m3: 'объём в м³ строкой'}.
+ */
+function npVolume_(body) {
+  var keys = ['width', 'length', 'height'], vals = [], given = 0;
+  keys.forEach(function (k) {
+    var v = body ? body[k] : undefined;
+    if (v !== undefined && v !== null && String(v).trim() !== '') given++;
+    vals.push(v);
+  });
+  if (!given) return { m3: null };
+  var nums = vals.map(function (v) { return typeof v === 'string' && !/^\d+([.,]\d+)?$/.test(v.trim()) ? NaN : Number(String(v).replace(',', '.')); });
+  if (given !== 3 || nums.some(function (n) { return !isFinite(n) || n < 1 || n > 300; })) return { error: 'bad_dims' };
+  var m3 = Math.round(nums[0] * nums[1] * nums[2]) / 1e6;
+  return { m3: m3.toFixed(6).replace(/0+$/, '').replace(/\.$/, '') };
+}
+
+/** Отделение (или почтомат) города получателя по номеру из заказа: ровно одно совпадение, иначе ошибка. */
 function npResolveWh_(cityRef, branchText, locker) {
   var m = String(branchText || '').match(/\d{1,5}/);
   if (!m) return { error: 'wh_unknown' };
-  var num = parseInt(m[0], 10);
-  var data = npCall_('getWarehouses', { CityRef: cityRef, FindByString: String(num), Limit: '300' }, { quiet: true, admin: true });
-  if (!data) return { error: 'np_error' };
-  var hits = data.filter(function (w) {
-    return w && parseInt(w.Number, 10) === num && NP_UUID_RE.test(String(w.Ref || '')) && ((String(w.CategoryOfWarehouse || '') === 'Postomat') === locker);
-  });
-  if (hits.length !== 1) return { error: 'wh_unknown' };
-  var w = hits[0];
-  return { ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60), cityRu: String(w.CityDescriptionRu || '').slice(0, 60) };
+  var r = npFindWarehouse_(cityRef, parseInt(m[0], 10), locker);
+  if (r.error) return { error: r.error === 'wh_unknown' ? 'wh_unknown' : 'np_error' };
+  return r;
 }
 
 /** Название города для осторожного сравнения: регистр, апострофы, «м.»/«місто», скобки, всё после запятой не учитываются. */
@@ -818,7 +1213,7 @@ function npTtnPrepare_(num) {
   if (o.status === 'скасовано' || o.status === STATUS_BY_CODE.n) return npFail_('bad_status');
   if (o.delivery !== 'np') return npFail_('not_np');
   if (o.npType === 'courier') return npFail_('courier');
-  if (o.npType === 'locker') return npFail_('locker');
+  if (o.npType === 'locker') return npFail_('locker'); // почтоматы: накладная вручную в кабинете НП
   var svc = {};
   try { svc = JSON.parse(o.svc || '{}') || {}; } catch (err) { svc = {}; }
   if (svc.ttn) return npFail_('has_ttn');
@@ -836,16 +1231,22 @@ function npTtnPrepare_(num) {
   } };
 }
 
-/** admin.ttn.preview: данные экрана подтверждения. Ничего не меняет. */
-function npTtnPreview_(num) {
+/**
+ * admin.ttn.preview: данные экрана подтверждения. Ничего не меняет. Необязательные width, length, height (см) — габариты места:
+ * при верных значениях в ответе ttn.volume (м³, строка), при неверных — bad_dims.
+ */
+function npTtnPreview_(num, body) {
   var p = npTtnPrepare_(num);
   if (!p.ok) return p;
+  var vol = npVolume_(body);
+  if (vol.error) return npFail_(vol.error);
   var o = p.f.o, d = p.d;
   var out = { ok: true, ttn: {
     num: num, name: d.name, nameOk: !!npName_(d.name), phone: '+' + d.phone, city: o.city, branch: o.branch, type: o.npType === 'locker' ? 'locker' : 'branch',
     npCity: d.wh.city, npWarehouse: d.wh.desc, weightG: d.weightG, cost: d.cost, cod: d.cod, desc: d.desc,
     minG: NP_W_MIN_G, maxG: NP_W_MAX_G, payer: 'recipient'
   } };
+  if (vol.m3) out.ttn.volume = vol.m3;
   if (npCityDiffers_(o.city, d.wh)) out.ttn.cityDiff = 1;
   return out;
   // cityDiff: 1 добавляется только при расхождении города заказа и города НП по Ref (необязательное поле).
@@ -871,8 +1272,35 @@ function npSvcEdit_(num, fn) {
 }
 
 /**
- * admin.ttn.create: body {num, weight (граммы), confirm: true, cod?: число, name?: текст, desc?: текст}.
+ * Шаг 1 создания: получатель-физлицо у НП (Counterparty.save, CounterpartyProperty 'Recipient', PrivatePerson) → {ref, contact} или {err}.
+ * Накладной это не создаёт и денег не стоит. Не сверено с документацией: поля запроса и ответа (ContactPerson.data[0].Ref) — по библиотекам.
+ * Нет контакта в ответе — запрашиваем getCounterpartyContactPersons по Ref получателя.
+ */
+function npRecipientSave_(d, name) {
+  var w = name.split(' ');
+  var eo = {};
+  var data = npCall_('save', { CounterpartyProperty: 'Recipient', CounterpartyType: 'PrivatePerson', CityRef: d.cityRef,
+    FirstName: w[1], MiddleName: w[2] || '', LastName: w[0], Phone: d.phone }, { model: 'Counterparty', noCache: true, quiet: true, admin: true, errOut: eo });
+  if (!data) return { err: eo.api === true ? { api: true, text: eo.text || '' } : { api: false } };
+  var rec = data[0] || {}, ref = String(rec.Ref || ''), contact = '';
+  if (!NP_UUID_RE.test(ref)) return { err: { api: false, bad: true } };
+  var cp = rec.ContactPerson && rec.ContactPerson.data && rec.ContactPerson.data[0];
+  if (cp && NP_UUID_RE.test(String(cp.Ref || ''))) contact = String(cp.Ref);
+  if (!contact) {
+    var r = npPaged_('Counterparty', 'getCounterpartyContactPersons', { Ref: ref }, 1, 0);
+    if (r.err) return { err: { api: r.err.api, text: r.err.text } };
+    var c0 = r.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')); })[0];
+    if (c0) contact = String(c0.Ref);
+  }
+  if (!contact) return { err: { api: false, bad: true } };
+  return { ref: ref, contact: contact };
+}
+
+/**
+ * admin.ttn.create: body {num, weight (граммы), confirm: true, cod?: число, name?: текст, desc?: текст, cityOk?: true,
+ * width?/length?/height? (см, все три или ни одного), quiet?: true (клиенту номер не отправлять — для пробной накладной)}.
  * Сумма и наложенный платёж берутся из заказа на сервере; cod от клиента допускается только равным серверному значению.
+ * Порядок: 1) Counterparty.save получателя, 2) InternetDocument.save с Ref-полями. Ошибка шага 1 накладной не создаёт.
  * Защита от дубля: ТТН уже есть → отказ; отметка «создание идёт» (svc.tp) на 5 минут ставится под блокировкой до запроса к API.
  */
 function npTtnCreate_(body, token) {
@@ -884,11 +1312,15 @@ function npTtnCreate_(body, token) {
   if (npCityDiffers_(p.f.o.city, d.wh) && body.cityOk !== true) return npFail_('city_diff'); // город заказа ≠ город НП по Ref: нужно явное cityOk: true
   var wg = Math.round(Number(body.weight));
   if (!isFinite(wg) || wg < NP_W_MIN_G || wg > NP_W_MAX_G) return npFail_('bad_weight');
+  var vol = npVolume_(body);
+  if (vol.error) return npFail_(vol.error);
   if (body.cod !== undefined && body.cod !== null && Math.round(Number(body.cod)) !== d.cod) return npFail_('bad_amount');
   if (!(d.cost > 0)) return npFail_('bad_amount');
   var name = npName_(body.name !== undefined && body.name !== null && String(body.name).trim() ? body.name : d.name);
   if (!name) return npFail_('bad_name');
   var desc = clean_(body.desc, 100) || d.desc;
+  var quiet = body.quiet === true;
+  var sender = npSenderState_();
   // Метка «создание идёт» — под блокировкой, до обращения к API.
   var now = Date.now();
   var bad = npSvcEdit_(num, function (svc) {
@@ -898,15 +1330,25 @@ function npTtnCreate_(body, token) {
     return '';
   });
   if (bad) return npFail_(bad);
+  function unmark() { npSvcEdit_(num, function (svc) { delete svc.tp; return ''; }); }
+  // Шаг 1: получатель у НП (накладной ещё нет: при ошибке повтор безопасен)
+  var rec = npRecipientSave_(d, name);
+  if (rec.err) {
+    unmark();
+    return rec.err.api ? npFail_('np_api', { np: rec.err.text || '', step: 1 }) : npFail_('np_error', { step: 1 });
+  }
+  // Шаг 2: накладная. Ref-поля — как в большинстве клиентских библиотек (не сверено с документацией).
+  var tz = 'Europe/Kiev';
+  try { tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || tz; } catch (err0) { /* часовой пояс по умолчанию */ }
   var props = {
-    NewAddress: '1', PayerType: 'Recipient', PaymentMethod: 'Cash', CargoType: 'Parcel', ServiceType: 'WarehouseWarehouse', SeatsAmount: '1',
-    DateTime: Utilities.formatDate(new Date(now), 'Europe/Kiev', 'dd.MM.yyyy'),
+    PayerType: 'Recipient', PaymentMethod: 'Cash', CargoType: 'Parcel', ServiceType: 'WarehouseWarehouse', SeatsAmount: '1',
+    DateTime: Utilities.formatDate(new Date(now), tz, 'dd.MM.yyyy'),
     Weight: String(Math.round(wg / 10) / 100), Cost: String(d.cost), Description: desc,
-    CitySender: npProp_('NP_SENDER_CITY'), Sender: npProp_('NP_SENDER_REF'), SenderAddress: npProp_('NP_SENDER_ADDRESS'),
-    ContactSender: npProp_('NP_SENDER_CONTACT'), SendersPhone: npProp_('NP_SENDER_PHONE').replace(/\D/g, ''),
-    CityRecipient: d.cityRef, RecipientCityName: d.wh.city, RecipientAddress: d.wh.ref, RecipientAddressName: d.wh.num,
-    RecipientName: name, RecipientType: 'PrivatePerson', RecipientsPhone: d.phone
+    CitySender: sender.city, Sender: sender.ref, SenderAddress: sender.address, ContactSender: sender.contact, SendersPhone: sender.phone,
+    CityRecipient: d.cityRef, Recipient: rec.ref, RecipientAddress: d.wh.ref, ContactRecipient: rec.contact, RecipientsPhone: d.phone
   };
+  if (vol.m3) props.VolumeGeneral = vol.m3; // только если админ ввёл габариты
+  // Наложенный платёж: BackwardDeliveryData — внутренняя структура НЕ СВЕРЕНА с документацией, оставлена как в прежней версии.
   if (d.cod > 0) props.BackwardDeliveryData = [{ PayerType: 'Recipient', CargoType: 'Money', RedeliveryString: String(d.cod) }];
   var eo = {};
   var data = npCall_('save', props, { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
@@ -914,29 +1356,95 @@ function npTtnCreate_(body, token) {
   if (!/^\d{10,20}$/.test(ttn)) {
     if (!data && eo.api !== true && eo.nocall !== true) return npFail_('np_unknown'); // связь оборвалась: накладная могла создаться, метку не снимаем
     if (data && data.length) return npFail_('np_unknown');                             // success без разборчивого номера: накладная скорее всего создана, метку не снимаем
-    npSvcEdit_(num, function (svc) { delete svc.tp; return ''; });                     // API отказал или не вызывался: повтор безопасен
-    if (data) return npFail_('np_error');                                              // ответ без номера
-    return eo.api === true ? npFail_('np_api', { np: eo.text || '' }) : npFail_('np_error');
+    unmark();                                                                          // API отказал или не вызывался: повтор безопасен
+    if (data) return npFail_('np_error', { step: 2 });                                 // ответ без номера
+    return eo.api === true ? npFail_('np_api', { np: eo.text || '', step: 2 }) : npFail_('np_error', { step: 2 });
   }
+  // Ref документа и время — для admin.ttn.delete (пробная накладная). Метку tp не трогаем.
+  var docRef = String(data[0].Ref || '');
+  if (/^[\w-]{8,64}$/.test(docRef)) npSvcEdit_(num, function (svc) { svc.tr = docRef; svc.tc = Date.now(); return ''; });
   var res = null;
   try {
-    res = setTtn_(num, ttn, token);                                                    // записывает «ТТН» и пишет клиенту номер с «Відстежити»
+    res = setTtn_(num, ttn, token, quiet);                                             // записывает «ТТН»; клиенту пишет номер с «Відстежити», если не quiet
   } catch (err) {
     console.warn('np ttn save: ' + num + ' ' + ttn + ' ' + safeErr_(err));              // номер не теряем: он в ответе админу и в логе (не секрет)
     res = null;
   }
   if (!res || !res.ok) return npFail_('save_failed', { ttn: ttn });                    // метку tp не снимаем: повтор в течение 5 минут не создаст дубль
-  npSvcEdit_(num, function (svc) { delete svc.tp; return ''; });
-  return { ok: true, ttn: ttn, told: res.told };
+  unmark();
+  var out = { ok: true, ttn: ttn, told: res.told };
+  if (quiet) out.quiet = true;
+  return out;
+}
+
+/** Накладную можно удалить из админки: создана этим способом (svc.tr), есть время создания, не старше 24 часов. Без обращений к таблице и сети. */
+function npDelOk_(svcText, now) {
+  if (!npKey_()) return false;
+  var svc;
+  try { svc = JSON.parse(svcText || '{}') || {}; } catch (err) { return false; }
+  var t = Number(svc.tc);
+  return !!(svc.tr && svc.ttn && t > 0 && now - t <= NP_TTN_DEL_MS && t <= now + 60000);
+}
+
+/**
+ * admin.ttn.delete: body {num, confirm: true}. InternetDocument.delete по Ref документа (DocumentRefs — не сверено с документацией).
+ * Только пока накладная создана через магазин (svc.tr) и не старше 24 часов. После успеха очищает «ТТН» и svc.ttn/tr/tc/tp/ar/nd; клиенту ничего не шлёт.
+ */
+function npTtnDelete_(body) {
+  if (!npKey_()) return npFail_('off');
+  var num = String(body.num || '');
+  if (!/^P-\d+$/.test(num)) return npFail_('not_found');
+  var f = findOrder_(num);
+  if (!f) return npFail_('not_found');
+  var svc;
+  try { svc = JSON.parse(f.o.svc || '{}') || {}; } catch (err) { svc = {}; }
+  var ref = String(svc.tr || '');
+  if (!/^[\w-]{8,64}$/.test(ref)) return npFail_('del_no');
+  var now = Date.now(), t = Number(svc.tc);
+  if (!(t > 0) || now - t > NP_TTN_DEL_MS) return npFail_('del_old');
+  if (body.confirm !== true) return npFail_('not_confirmed');
+  var eo = {};
+  var data = npCall_('delete', { DocumentRefs: ref }, { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
+  if (!data) return eo.api === true ? npFail_('np_api', { np: eo.text || '' }) : npFail_('np_error');
+  var was = '', lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return npFail_('del_partial');
+  try {
+    var f2 = findOrder_(num);
+    if (!f2 || f2.col.svc < 0) return npFail_('del_partial');
+    var sv;
+    try { sv = JSON.parse(f2.o.svc || '{}') || {}; } catch (err2) { sv = {}; }
+    was = String(sv.ttn || '');
+    ['ttn', 'tr', 'tc', 'tp', 'ar', 'nd'].forEach(function (k) { delete sv[k]; });
+    f2.sheet.getRange(f2.rowIndex, f2.col.svc + 1).setValue(JSON.stringify(sv));
+    if (f2.col.ttn >= 0) f2.sheet.getRange(f2.rowIndex, f2.col.ttn + 1).setValue('');
+    SpreadsheetApp.flush();
+    logAction_('Замовлення: ТТН видалено', num, was, '');
+  } finally {
+    lock.releaseLock();
+  }
+  try { // сообщения админов с карточкой заказа обновляем (без номера); клиенту ничего не шлём
+    var f3 = findOrder_(num), token = scriptProps_().getProperty('BOT_TOKEN');
+    var targets = [];
+    try { targets = (JSON.parse(f3.o.svc || '{}').m) || []; } catch (err3) { targets = []; }
+    targets.forEach(function (tg) {
+      tg_(token, 'editMessageText', { chat_id: tg[0], message_id: tg[1], text: adminText_(f3.o, ''), parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: adminKeyboard_(f3.o.num) });
+    });
+  } catch (err4) { console.warn('np ttn delete: card update failed ' + safeErr_(err4)); }
+  return { ok: true };
 }
 
 /* ---------- 3. Посылка прибыла в отделение: сервисное сообщение один раз ---------- */
 
+/** Коды TrackingDocument.getStatusDocuments (официальная документация): 7 — прибыло в отделение, 8 — прибыло в отделение (загружено в почтомат). */
 var NP_ARRIVED_CODES = ['7', '8'];
+/** Конец пути без прибытия: 2 удалена, 3 не найдена, 9 получено, 10/11 получено с денежным переводом, 102/103 отказ. Заказ больше не опрашиваем (svc.nd). */
+var NP_DONE_CODES = ['2', '3', '9', '10', '11', '102', '103'];
 
 /**
  * Из hourlyJob. np_track_hours (0 или пусто — выключено; максимум 24): раз в N часов опрашивает ТТН заказов «відправлено»
- * без отметки svc.ar, не старше 30 дней. Код 7 или 8 → клиенту одно сообщение, отметка svc.ar (один раз, ставится до отправки).
+ * без отметок svc.ar и svc.nd, не старше 30 дней. Код 7 → клиенту «у відділення», код 8 → «у поштомат» (код важнее типа доставки в заказе);
+ * одно сообщение, отметка svc.ar ставится до отправки. Коды 2/3/9/10/11/102/103 без прибытия → отметка svc.nd, сообщения нет, заказ больше не опрашивается.
+ * До 100 номеров за запрос; Phone получателя передаётся, если он есть в заказе.
  * Сервисное сообщение: «Відписка», лимит 14 дней и отметка «Останнє повідомлення» к нему не относятся. Ошибка API — тихо до следующего раза.
  * Возвращает число отправленных сообщений.
  */
@@ -969,9 +1477,8 @@ function npTrackJob_() {
     var svc;
     try { svc = JSON.parse(cell_(row, col.svc) || '{}') || {}; } catch (err) { return; }
     var ttn = String(svc.ttn || '');
-    if (!/^\d{10,20}$/.test(ttn) || svc.ar || !/^\d+$/.test(cell_(row, col.uid))) return;
-    list.push({ r: r + 2, ttn: ttn, uid: cell_(row, col.uid), num: cell_(row, col.num), ru: cell_(row, col.lang) === 'ru', phone: npPhone_(cell_(row, col.phone)),
-      type: col.delivery >= 0 && cell_(row, col.delivery) ? (function (p) { return p.delivery === 'np' ? (p.npType === 'locker' ? 'locker' : p.npType === 'branch' ? 'branch' : '') : ''; })(parseDelivery_(cell_(row, col.delivery))) : '' });
+    if (!/^\d{10,20}$/.test(ttn) || svc.ar || svc.nd || !/^\d+$/.test(cell_(row, col.uid))) return;
+    list.push({ r: r + 2, ttn: ttn, uid: cell_(row, col.uid), num: cell_(row, col.num), ru: cell_(row, col.lang) === 'ru', phone: npPhone_(cell_(row, col.phone)) });
   });
   var sent = 0;
   for (var b = 0; b < NP_TRACK_MAX_BATCHES && b * NP_TRACK_BATCH < list.length; b++) {
@@ -979,15 +1486,18 @@ function npTrackJob_() {
     var data = npCall_('getStatusDocuments', { Documents: chunk.map(function (x) { var d = { DocumentNumber: x.ttn }; if (x.phone) d.Phone = x.phone; return d; }) },
       { model: 'TrackingDocument', noCache: true, quiet: true, admin: true });
     if (!data) continue; // ошибка API: до следующего раза
-    var arrived = {};
-    data.forEach(function (x) { if (x && NP_ARRIVED_CODES.indexOf(String(x.StatusCode)) >= 0) arrived[String(x.Number || '')] = true; });
+    var codeOf = {};
+    data.forEach(function (x) { if (x && x.Number !== undefined) codeOf[String(x.Number).replace(/\s+/g, '')] = String(x.StatusCode); });
     chunk.forEach(function (x) {
-      if (!arrived[x.ttn]) return;
+      var code = codeOf[x.ttn];
+      if (NP_DONE_CODES.indexOf(code) >= 0) { fuSetSvcMark_(sheet, col, x.r, 'nd', x.num); return; } // конец пути без прибытия: больше не опрашиваем, не пишем
+      if (NP_ARRIVED_CODES.indexOf(code) < 0) return;
       if (!fuSetSvcMark_(sheet, col, x.r, 'ar', x.num)) return; // уже отмечено (или блокировка занята): второго сообщения не будет
+      var locker = code === '8';
       var res = tg_(token, 'sendMessage', {
         chat_id: x.uid,
-        text: x.ru ? 'Ваш заказ № ' + x.num + ' прибыл ' + (x.type === 'locker' ? 'в почтомат Новой почты' : x.type === 'branch' ? 'в отделение Новой почты' : 'на Новую почту, можно забирать') + '. ТТН ' + x.ttn + '.'
-                   : 'Ваше замовлення № ' + x.num + ' прибуло ' + (x.type === 'locker' ? 'у поштомат Нової пошти' : x.type === 'branch' ? 'у відділення Нової пошти' : 'на Нову пошту, можна забирати') + '. ТТН ' + x.ttn + '.',
+        text: x.ru ? 'Ваш заказ № ' + x.num + ' прибыл ' + (locker ? 'в почтомат Новой почты' : 'в отделение Новой почты') + '. ТТН ' + x.ttn + '.'
+                   : 'Ваше замовлення № ' + x.num + ' прибуло ' + (locker ? 'у поштомат Нової пошти' : 'у відділення Нової пошти') + '. ТТН ' + x.ttn + '.',
         reply_markup: { inline_keyboard: [[{ text: x.ru ? 'Отследить' : 'Відстежити', url: TTN_TRACK_URL + x.ttn }]] }
       });
       if (res && res.ok) sent++;

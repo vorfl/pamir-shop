@@ -2188,6 +2188,7 @@ function handleAdmin_(body) {
     if (!me.perms.stats) orders.stats = null;
     orders.me = mine;
     orders.replies = replyTemplates_();
+    if (!me.perms.st && orders.orders) orders.orders.forEach(function (x) { delete x.ttnDel; }); // «Видалити ТТН» — только с правом «Замовлення: статуси»
     if (me.perms.st && typeof npTtnOn_ === 'function' && npTtnOn_()) orders.npTtn = 1; // Stage9b2.gs: «Створити ТТН» доступно (ключ и все NP_SENDER_*)
     return orders;
   }
@@ -2234,7 +2235,8 @@ function handleAdmin_(body) {
   if (a === 'admin.adminSave') return deny('admins') || saveAdmin_(me, body, props, token);
   if (a === 'admin.log') return deny('admins') || listLog_();
   if (a === 'admin.ttn') return deny('st') || setTtn_(String(body.num || ''), String(body.ttn || ''), token);
-  if (a === 'admin.ttn.preview') return deny('st') || (typeof npTtnPreview_ === 'function' ? npTtnPreview_(String(body.num || '')) : { ok: false, error: 'off' }); // Stage9b2.gs
+  if (a === 'admin.ttn.preview') return deny('st') || (typeof npTtnPreview_ === 'function' ? npTtnPreview_(String(body.num || ''), body) : { ok: false, error: 'off' }); // Stage9b2.gs
+  if (a === 'admin.ttn.delete') return deny('st') || (typeof npTtnDelete_ === 'function' ? npTtnDelete_(body) : { ok: false, error: 'off' }); // Stage9b2.gs: удалить пробную накладную (до 24 ч)
   if (a === 'admin.ttn.create') return deny('st') || (typeof npTtnCreate_ === 'function' ? npTtnCreate_(body, token) : { ok: false, error: 'off' });
   // Рассылка (право «Розсилка»). Порядок «черновик → тільки мені → отправка» проверяет сервер.
   if (a === 'admin.mail') return deny('mail') || listMail_();
@@ -2290,6 +2292,8 @@ function listOrders_() {
         paid: paidCode_(cell_(row, col.paid)), wh: orderIsWh_({ svc: cell_(row, col.svc) }) ? 1 : 0,
         lang: cell_(row, col.lang).toLowerCase() === 'ru' ? 'ru' : 'ua'
       });
+      var svcCell = col.svc >= 0 ? cell_(row, col.svc) : '';
+      if (svcCell.indexOf('"tr"') >= 0 && typeof npDelOk_ === 'function' && npDelOk_(svcCell, now.getTime())) orders[orders.length - 1].ttnDel = 1; // Stage9b2.gs: накладную можно удалить (создана магазином, моложе 24 ч)
     }
   }
   return { ok: true, orders: orders, stats: stats };
@@ -3286,6 +3290,7 @@ function dailyJob() {
 function hourlyJob() {
   try { remindCarts_(); } catch (err) { console.error('hourly carts: ' + safeErr_(err, true)); }
   try { if (typeof npTrackJob_ === 'function') npTrackJob_(); } catch (err) { console.error('hourly np track: ' + safeErr_(err, true)); } // Stage9b2.gs: посылка прибыла в отделение
+  try { if (typeof npSenderJob_ === 'function') npSenderJob_(); } catch (err) { console.error('hourly np sender: ' + safeErr_(err, true)); } // Stage9b2.gs: Ref-ы отправителя НП через API (раз в 25 дней или при смене настроек)
   try { if (typeof digestJob_ === 'function') digestJob_(); } catch (err) { console.error('hourly digest: ' + safeErr_(err, true)); } // Stage9b2.gs: утренняя сводка админам
   try { if (typeof errorsJob === 'function') errorsJob(); } catch (err) { console.error('hourly errors: ' + safeErr_(err)); } // сводка ошибок витрины (Stage9b.gs)
 }
@@ -4727,7 +4732,7 @@ function askTtn_(token, chatId, adminId, num) {
 }
 
 /** Записывает ТТН в заказ, обновляет сообщения админов и пишет клиенту номер с кнопкой «Відстежити». */
-function setTtn_(num, ttn, token) {
+function setTtn_(num, ttn, token, quiet) { // quiet: true — клиенту номер не шлём (пробная накладная)
   ttn = String(ttn || '').replace(/[\s-]+/g, '');
   if (!/^\d{10,20}$/.test(ttn)) return { ok: false, error: 'bad_ttn' };
   var found, was;
@@ -4757,7 +4762,7 @@ function setTtn_(num, ttn, token) {
       disable_web_page_preview: true, reply_markup: adminKeyboard_(o.num) });
   });
   var told = null;
-  if (was !== ttn && o.uid && String(o.source).indexOf('test') < 0) {
+  if (was !== ttn && !quiet && o.uid && String(o.source).indexOf('test') < 0) {
     var ru = o.lang === 'ru';
     told = !!tg_(token, 'sendMessage', {
       chat_id: o.uid,
@@ -4965,6 +4970,7 @@ function npSafeReason_(text, key, max) {
     var d = v.replace(/\D/g, '');
     if (d.length >= 7) s = s.split(d).join('***'); // телефон в виде одних цифр
   });
+  if (typeof npSecretValues_ === 'function') { try { npSecretValues_().forEach(function (v) { if (v && v.length >= 7) s = s.split(v).join('***'); }); } catch (err2) { /* только прежняя очистка */ } }
   return s.replace(/https?:\/\/\S+/gi, '[url]').replace(/\s+/g, ' ').trim().slice(0, max || 120);
 }
 

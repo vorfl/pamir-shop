@@ -356,8 +356,9 @@ console.log('Волна Б2: «Фото 2» и пункт меню «Етап 9�
   const fake = { items: [], addItem(t, fn) { this.items.push([t, fn]); return this; } };
   const g00 = createGas(CODE, mk());
   g00.sandbox.stage9b2Menu_(fake);
-  ok(fake.items.length === 2 && fake.items[0][0] === 'Етап 9Б2: записати другі фото' && typeof g00.sandbox[fake.items[0][1]] === 'function', 'пункт меню «Етап 9Б2: записати другі фото» добавлен');
+  ok(fake.items.length === 3 && fake.items[0][0] === 'Етап 9Б2: записати другі фото' && typeof g00.sandbox[fake.items[0][1]] === 'function', 'пункт меню «Етап 9Б2: записати другі фото» добавлен');
   ok(fake.items[1][0] === 'Етап 9Б2: налаштувати' && fake.items[1][1] === 'stage9b2Setup' && typeof g00.sandbox.stage9b2Setup === 'function', 'пункт меню «Етап 9Б2: налаштувати» добавлен');
+  ok(fake.items[2][0] === 'Етап 9Б2: перевірити Нову пошту' && fake.items[2][1] === 'stage9b2CheckNp' && typeof g00.sandbox.stage9b2CheckNp === 'function', 'пункт меню «Етап 9Б2: перевірити Нову пошту» добавлен');
   ok(IDS.length === 19 && new Set(IDS).size === 19 && !IDS.some(i => BAN.includes(i)), 'список из 19 ID без запрещённых (контроль теста)');
   const SB = g00.sandbox;
   ok(JSON.stringify(SB.S9B2_PHOTO2_IDS) === JSON.stringify(IDS) && JSON.stringify(SB.S9B2_PHOTO2_FORBIDDEN.slice().sort()) === JSON.stringify(BAN.slice().sort()), 'константы списка и запрета в Stage9b2.gs совпадают с заданием');
@@ -1204,11 +1205,12 @@ const NPL = 'cccccccc-1111-2222-3333-444444444444';   // Ref почтомата 
 const SENDER = { NP_SENDER_REF: 'SENDER-REF-SECRET-1', NP_SENDER_CONTACT: 'SENDER-CONTACT-SECRET-2', NP_SENDER_CITY: 'dddddddd-1111-2222-3333-444444444444', NP_SENDER_ADDRESS: 'SENDER-ADDR-SECRET-4', NP_SENDER_PHONE: '+380671112233' };
 const NPSECRETS = [NPK, 'SENDER-REF-SECRET-1', 'SENDER-CONTACT-SECRET-2', 'SENDER-ADDR-SECRET-4', '380671112233', 'SENDER-REF', 'SENDER-CONTACT'];
 const TTN1 = '20450000000001';
+const NPCP = '11111111-aaaa-bbbb-cccc-000000000001', NPCT = '11111111-aaaa-bbbb-cccc-000000000002', DOCREF = 'a0a0a0a0-1111-2222-3333-444444444444';
 
 /** Стенд API Новой почты: вызовы пишутся в st.calls (modelName, calledMethod, methodProperties). */
 function npStub9(g, o) {
   o = o || {};
-  const st = { calls: [], price: '95', save: o.save || 'ok', status: o.status || {}, apiDown: !!o.apiDown, ttnNext: TTN1 };
+  const st = { calls: [], price: '95', save: o.save || 'ok', cp: o.cp || 'ok', del: o.del || 'ok', status: o.status || {}, apiDown: !!o.apiDown, ttnNext: TTN1 };
   g.setTelegramFail((method, payload) => {
     if (!payload.calledMethod) return null;
     st.calls.push(payload);
@@ -1224,11 +1226,19 @@ function npStub9(g, o) {
         { Ref: 'ffffffff-1111-2222-3333-444444444445', Number: '7', Description: 'Відділення №7 (друге)', CityDescription: 'Харків', CategoryOfWarehouse: 'Branch' }
       ] };
     }
+    if (payload.modelName === 'Counterparty' && payload.calledMethod === 'save') {
+      if (st.cp === 'net') throw new Error('network down https://api.novaposhta.ua/v2.0/json/?k=' + payload.apiKey);
+      if (st.cp === 'reject') return { success: false, errors: ['Phone is invalid'], data: [] };
+      if (st.cp === 'nocontact') return { success: true, data: [{ Ref: NPCP }] };
+      return { success: true, data: [{ Ref: NPCP, ContactPerson: { success: true, data: [{ Ref: NPCT }] } }] };
+    }
+    if (payload.calledMethod === 'getCounterpartyContactPersons') return { success: true, data: p.Ref === NPCP ? [{ Ref: NPCT, Description: 'Іваненко Олена' }] : [] };
+    if (payload.calledMethod === 'delete') return st.del === 'reject' ? { success: false, errors: ['Document not found'], data: [] } : { success: true, data: [{ Ref: p.DocumentRefs }] };
     if (payload.calledMethod === 'save') {
       if (st.save === 'net') throw new Error('network down https://api.novaposhta.ua/v2.0/json/?k=' + payload.apiKey);
       if (st.save === 'reject') return { success: false, errors: ['RecipientName is invalid', 'Weight too big'], errorCodes: ['20000200001'], data: [] };
-      if (st.save === 'nonum') return { success: true, data: [{ Ref: 'x' }] };
-      return { success: true, data: [{ Ref: 'doc-ref', IntDocNumber: st.ttnNext, CostOnSite: '70' }] };
+      if (st.save === 'nonum') return { success: true, data: [{ Ref: DOCREF }] };
+      return { success: true, data: [{ Ref: DOCREF, IntDocNumber: st.ttnNext, CostOnSite: '70' }] };
     }
     if (payload.calledMethod === 'getStatusDocuments') {
       return { success: true, data: p.Documents.map(d => ({ Number: d.DocumentNumber, StatusCode: st.status[d.DocumentNumber] || '1', Status: 'x' })) };
@@ -1237,7 +1247,8 @@ function npStub9(g, o) {
   });
   return st;
 }
-const npOf = (st, m) => st.calls.filter(c => c.calledMethod === m);
+const npOf = (st, m) => st.calls.filter(c => c.calledMethod === m && !(m === 'save' && c.modelName === 'Counterparty'));
+const npCp = st => st.calls.filter(c => c.calledMethod === 'save' && c.modelName === 'Counterparty');
 const NPNAME = 'Іваненко Олена';
 const npOrders = () => [
   { num: 'P-0101', uid: 501, ago: 1, status: 'підтверджено', name: NPNAME, delivery: 'Нова пошта', city: 'Харків', branch: '12', pay: 'при отриманні', total: 1400, svc: { i: [['SPS-001', 500, 2]], nc: NPC } },
@@ -1345,7 +1356,7 @@ console.log('Волна Б2, блок 4: admin.ttn.preview');
   ok(p.ok && p.ttn.name === NPNAME && p.ttn.nameOk === true && p.ttn.phone === '+380501112233' && p.ttn.city === 'Харків' && p.ttn.branch === '12' && p.ttn.type === 'branch', 'preview: получатель, телефон, город, отделение', p);
   ok(p.ttn.weightG === 1000 && p.ttn.cost === 1400 && p.ttn.cod === 1400 && p.ttn.desc && p.ttn.npWarehouse === 'Відділення №12: вул. Тестова, 1' && p.ttn.npCity === 'Харків', 'вес = сумма весов позиций, наложенный платёж = сумма заказа (оплата при получении), отделение подтянуто из НП', p.ttn);
   ok(pv('P-0102').ttn.cod === 0, 'оплата переводом на карту: наложенного платежа нет');
-  ok(pv('P-0108').error === 'locker' && /поштомата/.test(pv('P-0108').msg.ua) && /почтомата/.test(pv('P-0108').msg.ru) && npOf(st, 'save').length === 0, 'почтомат: preview отвечает понятной ошибкой locker (UA и RU), габаритов места мы не знаем');
+  ok(pv('P-0108').error === 'locker' && /поштомат/.test(pv('P-0108').msg.ua) && /почтомат/.test(pv('P-0108').msg.ru) && npOf(st, 'save').length === 0, 'почтомат: preview отвечает понятной ошибкой locker (UA и RU), габаритов места мы не знаем');
   ok(p.ttn.payer === 'recipient' && pv('P-0102').ttn.payer === 'recipient', 'preview: payer = recipient (за доставку платит получатель)');
   ok(pv('P-0104').ok && pv('P-0104').ttn.weightG === null, 'штучный товар — вес неизвестен: пусто, админ вводит сам');
   ok(pv('P-0103').error === 'no_ref' && pv('P-0103').msg.ua && pv('P-0103').msg.ru, 'заказ без Ref города: no_ref с понятным текстом UA и RU');
@@ -1382,9 +1393,9 @@ console.log('Волна Б2, блок 4: admin.ttn.create');
   const sv = npOf(st, 'save');
   ok(sv.length === 1 && sv[0].modelName === 'InternetDocument', 'один вызов InternetDocument.save');
   const p = sv[0].methodProperties;
-  ok(p.PayerType === 'Recipient' && p.PaymentMethod === 'Cash' && p.CargoType === 'Parcel' && p.ServiceType === 'WarehouseWarehouse' && p.SeatsAmount === '1' && p.NewAddress === '1', 'свойства: получатель платит, наличные, посылка, склад–склад, одно место', p);
+  ok(p.PayerType === 'Recipient' && p.PaymentMethod === 'Cash' && p.CargoType === 'Parcel' && p.ServiceType === 'WarehouseWarehouse' && p.SeatsAmount === '1' && !('NewAddress' in p) && !('VolumeGeneral' in p), 'свойства: получатель платит, наличные, посылка, склад–склад, одно место', p);
   ok(p.Weight === '1' && p.Cost === '1400' && p.CitySender === SENDER.NP_SENDER_CITY && p.Sender === SENDER.NP_SENDER_REF && p.ContactSender === SENDER.NP_SENDER_CONTACT && p.SenderAddress === SENDER.NP_SENDER_ADDRESS && p.SendersPhone === '380671112233', 'отправитель — из Script Properties, вес и сумма — подтверждённые/серверные');
-  ok(p.CityRecipient === NPC && p.RecipientAddress === NPW && p.RecipientCityName === 'Харків' && p.RecipientAddressName === '12' && p.RecipientName === NPNAME && p.RecipientType === 'PrivatePerson' && p.RecipientsPhone === '380501112233' && /^\d\d\.\d\d\.\d{4}$/.test(p.DateTime), 'получатель: город, отделение (Ref), имя, телефон 380…, дата ДД.ММ.ГГГГ');
+  ok(p.CityRecipient === NPC && p.RecipientAddress === NPW && p.Recipient === NPCP && p.ContactRecipient === NPCT && !('RecipientName' in p) && p.RecipientsPhone === '380501112233' && /^\d\d\.\d\d\.\d{4}$/.test(p.DateTime), 'получатель: город, отделение (Ref), имя, телефон 380…, дата ДД.ММ.ГГГГ');
   ok(JSON.stringify(p.BackwardDeliveryData) === JSON.stringify([{ PayerType: 'Recipient', CargoType: 'Money', RedeliveryString: '1400' }]), 'наложенный платёж: BackwardDeliveryData на сумму заказа с сервера');
   ok(svcB(g, 'P-0101').ttn === TTN1 && svcB(g, 'P-0101').tp === undefined, 'ТТН записана в заказ (через setTtn_), метка «создание идёт» снята');
   const told = g.sent.slice(toClient0).filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '501');
@@ -1396,7 +1407,7 @@ console.log('Волна Б2, блок 4: admin.ttn.create');
   st.ttnNext = '20450000000002';
   const r2 = cr('P-0102', { weight: 300, name: 'Петренко Іван Петрович' });
   const p2 = npOf(st, 'save')[1].methodProperties;
-  ok(r2.ok && !('BackwardDeliveryData' in p2) && p2.Weight === '0.3' && p2.RecipientName === 'Петренко Іван Петрович' && p2.Cost === '900', 'оплата на карту: BackwardDeliveryData нет; вес 0,3 кг; имя подтверждено админом');
+  ok(r2.ok && !('BackwardDeliveryData' in p2) && p2.Weight === '0.3' && npCp(st)[1].methodProperties.LastName === 'Петренко' && npCp(st)[1].methodProperties.FirstName === 'Іван' && npCp(st)[1].methodProperties.MiddleName === 'Петрович' && p2.Cost === '900', 'оплата на карту: BackwardDeliveryData нет; вес 0,3 кг; имя подтверждено админом');
   // почтомат
   st.ttnNext = '20450000000003';
   const r3 = cr('P-0108');
@@ -1501,7 +1512,7 @@ console.log('Волна Б2, блок 4: прибытие в отделение 
     const gn = fuWorld({ props: { NP_API_KEY: NPK }, settings: { np_track_hours: 3 }, orders: [{ num: 'P-0301', uid: 601, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000031' } }, { num: 'P-0302', uid: 602, ago: 3, status: 'відправлено', lang: 'ru', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000032' } }] });
     npStub9(gn, { status: { '20450000000031': '7', '20450000000032': '7' } });
     gn.call('npTrackJob_');
-    ok(/прибуло на Нову пошту, можна забирати\. ТТН 20450000000031/.test(toChat(gn, 601)[0].payload.text) && !/відділення|поштомат/.test(toChat(gn, 601)[0].payload.text) && /прибыл на Новую почту, можно забирать/.test(toChat(gn, 602)[0].payload.text), 'тип доставки неизвестен: нейтрально «прибуло, можна забирати», без «відділення» и «поштомат»');
+    ok(/прибуло у відділення Нової пошти. ТТН 20450000000031/.test(toChat(gn, 601)[0].payload.text) && /прибыл в отделение Новой почты/.test(toChat(gn, 602)[0].payload.text), 'тип доставки в заказе неизвестен: текст по коду 7 — «у відділення»');
   }
   ok(svcB(g, 'P-0201').ar === 1 && svcB(g, 'P-0207').ar === 1 && svcB(g, 'P-0205').ar === undefined, 'отметка ar только у тех, кому написали');
   ok(clientB(g, 501) && clientB(g, 501).h.indexOf('Останнє повідомлення') < 0, 'сервисное сообщение: отписавшемуся (Відписка) тоже уходит, отметка «Останнє повідомлення» не ставится');
@@ -1706,6 +1717,331 @@ console.log('Аудит Б2, исправления A-J');
   ok(c2.ok === true && npOf(st, 'save').length === 1, 'J: с cityOk: true накладная создаётся');
   st.ttnNext = '20450000000005';
   ok(admP(g, 900, 'admin.ttn.create', { num: 'P-0101', weight: 1000, confirm: true }).ok === true, 'J: без расхождения cityOk не нужен (как раньше)');
+}
+
+/* ============ Волна Б2, доработка Новой пошты: отправитель через API, создание, удаление, трекинг ============ */
+const SKH = 'd0000000-1111-2222-3333-000000000001', SKH2 = 'd0000000-1111-2222-3333-000000000002';
+const SWH = 'd0000000-1111-2222-3333-000000000034', SWP = 'd0000000-1111-2222-3333-00000000034a', SW134 = 'd0000000-1111-2222-3333-000000000134';
+const SCP = 'd0000000-1111-2222-3333-0000000000c1', SCP2 = 'd0000000-1111-2222-3333-0000000000c2';
+const SCT = 'd0000000-1111-2222-3333-0000000000d1', SCT2 = 'd0000000-1111-2222-3333-0000000000d2';
+const SKY = 'd0000000-1111-2222-3333-0000000000e1';
+const SPHONE = '380671112233';
+const SNDREFS = [SKH, SWH, SCP, SCT];
+const sndSecret = t => !t.includes(NPK) && !t.includes(SPHONE) && !t.includes('0671112233') && !t.includes('671112233') && SNDREFS.every(r => !t.includes(r));
+
+/** Стенд API НП для разрешения отправителя. Только чтение; все вызовы пишутся в st.calls. */
+function sndStub(g, o) {
+  o = o || {};
+  const st = { calls: [], o };
+  g.setTelegramFail((method, payload) => {
+    if (!payload.calledMethod) return null;
+    st.calls.push(payload);
+    const q = payload.methodProperties || {};
+    if (st.o.apiDown) return { success: false, errors: ['API key is invalid ' + payload.apiKey + ' phone ' + SPHONE], data: [] };
+    const first = !q.Page || q.Page === '1';
+    switch (payload.calledMethod) {
+      case 'getCities':
+        if (!first) return { success: true, data: [] };
+        if (q.FindByString === 'Київ') return { success: true, data: [{ Ref: SKY, Description: 'Київ' }] };
+        if (q.FindByString === 'Харків') {
+          if (st.o.noCity) return { success: true, data: [{ Ref: SKH2, Description: 'Харківці' }] };
+          return { success: true, data: [{ Ref: SKH, Description: 'Харків' }, { Ref: SKH2, Description: 'Харківці' }].concat(st.o.twoCities ? [{ Ref: 'd0000000-1111-2222-3333-0000000000f9', Description: 'Харків' }] : []) };
+        }
+        return { success: true, data: [] };
+      case 'getWarehouses': {
+        if (!first || q.CityRef !== SKH) return { success: true, data: [] };
+        if (st.o.narrowEmpty && q.WarehouseId) return { success: true, data: [] };
+        if (st.o.noWh) return { success: true, data: [{ Ref: SW134, Number: '134', CityRef: SKH, Description: 'Відділення №134', CategoryOfWarehouse: 'Branch' }] };
+        const cr = st.o.whWrongCity ? SKH2 : SKH;
+        return { success: true, data: [
+          { Ref: SWP, Number: '34', CityRef: cr, Description: 'Поштомат №34', CategoryOfWarehouse: 'Postomat' },
+          { Ref: SWH, Number: '34', CityRef: cr, Description: 'Поштове відділення №34 (до 30 кг): вул. Різдвяна, 14', CategoryOfWarehouse: 'Branch' },
+          { Ref: SW134, Number: '134', CityRef: SKH, Description: 'Відділення №134', CategoryOfWarehouse: 'Branch' }] };
+      }
+      case 'getCounterparties':
+        if (!first) return { success: true, data: [] };
+        if (st.o.noCp) return { success: true, data: [] };
+        return { success: true, data: [{ Ref: SCP, Description: 'ФОП Тестовий' }].concat(st.o.manyCp ? [{ Ref: SCP2, Description: 'Інший' }] : []) };
+      case 'getCounterpartyContactPersons':
+        if (!first || q.Ref !== SCP) return { success: true, data: [] };
+        return { success: true, data: st.o.contacts || [{ Ref: SCT, Description: 'Тестовий Контакт', Phones: SPHONE }] };
+      case 'getDocumentPrice': return { success: true, data: [{ Cost: '88' }] };
+      default: return { success: true, data: [] };
+    }
+  });
+  return st;
+}
+const sndWorld = (props, extra) => fuWorld(Object.assign({ props: Object.assign({ NP_API_KEY: NPK, NP_SENDER_PHONE: '+38 (067) 111-22-33', NP_SENDER_WAREHOUSE: '34' }, props || {}), orders: npOrders() }, extra || {}));
+const alertsTo = (g, uid) => toChat(g, uid).filter(m => /Нова пошта: не вдалося визначити дані відправника/.test(m.payload.text || ''));
+
+console.log('Доработка НП: нормализация телефона');
+{
+  const g = npWorld();
+  const n = v => g.sandbox.npPhone_(v);
+  ok(['380671112233', '+380671112233', '0671112233', '+38 (067) 111-22-33', '80671112233', ' 067-111-22-33 '].every(v => n(v) === '380671112233'), 'пять форм (380…, +380…, 0…, с пробелами/скобками/дефисами, 80…) приводятся к 380XXXXXXXXX');
+  ok([null, undefined, '', 'abc', '12345', '+4915112345678', '3806711122334', '671112233', '+380 67 111'].every(v => n(v) === null), 'мусор, чужой код страны, неполный и слишком длинный номер — null («нет данных»)');
+  const gb = sndWorld({ NP_SENDER_PHONE: 'не телефон' }); const sb = sndStub(gb);
+  ok(gb.sandbox.npSender_().phone === null && gb.sandbox.npTtnOn_() === false, 'невалидный NP_SENDER_PHONE: телефона нет, «Створити ТТН» выключено');
+}
+
+console.log('Доработка НП: разрешение отправителя через API и кэш');
+{
+  const g = sndWorld(); const st = sndStub(g);
+  const c0 = catalog(g).c, o0 = admP(g, 900, 'admin.orders');
+  ok(st.calls.length === 0 && !('npp' in c0.shop) && !('npTtn' in o0), 'до разрешения: каталог и админ-панель без сетевых вызовов, shop.npp и npTtn нет');
+  g.call('hourlyJob');
+  const seq = st.calls.map(c => c.modelName + '.' + c.calledMethod).filter(x => !/getStatusDocuments/.test(x));
+  ok(seq.join() === 'Address.getCities,Address.getCities,Address.getWarehouses,Address.getWarehouses,Counterparty.getCounterparties,Counterparty.getCounterparties,Counterparty.getCounterpartyContactPersons,Counterparty.getCounterpartyContactPersons'
+    || seq[0] === 'Address.getCities' && seq.indexOf('Address.getWarehouses') > 0 && seq.indexOf('Counterparty.getCounterparties') > seq.indexOf('Address.getWarehouses') && seq.indexOf('Counterparty.getCounterpartyContactPersons') > seq.indexOf('Counterparty.getCounterparties'), 'hourlyJob: город → отделение → контрагент → контакт', seq);
+  ok(st.calls.find(c => c.calledMethod === 'getCities').methodProperties.FindByString === 'Харків', 'город ищется по названию «Харків» (по умолчанию)');
+  const w0 = st.calls.find(c => c.calledMethod === 'getWarehouses').methodProperties;
+  ok(w0.CityRef === SKH && w0.WarehouseId === '34', 'отделение: Address.getWarehouses, CityRef + WarehouseId строкой «34»', w0);
+  ok(st.calls.find(c => c.calledMethod === 'getCounterparties').methodProperties.CounterpartyProperty === 'Sender', 'контрагент: CounterpartyProperty = Sender');
+  ok(st.calls.find(c => c.calledMethod === 'getCounterpartyContactPersons').methodProperties.Ref === SCP, 'контакт: getCounterpartyContactPersons по Ref контрагента');
+  const s = g.call('npSender_');
+  ok(s.city === SKH && s.address === SWH && s.ref === SCP && s.contact === SCT && s.phone === SPHONE, 'npSender_: Ref-ы найдены, отделение №34 — не почтомат №34, телефон нормализован', s);
+  ok(!!g.props.NP_SENDER_CACHE && !g.props.NP_SENDER_CACHE.includes(SPHONE) && !g.props.NP_SENDER_CACHE.includes('671112233') && !g.props.NP_SENDER_CACHE.includes(NPK), 'NP_SENDER_CACHE записан, в нём нет телефона и ключа (только хэш)');
+  const n1 = st.calls.length;
+  const c1 = catalog(g).c, o1 = admP(g, 900, 'admin.orders');
+  ok(c1.shop.npp === 1 && o1.npTtn === 1 && st.calls.length === n1, 'после разрешения: shop.npp = 1, npTtn = 1; каталог и админ-панель сети не трогают');
+  g.call('hourlyJob'); g.call('npSender_');
+  ok(st.calls.length === n1, 'повторно: из кэша, без сети');
+  g.clearCache();
+  ok(g.call('npSender_').address === SWH && st.calls.length === n1, 'кэш CacheService пуст: данные берутся из NP_SENDER_CACHE, без сети');
+  // смена входных значений
+  g.props.NP_SENDER_WAREHOUSE = '134'; g.clearCache();
+  ok(!g.call('npSender_').address && !g.call('npTtnOn_'), 'смена номера отделения: старый кэш не подходит (отпечаток), ТТН выключено до пересчёта');
+  g.call('hourlyJob');
+  ok(g.call('npSender_').address === SW134 && st.calls.length > n1, 'пересчёт при смене входных значений: новый Ref отделения');
+  const n2 = st.calls.length;
+  g.props.NP_SENDER_PHONE = '0501234567'; g.clearCache();
+  ok(!g.call('npTtnOn_'), 'смена телефона тоже меняет отпечаток');
+  // срок 30 дней
+  g.props.NP_SENDER_PHONE = '+380671112233'; g.call('hourlyJob'); g.clearCache();
+  const cc = JSON.parse(g.props.NP_SENDER_CACHE); cc.at = Date.now() - 31 * 24 * 3600 * 1000; g.props.NP_SENDER_CACHE = JSON.stringify(cc); g.clearCache();
+  ok(!g.call('npSender_').city, 'кэш старше 30 дней не используется');
+  ok(sndSecret(JSON.stringify([c1, o1]) + npAll(g)), 'ключ, телефон и Ref-ы отправителя не в ответах, логах и сообщениях');
+}
+{
+  // переопределение старыми свойствами
+  const g = sndWorld({ NP_SENDER_CITY: SKH, NP_SENDER_ADDRESS: SWH, NP_SENDER_REF: SCP, NP_SENDER_CONTACT: SCT }); const st = sndStub(g);
+  g.call('hourlyJob');
+  ok(st.calls.length === 0 && g.call('npTtnOn_') === true && g.call('npSender_').address === SWH, 'все четыре Ref-свойства заданы: используются без запросов');
+  const g2 = sndWorld({ NP_SENDER_CITY: SKH }); const s2 = sndStub(g2);
+  g2.call('hourlyJob');
+  ok(!s2.calls.some(c => c.calledMethod === 'getCities') && s2.calls.some(c => c.calledMethod === 'getWarehouses') && g2.call('npTtnOn_') === true, 'заданы не все: недостающее ищется, заданное не запрашивается');
+  const g3 = fuWorld({ props: { NP_API_KEY: NPK }, orders: npOrders() }); const s3 = sndStub(g3);
+  g3.call('hourlyJob');
+  ok(s3.calls.length === 0, 'ключ есть, но нет ни NP_SENDER_WAREHOUSE, ни NP_SENDER_PHONE: hourlyJob к НП не ходит');
+  const g4 = sndWorld({}, { orders: [] }); const s4 = sndStub(g4, { narrowEmpty: true });
+  g4.call('hourlyJob');
+  const wc = s4.calls.filter(c => c.calledMethod === 'getWarehouses').map(c => c.methodProperties);
+  ok(g4.call('npSender_').address === SWH && wc.length >= 2 && wc[0].WarehouseId === '34' && !wc[1].WarehouseId && wc.every(w => w.CityRef === SKH), 'узкий запрос пуст: запасной перебор страниц города, результат проверен по Number и CityRef', wc);
+  const g5 = sndWorld({ NP_SENDER_PHONE: '+380509998877' }); sndStub(g5, { contacts: [{ Ref: SCT, Phones: '380671112233' }, { Ref: SCT2, Phones: '+38 (050) 999-88-77' }] });
+  g5.call('hourlyJob');
+  ok(g5.call('npSender_').contact === SCT2, 'контакт выбирается по телефону после нормализации');
+  const g6 = sndWorld({ NP_SENDER_PHONE: '+380509998877' }); sndStub(g6, { contacts: [{ Ref: SCT, Phones: '380671112233' }] });
+  g6.call('hourlyJob');
+  ok(g6.call('npSender_').contact === SCT, 'телефон не совпал, но контакт один — берётся он');
+  const g7 = sndWorld({ NP_SENDER_PHONE: '+380509998877' }); sndStub(g7, { contacts: [{ Ref: SCT, Phones: '380671112233' }, { Ref: SCT2, Phones: '380000000000' }] });
+  g7.call('hourlyJob');
+  ok(!g7.call('npSender_').contact && !g7.call('npTtnOn_') && alertsTo(g7, 900).length === 1 && /NP_SENDER_CONTACT/.test(alertsTo(g7, 900)[0].payload.text), 'несколько контактов и нет совпадения: ошибка, совет вписать NP_SENDER_CONTACT');
+}
+
+console.log('Доработка НП: ошибки разрешения, тихий режим, тревога раз в сутки');
+{
+  const cases = [
+    ['несколько контрагентов', { manyCp: true }, /NP_SENDER_REF/, (s) => s.city === SKH && !s.ref],
+    ['отделение №34 не найдено', { noWh: true }, /NP_SENDER_ADDRESS/, (s) => s.city === SKH && !s.address],
+    ['два города с одним названием', { twoCities: true }, /NP_SENDER_CITY/, (s) => !s.city],
+    ['города нет', { noCity: true }, /NP_SENDER_CITY_NAME/, (s) => !s.city],
+    ['нет контрагентов', { noCp: true }, /NP_SENDER_REF/, (s) => !s.ref],
+    ['отделение другого города', { whWrongCity: true }, /NP_SENDER_ADDRESS/, (s) => !s.address],
+    ['ошибка API', { apiDown: true }, /Нова пошта відхилила запит/, (s) => !s.city]
+  ];
+  cases.forEach(([title, o, re, chk]) => {
+    const g = sndWorld(); const st = sndStub(g, o);
+    const r = g.call('npSenderResolve_');
+    const s = g.call('npSender_');
+    g.call('hourlyJob');
+    const al = alertsTo(g, 900);
+    ok(r.ok === false && chk(s) && g.call('npTtnOn_') === false, title + ': отправитель не разрешён, «Створити ТТН» скрыта', s);
+    ok(al.length === 1 && re.test(al[0].payload.text) && /Етап 9Б2: перевірити Нову пошту/.test(al[0].payload.text) && /Новая почта: не удалось/.test(al[0].payload.text), title + ': админу одно понятное сообщение (UA и RU) с советом запустить проверку');
+    ok(sndSecret(al[0].payload.text + npAll(g)), title + ': в тревоге и логах нет ключа, телефона и Ref-ов');
+    const pr = g.call('npPriceOn_');
+    ok(pr === !!s.city, title + ': стоимость доставки включена только если известен город отправителя');
+    ok(admP(g, 900, 'admin.ttn.preview', { num: 'P-0101' }).error === 'off', title + ': preview — off');
+  });
+  // раз в сутки
+  const g = sndWorld(); sndStub(g, { manyCp: true });
+  g.call('hourlyJob'); g.call('hourlyJob'); g.call('hourlyJob');
+  ok(alertsTo(g, 900).length === 1 && !!g.props.NP_ALERT_LAST, 'тревога не чаще раза в сутки: три запуска — одно сообщение, отметка NP_ALERT_LAST');
+  g.advance(25 * 3600 * 1000); g.call('hourlyJob');
+  ok(alertsTo(g, 900).length === 2, 'через сутки — ещё одно');
+  // магазин работает как раньше
+  const co = catalog(g).c;
+  ok(co.shop.np === 1 && co.shop.npp === 1 && g.get({ action: 'np.city', q: 'Харків' }).ok !== undefined, 'подсказки города и отделения для покупателя по-прежнему доступны');
+  // обычный пользователь не получает тревогу
+  ok(alertsTo(g, 501).length === 0, 'клиентам тревога не уходит');
+  // телефон неверный при остальном готовом
+  const gp = sndWorld({ NP_SENDER_PHONE: 'abc', NP_SENDER_CITY: SKH, NP_SENDER_ADDRESS: SWH, NP_SENDER_REF: SCP, NP_SENDER_CONTACT: SCT }); sndStub(gp);
+  gp.call('hourlyJob');
+  ok(alertsTo(gp, 900).length === 1 && /NP_SENDER_PHONE/.test(alertsTo(gp, 900)[0].payload.text) && gp.call('npTtnOn_') === false, 'неверный телефон при готовых Ref-ах: сообщение про NP_SENDER_PHONE, ТТН выключено');
+}
+
+console.log('Доработка НП: пункт меню «Етап 9Б2: перевірити Нову пошту»');
+{
+  const g = sndWorld(); const st = sndStub(g);
+  const r = g.call('stage9b2CheckNp');
+  const readOnly = ['getCities', 'getWarehouses', 'getCounterparties', 'getCounterpartyContactPersons', 'getDocumentPrice'];
+  ok(r.ok && /Ключ: є/.test(r.message) && /Місто відправника: знайдено \(Харків\)/.test(r.message) && /Відділення №34: знайдено \(Поштове відділення №34/.test(r.message) && /Відправник: знайдено \(ФОП Тестовий\)/.test(r.message) && /Контакт: знайдено/.test(r.message) && /Вартість доставки 1 кг до Києва: 88 ₴/.test(r.message), 'итог по строкам: ключ, город, отделение №34, отправитель, контакт, стоимость', r.message);
+  ok(st.calls.every(c => readOnly.indexOf(c.calledMethod) >= 0), 'только читающие вызовы, ничего не создаётся у НП', st.calls.map(c => c.calledMethod));
+  const pc = st.calls.find(c => c.calledMethod === 'getDocumentPrice').methodProperties;
+  ok(pc.CitySender === SKH && pc.CityRecipient === SKY && pc.Weight === '1', 'стоимость: Харків → Київ, 1 кг');
+  ok(sndSecret(r.message) && g.ui.alerts.length === 1 && sndSecret(g.ui.alerts[0]), 'в тексте нет ключа, телефона и Ref-ов; текст показан владельцу');
+  ok(!!g.props.NP_SENDER_CACHE && g.call('npTtnOn_') === true && catalog(g).c.shop.npp === 1, 'меню сохранило кэш: shop.npp и «Створити ТТН» включены');
+  const gm = sndWorld({}, {}); sndStub(gm, { manyCp: true });
+  const rm = gm.call('stage9b2CheckNp');
+  ok(/Відправник: не визначено: .*NP_SENDER_REF/.test(rm.message) && /Місто відправника: знайдено/.test(rm.message) && /Вартість доставки 1 кг до Києва: 88/.test(rm.message) && /«Створити ТТН»: вимкнено/.test(rm.message) && sndSecret(rm.message), 'ошибка: точная причина и какое свойство вписать, остальные строки на месте');
+  const gk = fuWorld({ orders: [] }); const sk = sndStub(gk);
+  const rk = gk.call('stage9b2CheckNp');
+  ok(!rk.ok && /Ключ: немає/.test(rk.message) && /NP_API_KEY/.test(rk.message) && sk.calls.length === 0, 'без ключа: «Ключ: немає», вызовов нет');
+  const ga = sndWorld(); sndStub(ga, { apiDown: true });
+  const ra = ga.call('stage9b2CheckNp');
+  ok(sndSecret(ra.message) && /не знайдено/.test(ra.message), 'ошибка API: текст понятный и без секретов', ra.message);
+}
+
+console.log('Доработка НП: создание — Counterparty.save → InternetDocument.save');
+{
+  const mk = (o) => { const g = npWorld(); const st = npStub9(g, o); return { g, st, cr: (n, x) => admP(g, 900, 'admin.ttn.create', Object.assign({ num: n, weight: 1000, confirm: true }, x || {})) }; };
+  const { g, st, cr } = mk();
+  const r = cr('P-0101');
+  const iCp = st.calls.findIndex(c => c.modelName === 'Counterparty' && c.calledMethod === 'save');
+  const iDoc = st.calls.findIndex(c => c.modelName === 'InternetDocument' && c.calledMethod === 'save');
+  ok(r.ok && iCp >= 0 && iDoc > iCp, 'порядок: сначала Counterparty.save получателя, затем InternetDocument.save', { iCp, iDoc });
+  const cp = st.calls[iCp].methodProperties, d = st.calls[iDoc].methodProperties;
+  ok(cp.CounterpartyProperty === 'Recipient' && cp.CounterpartyType === 'PrivatePerson' && cp.CityRef === NPC && cp.LastName === 'Іваненко' && cp.FirstName === 'Олена' && cp.MiddleName === '' && cp.Phone === '380501112233', 'получатель: PrivatePerson, город получателя, фамилия/имя из подтверждённого имени, телефон 380…', cp);
+  ok(d.Recipient === NPCP && d.ContactRecipient === NPCT && d.RecipientAddress === NPW && d.CityRecipient === NPC && d.PayerType === 'Recipient' && d.PaymentMethod === 'Cash' && d.CargoType === 'Parcel' && d.ServiceType === 'WarehouseWarehouse' && d.SeatsAmount === '1', 'накладная: Ref-поля получателя из шага 1, отделение найдено по номеру', d);
+  ok(d.CitySender === SENDER.NP_SENDER_CITY && d.Sender === SENDER.NP_SENDER_REF && d.SenderAddress === SENDER.NP_SENDER_ADDRESS && d.ContactSender === SENDER.NP_SENDER_CONTACT && d.SendersPhone === '380671112233', 'отправитель из свойств-переопределений, телефон нормализован');
+  const today = new Date(); const tz = g.sandbox.Utilities.formatDate(today, 'Europe/Kiev', 'dd.MM.yyyy');
+  ok(d.DateTime === tz && !('VolumeGeneral' in d), 'дата dd.MM.yyyy, без габаритов поле VolumeGeneral не отправляется');
+  ok(svcB(g, 'P-0101').tr === DOCREF && svcB(g, 'P-0101').tc > 0, 'Ref документа и время создания сохранены в «Службове» (svc.tr, svc.tc)');
+  ok(toChat(g, 501).some(m => /20450000000001/.test(m.payload.text)), 'без quiet клиенту ушёл номер');
+  // quiet
+  const q = mk(); q.st.ttnNext = '20450000000041';
+  const rq = q.cr('P-0102', { quiet: true, name: 'Петренко Іван' });
+  ok(rq.ok && rq.quiet === true && rq.told === null && toChat(q.g, 502).length === 0 && svcB(q.g, 'P-0102').ttn === '20450000000041' && svcB(q.g, 'P-0102').tr === DOCREF, 'quiet: номер записан, клиенту ничего не отправлено', rq);
+  // габариты
+  const dm = mk(); dm.cr('P-0101', { width: 20, length: '20', height: 10 });
+  ok(npOf(dm.st, 'save')[0].methodProperties.VolumeGeneral === '0.004', 'габариты 20×20×10 см → VolumeGeneral 0.004 м³');
+  const bad = mk();
+  ok([{ width: 20 }, { width: 20, length: 20 }, { width: 0, length: 5, height: 5 }, { width: 'a', length: 5, height: 5 }, { width: 301, length: 5, height: 5 }].every(x => bad.cr('P-0101', x).error === 'bad_dims') && bad.st.calls.filter(c => c.calledMethod === 'save').length === 0, 'неполные или неверные габариты: bad_dims, к НП не обращаемся');
+  const pv = admP(dm.g, 900, 'admin.ttn.preview', { num: 'P-0102', width: 10, length: 10, height: 10 });
+  ok(pv.ok && pv.ttn.volume === '0.001' && !('volume' in admP(dm.g, 900, 'admin.ttn.preview', { num: 'P-0102' }).ttn) && admP(dm.g, 900, 'admin.ttn.preview', { num: 'P-0102', width: 10 }).error === 'bad_dims', 'preview: volume только при верных габаритах, иначе bad_dims');
+  // контакт получателя отдельным запросом
+  const nc = mk({ cp: 'nocontact' }); const rn = nc.cr('P-0101');
+  ok(rn.ok && npOf(nc.st, 'getCounterpartyContactPersons').length === 1 && npOf(nc.st, 'save')[0].methodProperties.ContactRecipient === NPCT, 'нет контакта в ответе Counterparty.save: запрос getCounterpartyContactPersons по Ref получателя');
+  // ошибка шага 1
+  const e1 = mk({ cp: 'reject' }); const r1 = e1.cr('P-0101');
+  ok(r1.ok === false && r1.error === 'np_api' && r1.step === 1 && /Phone is invalid/.test(r1.np) && npOf(e1.st, 'save').length === 0 && svcB(e1.g, 'P-0101').tp === undefined && svcB(e1.g, 'P-0101').ttn === undefined, 'ошибка шага 1: накладная не создаётся, метка снята, повтор возможен', r1);
+  const e1n = mk({ cp: 'net' }); const r1n = e1n.cr('P-0101');
+  ok(r1n.error === 'np_error' && r1n.step === 1 && npOf(e1n.st, 'save').length === 0 && svcB(e1n.g, 'P-0101').tp === undefined && noSecrets(JSON.stringify(r1n) + npAll(e1n.g)), 'обрыв на шаге 1: np_error, метка снята, ключа нет в тексте');
+  // ошибка шага 2: больше ничего не делаем
+  const e2 = mk({ save: 'reject' }); const r2 = e2.cr('P-0101');
+  ok(r2.error === 'np_api' && r2.step === 2 && npCp(e2.st).length === 1 && npOf(e2.st, 'delete').length === 0 && e2.st.calls.every(c => c.calledMethod !== 'delete'), 'ошибка шага 2: np_api, лишних вызовов (удаление и т.п.) нет');
+  ok(noSecrets(JSON.stringify([r, rq, r1, r2]) + npAll(g) + npAll(q.g)), 'секреты не в ответах и логах');
+  // почтомат — понятный текст
+  const lk = admP(g, 900, 'admin.ttn.preview', { num: 'P-0108' });
+  ok(lk.error === 'locker' && /вручну/.test(lk.msg.ua) && /вручную/.test(lk.msg.ru) && /поштомат/.test(lk.msg.ua), 'почтомат: накладная вручную, понятный текст UA и RU');
+}
+
+console.log('Доработка НП: admin.ttn.delete и флаг ttnDel');
+{
+  const mkd = (o) => {
+    const g = npWorld(); const st = npStub9(g, o);
+    const rows = g.sheets['Замовлення'].rows; rows[0].push('ТТН'); rows.slice(1).forEach(r => r.push(''));
+    return { g, st, cr: (n, x) => admP(g, 900, 'admin.ttn.create', Object.assign({ num: n, weight: 1000, confirm: true }, x || {})), del: (n, x, uid) => admP(g, uid || 900, 'admin.ttn.delete', Object.assign({ num: n, confirm: true }, x || {})) };
+  };
+  const { g, st, cr, del } = mkd();
+  cr('P-0101', { quiet: true });
+  const ordRow = () => g.sheets['Замовлення'].rows.find(r => r[0] === 'P-0101');
+  const ttnCol = g.sheets['Замовлення'].rows[0].indexOf('ТТН');
+  ok(ordRow()[ttnCol] === TTN1, 'подготовка: ТТН записана в колонку');
+  ok(admP(g, 900, 'admin.orders').orders.find(x => x.num === 'P-0101').ttnDel === 1 && !('ttnDel' in admP(g, 900, 'admin.orders').orders.find(x => x.num === 'P-0102')), 'admin.orders: ttnDel: 1 только у заказа с накладной, созданной магазином');
+  ok(del('P-0101', { confirm: undefined }).error === 'not_confirmed' && npOf(st, 'delete').length === 0, 'без confirm: true — отказ, вызова нет');
+  ok(del('P-0107').error === 'del_no' && del('P-0107').msg.ua && del('P-0107').msg.ru, 'есть ТТН, но нет svc.tr (создана не магазином): отказ с текстом UA и RU');
+  ok(del('P-9999').error === 'not_found' && del('bad').error === 'not_found', 'нет заказа: not_found');
+  const sent0 = g.sent.length;
+  const rd = del('P-0101');
+  const dc = npOf(st, 'delete');
+  ok(rd.ok === true && Object.keys(rd).join() === 'ok' && dc.length === 1 && dc[0].modelName === 'InternetDocument' && dc[0].methodProperties.DocumentRefs === DOCREF, 'удаление: InternetDocument.delete по Ref документа, ответ {ok:true}', { rd, dc: dc[0] && dc[0].methodProperties });
+  const sv = svcB(g, 'P-0101');
+  ok(sv.ttn === undefined && sv.tr === undefined && sv.tp === undefined && sv.tc === undefined && ordRow()[ttnCol] === '', 'после удаления очищены «ТТН» и svc.ttn/tr/tp/tc');
+  ok(toChat(g, 501, sent0).length === 0, 'клиенту ничего не отправлено');
+  ok(g.sheets['Журнал'] && /ТТН видалено/.test(JSON.stringify(g.sheets['Журнал'].rows)), 'действие в журнале');
+  ok(!('ttnDel' in admP(g, 900, 'admin.orders').orders.find(x => x.num === 'P-0101')) && del('P-0101').error === 'del_no', 'повторное удаление — отказ');
+  st.ttnNext = '20450000000051';
+  ok(cr('P-0101', { quiet: true }).ok === true, 'после удаления накладную можно создать заново');
+  // окно 24 часа
+  const o = svcB(g, 'P-0101'); o.tc = Date.now() - 25 * 3600 * 1000;
+  g.sheets['Замовлення'].rows.find(r => r[0] === 'P-0101')[16] = JSON.stringify(o);
+  const n = npOf(st, 'delete').length;
+  ok(del('P-0101').error === 'del_old' && npOf(st, 'delete').length === n && !('ttnDel' in admP(g, 900, 'admin.orders').orders.find(x => x.num === 'P-0101')), 'старше 24 часов: del_old, вызова НП нет, флага нет');
+  // ошибка API
+  const m2 = mkd({ del: 'reject' }); m2.cr('P-0102', { quiet: true, name: 'Петренко Іван' });
+  const rr = m2.del('P-0102');
+  ok(rr.ok === false && rr.error === 'np_api' && /Document not found/.test(rr.np) && svcB(m2.g, 'P-0102').tr === DOCREF && svcB(m2.g, 'P-0102').ttn === TTN1, 'ошибка API при удалении: заказ не тронут');
+  // права
+  const gm = npWorld({ sheets: { 'Адміни': (() => { const head = require('vm').runInContext('ADMIN_HEAD', createGas(CODE, build()).sandbox).slice(); const row = head.map(() => ''); row[0] = '700'; row[1] = 'М'; row[3] = 'Менеджер'; row[head.indexOf('Наявність і залишки')] = 'так'; row[head.indexOf('Активний')] = 'так'; return [head, row]; })() } });
+  npStub9(gm);
+  admP(gm, 900, 'admin.ttn.create', { num: 'P-0101', weight: 1000, confirm: true, quiet: true });
+  ok(admP(gm, 700, 'admin.ttn.delete', { num: 'P-0101', confirm: true }).error === 'no_perm' && !('ttnDel' in admP(gm, 700, 'admin.orders').orders.find(x => x.num === 'P-0101')) && admP(gm, 900, 'admin.orders').orders.find(x => x.num === 'P-0101').ttnDel === 1, 'менеджер без права: no_perm и флага ttnDel нет; у админа есть');
+  ok(admP(gm, 777, 'admin.ttn.delete', { num: 'P-0101', confirm: true }).error === 'forbidden' && gm.post({ action: 'admin.ttn.delete', num: 'P-0101', confirm: true }).error === 'forbidden', 'не админ и без подписи: forbidden');
+  ok(noSecrets(JSON.stringify([rd, rr]) + npAll(g) + npAll(m2.g)), 'в ответах и логах удаления нет секретов');
+  // без ключа
+  const gk = npWorld(); delete gk.props.NP_API_KEY; gk.clearCache();
+  ok(admP(gk, 900, 'admin.ttn.delete', { num: 'P-0101', confirm: true }).error === 'off', 'без ключа: off');
+}
+
+console.log('Доработка НП: отслеживание по официальным кодам');
+{
+  const orders = [
+    { num: 'P-0401', uid: 801, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000401' } },
+    { num: 'P-0402', uid: 802, ago: 3, status: 'відправлено', lang: 'ru', delivery: 'Нова пошта', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000402' } },
+    { num: 'P-0403', uid: 803, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000403' } },
+    { num: 'P-0404', uid: 804, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000404' } },
+    { num: 'P-0405', uid: 805, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000405' } },
+    { num: 'P-0406', uid: 806, ago: 3, status: 'відправлено', phone: 'abc', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000406' } },
+    { num: 'P-0407', uid: 807, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000407' } },
+    { num: 'P-0408', uid: 808, ago: 3, status: 'відправлено', svc: { i: [['SPS-001', 50, 1]], ttn: '20450000000408' } }
+  ];
+  const STAT = { '20450000000401': '7', '20450000000402': '8', '20450000000403': '9', '20450000000404': '102', '20450000000405': '5', '20450000000406': '1', '20450000000407': '3', '20450000000408': '11' };
+  const g = fuWorld({ props: { NP_API_KEY: NPK }, settings: { np_track_hours: 3 }, orders }); const st = npStub9(g, { status: STAT });
+  const n = g.call('npTrackJob_');
+  const c1 = npOf(st, 'getStatusDocuments')[0];
+  ok(c1.modelName === 'TrackingDocument' && c1.methodProperties.Documents.length === 8, 'TrackingDocument.getStatusDocuments, все номера в одном запросе');
+  ok(c1.methodProperties.Documents.filter(d => d.Phone === '380501112233').length === 7 && !('Phone' in c1.methodProperties.Documents.find(d => d.DocumentNumber === '20450000000406')), 'Phone — телефон получателя из заказа; нет телефона — поля нет');
+  ok(n === 2 && /прибуло у відділення Нової пошти/.test(toChat(g, 801)[0].payload.text) && /прибыл в почтомат Новой почты/.test(toChat(g, 802)[0].payload.text), 'код 7 → «у відділення», код 8 → «в почтомат» (даже без типа доставки в заказе)');
+  ok([803, 804, 805, 806, 807, 808].every(u => toChat(g, u).length === 0), 'коды 9, 102, 3, 11 и «в пути» без прибытия: сообщений нет');
+  ok(svcB(g, 'P-0401').ar === 1 && svcB(g, 'P-0402').ar === 1 && ['P-0403', 'P-0404', 'P-0407', 'P-0408'].every(x => svcB(g, x).nd === 1 && svcB(g, x).ar === undefined) && svcB(g, 'P-0405').nd === undefined && svcB(g, 'P-0406').nd === undefined, 'отметки: ar у прибывших; nd у конца пути (9, 102, 3, 11); у остальных нет');
+  g.props.NP_TRACK_LAST = '0'; g.call('npTrackJob_');
+  const c2 = npOf(st, 'getStatusDocuments')[1].methodProperties.Documents.map(d => d.DocumentNumber).sort();
+  ok(c2.join() === ['20450000000405', '20450000000406'].join(), 'в следующий раз опрашиваются только заказы в пути', c2);
+  st.status['20450000000405'] = '2'; g.props.NP_TRACK_LAST = '0'; g.call('npTrackJob_');
+  ok(svcB(g, 'P-0405').nd === 1 && toChat(g, 805).length === 0, 'код 2 (удалена): отметка nd, сообщения нет');
+  const NP_CODE_SRC = require('fs').readFileSync(require('path').join(__dirname, '..', 'apps-script', 'Stage9b2.gs'), 'utf8');
+  ok(/NP_DONE_CODES = \['2', '3', '9', '10', '11', '102', '103'\]/.test(NP_CODE_SRC) && /NP_ARRIVED_CODES = \['7', '8'\]/.test(NP_CODE_SRC), 'списки кодов совпадают с официальными');
+  ok(noSecrets(npAll(g)), 'ключ не в логах и сообщениях');
+}
+
+console.log('Доработка НП: modelName/calledMethod семи вызовов и общие свойства');
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'apps-script', 'Stage9b2.gs'), 'utf8');
+  const need = [["'getDocumentPrice'", "model: 'InternetDocument'"], ["'getCounterparties'", "'Counterparty'"], ["'getCounterpartyContactPersons'", "'Counterparty'"], ["'getWarehouses'", "'Address'"], ["'getCities'", "'Address'"],
+    ["npCall_('save', props, { model: 'InternetDocument'", ''], ["npCall_('delete', { DocumentRefs: ref }, { model: 'InternetDocument'", ''], ["npCall_('getStatusDocuments'", ''], ["model: 'TrackingDocument'", ''], ["npCall_('save', { CounterpartyProperty: 'Recipient'", '']];
+  ok(need.every(([a, b]) => src.indexOf(a) >= 0 && (!b || src.indexOf(b) >= 0)), 'в коде: InternetDocument.getDocumentPrice/save/delete, Address.getWarehouses/getCities, Counterparty.getCounterparties/getCounterpartyContactPersons/save, TrackingDocument.getStatusDocuments');
+  ok(!/AfterpaymentOnGoodsCost/.test(src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')), 'AfterpaymentOnGoodsCost не используется');
+  ok(/BackwardDeliveryData[^\n]*НЕ СВЕРЕН|НЕ СВЕРЕНА с документацией/.test(src), 'BackwardDeliveryData помечен в коде «не сверено с документацией»');
 }
 
 console.log('\n' + pass + ' ok, ' + fail + ' fail');
