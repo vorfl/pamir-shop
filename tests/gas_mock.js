@@ -121,8 +121,8 @@ function createGas(codePath, seed) {
   let failTelegram = false;
   // Выпуск 9Б: «блокировка занята N мс» (script/doc), журнал обращений к блокировкам, не-Telegram запросы (Worker), Drive.
   // Стенд НЕ воспроизводит настоящую конкуренцию Google: busy — условное время, которое запрос ждал бы; реального ожидания нет.
-  const lockCfg = { script: 0, doc: 0, docNull: false }; // docNull: LockService.getDocumentLock() возвращает null (так бывает в веб-приложении)
-  const lockWaited = { script: 0, doc: 0 };
+  const lockCfg = { script: 0, doc: 0, user: 0, docNull: false, userNull: false }; // docNull: LockService.getDocumentLock() возвращает null (так бывает в веб-приложении)
+  const lockWaited = { script: 0, doc: 0, user: 0 };
   const fetched = []; // запросы не к Telegram: { url, method, headers, payload }
   const fetchCfg = { fail: false, code: 200 };
   const drive = { folders: [], files: [], seq: 0 };
@@ -131,7 +131,7 @@ function createGas(codePath, seed) {
     return { id: 'FILE-' + (++drive.seq), name, folder, trashed: false, created: new Date(drive.clock), src,
       getName() { return this.name; }, getDateCreated() { return this.created; }, setTrashed(v) { this.trashed = !!v; return this; } };
   }
-  const held = { script: 0, doc: 0 }; // сколько блокировок сейчас удерживается (для проверки «не внутри блокировки»)
+  const held = { script: 0, doc: 0, user: 0 }; // сколько блокировок сейчас удерживается (для проверки «не внутри блокировки»)
   function mkLock(kind) {
     const rec = (opn, ms, okk) => { lockLog.push({ kind, op: opn, ms, ok: okk }); if (okk) held[kind]++; if (okk && lockCfg[kind] > 0 && lockCfg[kind] !== Infinity) lockWaited[kind] += lockCfg[kind]; return okk; };
     return {
@@ -170,7 +170,7 @@ function createGas(codePath, seed) {
       getProperties: () => { op('prop'); return Object.assign({}, props); },
       setProperty: (k, v) => { op('prop'); props[k] = String(v); }
     }) },
-    LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => (lockCfg.docNull ? null : mkLock('doc')) },
+    LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => (lockCfg.docNull ? null : mkLock('doc')), getUserLock: () => (lockCfg.userNull ? null : mkLock('user')) },
     Utilities: {
       newBlob: (data) => ({ getBytes: () => (typeof data === 'string' ? Array.from(Buffer.from(data, 'utf8')) : data) }),
       computeHmacSha256Signature: (value, key) => {
@@ -231,6 +231,8 @@ function createGas(codePath, seed) {
     sandbox, sheets, props, cache, sent, triggers, ops, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
     setLockBusy(scriptMs, docMs) { lockCfg.script = scriptMs || 0; lockCfg.doc = docMs || 0; },
     setDocLockNull(v) { lockCfg.docNull = !!v; },
+    setUserLockBusy(ms) { lockCfg.user = ms || 0; },
+    setUserLockNull(v) { lockCfg.userNull = !!v; },
     /** Сдвиг часов внутри Code.gs (Date.now) вперёд на ms: «прошла минута». */
     advance(ms) { sandbox.__shift = (sandbox.__shift || 0) + ms; },
     setFetch(fail, code) { fetchCfg.fail = !!fail; fetchCfg.code = code || 200; },

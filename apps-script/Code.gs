@@ -3292,7 +3292,8 @@ function dailyJob() {
 function hourlyJob() {
   try { remindCarts_(); } catch (err) { console.error('hourly carts: ' + safeErr_(err, true)); }
   try { if (typeof npTrackJob_ === 'function') npTrackJob_(); } catch (err) { console.error('hourly np track: ' + safeErr_(err, true)); } // Stage9b2.gs: посылка прибыла в отделение
-  try { if (typeof npSenderJob_ === 'function') npSenderJob_(); } catch (err) { console.error('hourly np sender: ' + safeErr_(err, true)); } // Stage9b2.gs: Ref-ы отправителя НП через API (раз в 25 дней или при смене настроек)
+  try { if (typeof npSenderJob_ === 'function') npSenderJob_(); } catch (err) { console.error('hourly np sender: ' + safeErr_(err, true)); } // Stage9b2.gs: Ref-ы отправителя НП через API (раз в 7 дней, при смене настроек и с нарастающей паузой после неудачи: 1 ч, 6 ч, 24 ч)
+  try { if (typeof npLongFlush_ === 'function') npLongFlush_(); } catch (err) { console.error('hourly np cache: ' + safeErr_(err, true)); } // Stage9b3.gs: кэш НП в лист «Кеш НП» и чистка (вне блокировки заказа)
   try { if (typeof digestJob_ === 'function') digestJob_(); } catch (err) { console.error('hourly digest: ' + safeErr_(err, true)); } // Stage9b2.gs: утренняя сводка админам
   try { if (typeof errorsJob === 'function') errorsJob(); } catch (err) { console.error('hourly errors: ' + safeErr_(err)); } // сводка ошибок витрины (Stage9b.gs)
 }

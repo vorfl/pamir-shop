@@ -8,9 +8,15 @@
  *      npCall_ не обращается к сети вообще (публичные, админские, трекинг, отправитель, меню); ответы из кэша отдаются как обычно.
  *   2. Кэш в два слоя. Быстрый — CacheService (потолок Google: 6 часов, 100 КБ на значение). Долгий — скрытый лист «Кеш НП»
  *      (таблица — единственное хранилище проекта; Script Properties не годятся: 9 КБ на значение и getProperties читает всё
- *      целиком при каждом запросе). Лист создаётся лениво, только когда есть NP_API_KEY и есть что записать; запись — под
- *      LockService (tryLock: занято — в долгий слой не пишем, ответ и заказы это не задерживает); чтение — без блокировки.
- *      В листе только публичные справочные данные НП (города, отделения, тарифы): ни ключа, ни телефонов, ни Ref-ов отправителя.
+ *      целиком при каждом запросе). Лист создаётся лениво, только когда есть NP_API_KEY и есть что записать.
+ *      Запрос покупателя в лист НЕ пишет: он кладёт значение в CacheService и ставит ключ в очередь «надо сохранить» (np_pend);
+ *      лист пишет только фоновая задача npLongFlush_ из hourlyJob, под отдельной блокировкой LockService.getUserLock() (её не берёт
+ *      ни заказ, ни другой код проекта; заказ берёт ScriptLock), и не дольше ~25 секунд за запуск. Запись не удаляет строки в горячем
+ *      пути: просроченные строки чистит та же фоновая задача. Чтение — без блокировки: читаются сразу все части записи целиком,
+ *      у каждой сверяются ключ и номер части, срок и контрольная метка (число частей, длина, хэш); любое несовпадение — «в кэше нет».
+ *      В листе только публичные справочные данные НП (города, отделения, тарифы). Данные отправителя (его город, его отделение и их Ref)
+ *      в лист не попадают совсем: поиск отправителя идёт с noLong (только быстрый слой), а город отправителя в ключе стоимости —
+ *      лишь HMAC-меткой (npSenderTag_). Ключа НП и телефонов в листе нет.
  *   3. Одинаковый запрос не уходит дважды: короткая отметка «запрос в пути» (npfl_…); второй обращающийся ждёт недолго
  *      и берёт готовый ответ или получает отказ «занято», но дубль не шлёт. CacheService не атомарен, поэтому защита неполная
  *      (две обращения в одну и ту же миллисекунду могут обе пройти) — это сокращает, а не исключает дубли.
@@ -28,19 +34,35 @@ var NP_FAST_BIG = '\u0001L';
 var NP_CACHE_SHEET = 'Кеш НП';
 var NP_CACHE_HEAD = ['Ключ', 'Частина', 'Частин', 'Діє до', 'Записано', 'Дані'];
 var NP_CELL = 45000;               // знаков данных в одной ячейке (лимит Таблиц — 50 000)
-var NP_CACHE_MAX_PARTS = 24;       // значение больше этого в лист не пишем (быстрый слой всё равно держит его 6 часов)
+var NP_CACHE_MAX_PARTS = 12;       // значение больше этого в лист не пишем (до 540 000 знаков; быстрый слой всё равно держит его 6 часов)
+var NP_PEND_KEY = 'np_pend';       // очередь «надо сохранить в лист»: [[ключ, срок до (мс)], …]
+var NP_PEND_MAX = 60;              // не больше ключей в очереди (лишние просто не сохраняются в лист)
+var NP_FLUSH_BUDGET_MS = 25000;    // сколько фоновая задача пишет в лист за один запуск
+var NP_FLUSH_MAX_PARTS = 40;       // и сколько ячеек максимум за запуск
 var NP_CACHE_MAX_ROWS = 400;       // строк в листе не больше: старые записи вытесняются
-var NP_CACHE_LOCK_MS = 1500;
+var NP_CACHE_LOCK_MS = 3000;       // ожидание блокировки записи (фоновая задача, заказ её не ждёт)
+var NP_LIMIT_ALERT_PROP = 'NP_LIMIT_ALERT_LAST'; // своя отметка тревоги о лимите (не общая NP_ALERT_LAST)
+var NP_LIMIT_HITS_PROP = 'NP_LIMIT_HITS';        // метки времени срабатываний паузы за последние сутки (JSON-массив)
 var NP_SENDER_BACKOFF_MS = [3600000, 6 * 3600000, 24 * 3600000]; // 1 ч → 6 ч → 24 ч между неудачными попытками отправителя
 
 /* ---------- Пауза при «To many requests» ---------- */
 
-/** Ответ НП — «лимит запросов»: HTTP 429, фраза «To many requests»/«Too many requests» или код 20000401501. */
+/** Собирает текст из ошибок НП любого вида: строка, число, массив, объект {код: текст} (и ключи, и значения), вложенные структуры. */
+function npErrText_(x, depth) {
+  if (x === null || x === undefined || depth > 4) return '';
+  var t = typeof x;
+  if (t === 'string' || t === 'number' || t === 'boolean') return String(x);
+  if (Array.isArray(x)) return x.map(function (v) { return npErrText_(v, depth + 1); }).join(' ');
+  if (t === 'object') return Object.keys(x).map(function (k) { return k + ' ' + npErrText_(x[k], depth + 1); }).join(' ');
+  return '';
+}
+
+/** Ответ НП — «лимит запросов»: HTTP 429, фраза «To many requests»/«Too many requests» или код 20000401501 в errors, errorCodes, translatedErrors, warnings. */
 function npLimitHit_(code, data) {
   if (Number(code) === 429) return true;
-  if (!data || typeof data !== 'object' || data.success === true) return false;
+  if (!data || typeof data !== 'object' || data.success === true || data.success === 'true') return false;
   var s;
-  try { s = [].concat(data.errors || [], data.errorCodes || []).map(function (x) { return String(x); }).join(' '); } catch (err) { return false; }
+  try { s = ['errors', 'errorCodes', 'translatedErrors', 'warnings', 'warningCodes'].map(function (k) { return npErrText_(data[k], 0); }).join(' '); } catch (err) { return false; }
   return /\bto+\s+many\s+requests\b/i.test(s) || /\b20000401501\b/.test(s);
 }
 
@@ -67,23 +89,64 @@ function npPauseLeftSec_() {
 /** Минут до конца паузы для текстов (не меньше 1). */
 function npPauseMin_() { return Math.max(1, Math.ceil(npPauseLeftSec_() / 60)); }
 
-/** Ставит паузу на 10 минут. Уже идёт — не продлевает. Запись свойства — без блокировки (одно атомарное обращение). */
+/** Ставит паузу на 10 минут. Уже идёт — не продлевает. Запись свойства — без блокировки (одно атомарное обращение). Каждое новое срабатывание паузы считается. */
 function npPauseSet_() {
   if (npPauseUntil_()) return;
   var until = Date.now() + NP_PAUSE_MS;
   try { CacheService.getScriptCache().put(NP_PAUSE_KEY, String(until), Math.ceil(NP_PAUSE_MS / 1000)); } catch (e1) { /* не критично */ }
   try { scriptProps_().setProperty(NP_PAUSE_PROP, String(until)); } catch (e2) { console.warn('np pause: property not saved'); }
+  npLimitHitsAdd_();
 }
 
-/** Тревога админам о лимите: не чаще раза в сутки (общая отметка NP_ALERT_LAST), без ключа и данных отправителя. */
+/** Метки времени срабатываний паузы за последние 24 часа (из Script Properties). */
+function npLimitHits_() {
+  var raw = '', now = Date.now();
+  try { raw = scriptProps_().getProperty(NP_LIMIT_HITS_PROP) || ''; } catch (e0) { return []; }
+  try {
+    var a = JSON.parse(raw || '[]');
+    return Array.isArray(a) ? a.map(Number).filter(function (t) { return t > now - 24 * 3600000 && t <= now + 60000; }).slice(-50) : [];
+  } catch (e1) { return []; }
+}
+
+function npLimitHitsAdd_() {
+  try {
+    var a = npLimitHits_();
+    a.push(Date.now());
+    scriptProps_().setProperty(NP_LIMIT_HITS_PROP, JSON.stringify(a.slice(-50)));
+  } catch (err) { /* не критично */ }
+}
+
+/** Время окончания паузы «ГГ:ХХ» по часовому поясу таблицы. */
+function npPauseUntilText_() {
+  var u = npPauseUntil_();
+  if (!u) return '';
+  try { return Utilities.formatDate(new Date(u), SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || 'Europe/Kiev', 'HH:mm'); } catch (err) { return ''; }
+}
+
+/** Строка состояния для меню: пауза до ГГ:ХХ или «обмежень немає», плюс сколько раз пауза срабатывала за сутки. */
+function npLimitStatusLine_() {
+  var until = npPauseUntilText_(), n = npLimitHits_().length;
+  var line = until ? 'Пауза через обмеження НП: до ' + until : 'Обмежень зараз немає';
+  return line + (n > 0 ? ' (за останню добу пауза спрацювала ' + n + ' разів)' : '');
+}
+
+/**
+ * Тревога админам о лимите: не чаще раза в сутки по СВОЕЙ отметке NP_LIMIT_ALERT_LAST (сообщение об отправителе или стоимости её не занимает).
+ * Если за сутки пауза срабатывала несколько раз — в тексте сказано сколько. Без ключа и данных отправителя.
+ */
 function npLimitAlert_() {
   if (typeof npAlertAdmins_ !== 'function') return;
-  var n = npPauseMin_();
+  var n = npPauseMin_(), hits = npLimitHits_().length, uaMore = '', ruMore = '';
+  if (hits > 1) {
+    uaMore = ' За останню добу пауза спрацювала ' + hits + ' разів: можливо, запитів до Нової пошти забагато.';
+    ruMore = ' За последние сутки пауза срабатывала ' + hits + ' раз: возможно, запросов к Новой почте слишком много.';
+  }
   npAlertAdmins_(
     'Нова пошта тимчасово обмежила запити (занадто багато звернень). Підказки міст і відділень та розрахунок вартості доставки призупинено приблизно на ' + n +
-      ' хв, потім усе відновиться саме. Замовлення приймаються, покупці вводять місто й відділення вручну.',
+      ' хв; пауза автоматична і знімається сама, нічого робити не треба. Магазин працює: замовлення приймаються, покупці вводять місто й відділення вручну.' + uaMore,
     'Новая почта временно ограничила запросы (слишком много обращений). Подсказки городов и отделений и расчёт стоимости доставки приостановлены примерно на ' + n +
-      ' мин, потом всё возобновится само. Заказы принимаются, покупатели вводят город и отделение вручную.');
+      ' мин; пауза автоматическая и снимается сама, делать ничего не нужно. Магазин работает: заказы принимаются, покупатели вводят город и отделение вручную.' + ruMore,
+    NP_LIMIT_ALERT_PROP);
 }
 
 /** Добавляет к ответу витрине необязательное поле retryAfter (секунды), если запрос не ушёл из-за паузы. */
@@ -130,46 +193,89 @@ function npLongSheet_(create) {
   return sh;
 }
 
-/** {text, exp} или null. Без блокировки: запись всегда целиком одним блоком строк, недописанное не читается (проверка частей). */
+/** Хэш текста для контрольной метки (два 32-битных, base36). Не криптография: защита от сдвига строк и обрыва записи. */
+function npHash_(s) {
+  var h1 = 5381, h2 = 52711;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i);
+    h1 = ((h1 * 33) ^ c) >>> 0;
+    h2 = ((h2 * 31) + c) >>> 0;
+  }
+  return h1.toString(36) + h2.toString(36);
+}
+
+/**
+ * {text, exp} или null. Без блокировки. Читает ВСЕ части записи одним запросом (строки подряд от части 0) и сверяет у каждой части ключ, номер
+ * части, общее число частей и срок; у части 0 — контрольную метку (число частей : длина : хэш). Строки могут сдвигаться при чистке — тогда
+ * сверка не сойдётся, и ответ «в кэше нет» (идём обычным путём), а не чужие данные. Битый, неполный, просроченный или двойной — тоже «нет».
+ */
 function npLongGet_(key) {
   try {
     var sh = npLongSheet_(false);
     if (!sh) return null;
     var last = sh.getLastRow();
     if (last < 2) return null;
-    var idx = sh.getRange(2, 1, last - 1, 5).getValues(), now = Date.now(), parts = {}, total = 0, exp = 0, found = 0;
+    var idx = sh.getRange(2, 1, last - 1, 4).getValues(), now = Date.now(), r0 = 0, total = 0, exp = 0;
     for (var i = 0; i < idx.length; i++) {
-      if (String(idx[i][0]) !== key) continue;
-      if (!(Number(idx[i][3]) > now)) return null;
-      var p = Number(idx[i][1]);
-      if (!parts[p]) found++;
-      parts[p] = i + 2; total = Number(idx[i][2]); exp = Number(idx[i][3]);
+      if (String(idx[i][0]) !== key || Number(idx[i][1]) !== 0) continue;
+      if (r0) return null; // две «части 0»: запись неоднозначна
+      r0 = i + 2; total = Number(idx[i][2]); exp = Number(idx[i][3]);
     }
-    if (!found || found !== total) return null;
-    var text = '';
+    if (!r0 || !(total >= 1 && total <= NP_CACHE_MAX_PARTS && Math.floor(total) === total) || !(exp > now) || r0 + total - 1 > last) return null;
+    var rows = sh.getRange(r0, 1, total, 6).getValues();
+    if (!rows || rows.length !== total) return null;
+    var text = '', meta = null;
     for (var k = 0; k < total; k++) {
-      if (!parts[k]) return null;
-      var cell = String(sh.getRange(parts[k], 6).getValues()[0][0]);
+      var r = rows[k];
+      if (String(r[0]) !== key || Number(r[1]) !== k || Number(r[2]) !== total || Number(r[3]) !== exp) return null;
+      var cell = String(r[5]);
       if (cell.indexOf('n:') !== 0) return null;
-      text += cell.slice(2);
+      if (k === 0) {
+        meta = /^n:(\d+):(\d+):([0-9a-z]+):/.exec(cell);
+        if (!meta || Number(meta[1]) !== total) return null;
+        text += cell.slice(meta[0].length);
+      } else text += cell.slice(2);
     }
+    if (text.length !== Number(meta[2]) || npHash_(text) !== meta[3]) return null;
     return { text: text, exp: exp };
   } catch (err) { return null; }
 }
 
 /**
- * Запись в долгий слой под LockService.tryLock: занято — просто не пишем (false). Заменяет прежнюю запись этого ключа, убирает просроченные
- * строки, держит размер листа не больше NP_CACHE_MAX_ROWS (вытесняются самые старые ключи). Данные режутся на ячейки по NP_CELL знаков
- * с префиксом «n:» (чтобы Таблицы не приняли кусок за число, дату или формулу).
+ * Блокировка записи в лист: LockService.getUserLock() (заказы и остальной код её не берут — они работают под ScriptLock; DocumentLock тоже не берём:
+ * его использует быстрый режим). Нет UserLock — отметка в кэше (не атомарна, но пишет одна фоновая задача; чтение всё равно сверяет данные).
+ * Возвращает {release()} или null (занято).
+ */
+function npLongLock_(ms) {
+  var l = null;
+  try { l = LockService.getUserLock(); } catch (e0) { l = null; }
+  if (l) {
+    var got = false;
+    try { got = l.tryLock(ms); } catch (e1) { got = false; }
+    return got ? { release: function () { try { l.releaseLock(); } catch (e2) { /* не критично */ } } } : null;
+  }
+  try {
+    var cache = CacheService.getScriptCache();
+    if (cache.get('np_wlock')) return null;
+    cache.put('np_wlock', '1', 120);
+    return { release: function () { try { cache.remove('np_wlock'); } catch (e3) { /* сама исчезнет */ } } };
+  } catch (e4) { return null; }
+}
+
+/**
+ * Запись в долгий слой. Вызывает только фоновая задача (npLongFlush_) и тесты; запрос покупателя сюда не заходит. Под npLongLock_ (занято — false).
+ * Заменяет прежнюю запись этого ключа, убирает просроченные строки, держит лист не больше NP_CACHE_MAX_ROWS (вытесняются самые старые ключи).
+ * Данные режутся на ячейки по NP_CELL знаков с префиксом «n:» (чтобы Таблицы не приняли кусок за число, дату или формулу); у части 0 после
+ * «n:» стоит контрольная метка «число частей:длина:хэш:». Больше NP_CACHE_MAX_PARTS ячеек в лист не пишем.
  */
 function npLongPut_(key, text, ttlSec) {
   if (!npKey_()) return false;
+  text = String(text);
   var chunks = [];
   for (var c = 0; c < text.length; c += NP_CELL) chunks.push(text.substr(c, NP_CELL));
   if (!chunks.length || chunks.length > NP_CACHE_MAX_PARTS) return false;
-  var lock = LockService.getScriptLock(), got = false;
-  try { got = lock.tryLock(NP_CACHE_LOCK_MS); } catch (e0) { got = false; }
-  if (!got) return false;
+  var lock = npLongLock_(NP_CACHE_LOCK_MS);
+  if (!lock) return false;
   try {
     var now = Date.now(), sh = npLongSheet_(true), last = sh.getLastRow();
     var idx = last >= 2 ? sh.getRange(2, 1, last - 1, 5).getValues() : [];
@@ -197,15 +303,89 @@ function npLongPut_(key, text, ttlSec) {
     var start = sh.getLastRow() + 1, need = start + chunks.length - 1;
     if (start < 2) start = 2;
     if (need > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), need - sh.getMaxRows());
-    var exp = now + Math.floor(ttlSec) * 1000;
-    sh.getRange(start, 1, chunks.length, NP_CACHE_HEAD.length).setValues(chunks.map(function (t, n) { return [key, n, chunks.length, exp, now, 'n:' + t]; }));
+    var exp = now + Math.floor(ttlSec) * 1000, head = 'n:' + chunks.length + ':' + text.length + ':' + npHash_(text) + ':';
+    sh.getRange(start, 1, chunks.length, NP_CACHE_HEAD.length).setValues(chunks.map(function (t, n) { return [key, n, chunks.length, exp, now, (n === 0 ? head : 'n:') + t]; }));
     SpreadsheetApp.flush();
     return true;
   } catch (err) {
     console.warn('np cache write failed');
     return false;
   } finally {
-    try { lock.releaseLock(); } catch (e1) { /* не критично */ }
+    lock.release();
+  }
+}
+
+/** Ставит ключ в очередь «надо сохранить в лист» (CacheService; гонка при добавлении может потерять метку — тогда запись просто останется только в быстром слое). */
+function npPendAdd_(key, expMs) {
+  try {
+    var cache = CacheService.getScriptCache(), list = [];
+    try { list = JSON.parse(cache.get(NP_PEND_KEY) || '[]'); } catch (e0) { list = []; }
+    if (!Array.isArray(list)) list = [];
+    list = list.filter(function (x) { return x && x[0] !== key; });
+    if (list.length >= NP_PEND_MAX) return;
+    list.push([key, expMs]);
+    cache.put(NP_PEND_KEY, JSON.stringify(list), NP_FAST_MAX);
+  } catch (err) { /* не критично */ }
+}
+
+/**
+ * Фоновая задача (hourlyJob): сохраняет в лист то, что покупатели положили в очередь, и чистит просроченные строки. Значение берётся из быстрого слоя;
+ * исчезло или просрочено — пропускается. Не дольше NP_FLUSH_BUDGET_MS и NP_FLUSH_MAX_PARTS ячеек за запуск; остальное — в следующий раз.
+ * Не берёт ScriptLock: заказы её не ждут. Возвращает число записанных ключей.
+ */
+function npLongFlush_() {
+  if (!npKey_()) return 0;
+  var cache, list;
+  try {
+    cache = CacheService.getScriptCache();
+    list = JSON.parse(cache.get(NP_PEND_KEY) || '[]');
+  } catch (e0) { return 0; }
+  if (!Array.isArray(list)) return 0;
+  var started = Date.now(), parts = 0, done = {}, written = 0;
+  for (var i = 0; i < list.length; i++) {
+    var key = list[i] && list[i][0], exp = Number(list[i] && list[i][1]);
+    if (!key) continue;
+    var ttl = Math.floor((exp - Date.now()) / 1000);
+    var text = ttl > 0 ? npFastGet_(key) : null;
+    if (text === null || ttl <= NP_FAST_MAX) { done[key] = true; continue; } // значения нет или срок уже не «долгий»
+    var need = Math.ceil(text.length / NP_CELL);
+    if (need > NP_CACHE_MAX_PARTS) { done[key] = true; continue; } // слишком большой для листа: остаётся в быстром слое на 6 часов
+    if (Date.now() - started > NP_FLUSH_BUDGET_MS || parts + need > NP_FLUSH_MAX_PARTS) break;
+    if (npLongPut_(key, text, ttl)) { done[key] = true; parts += need; written++; }
+    else break; // блокировка занята или запись не удалась: до следующего запуска
+  }
+  try {
+    var now = []; // очередь могла пополниться пока писали: убираем только обработанное
+    try { now = JSON.parse(cache.get(NP_PEND_KEY) || '[]'); } catch (e1) { now = []; }
+    var rest = (Array.isArray(now) ? now : []).filter(function (x) { return x && !done[x[0]]; });
+    if (rest.length) cache.put(NP_PEND_KEY, JSON.stringify(rest), NP_FAST_MAX); else cache.remove(NP_PEND_KEY);
+  } catch (e2) { /* не критично */ }
+  try { npLongSweep_(); } catch (e3) { /* не критично */ }
+  return written;
+}
+
+/** Чистка листа: убирает просроченные и пустые строки (под той же блокировкой, вне пути покупателя и заказа). */
+function npLongSweep_() {
+  var sh = npLongSheet_(false);
+  if (!sh) return 0;
+  var last = sh.getLastRow();
+  if (last < 2) return 0;
+  var lock = npLongLock_(NP_CACHE_LOCK_MS);
+  if (!lock) return 0;
+  try {
+    var idx = sh.getRange(2, 1, last - 1, 4).getValues(), now = Date.now(), runs = [], n = 0;
+    for (var i = 0; i < idx.length; i++) {
+      if (String(idx[i][0]) && Number(idx[i][3]) > now) continue;
+      var r = i + 2, l = runs[runs.length - 1];
+      if (l && l.start + l.n === r) l.n++; else runs.push({ start: r, n: 1 });
+      n++;
+    }
+    for (var j = runs.length - 1; j >= 0; j--) sh.deleteRows(runs[j].start, runs[j].n);
+    return n;
+  } catch (err) {
+    return 0;
+  } finally {
+    lock.release();
   }
 }
 
@@ -221,10 +401,13 @@ function npCacheGet_(key, useLong) {
   return l.text;
 }
 
-/** Кладёт значение в кэш: всегда в быстрый слой, а если срок больше 6 часов — ещё и в долгий. */
-function npCachePut_(key, text, ttlSec) {
+/**
+ * Кладёт значение в кэш: всегда в быстрый слой; если срок больше 6 часов — ещё и в очередь на сохранение в лист (сама запись — фоновая).
+ * noLong — данные отправителя и всё, что нельзя класть в лист: только быстрый слой.
+ */
+function npCachePut_(key, text, ttlSec, noLong) {
   npFastPut_(key, text, ttlSec);
-  if (ttlSec > NP_FAST_MAX) npLongPut_(key, text, ttlSec);
+  if (ttlSec > NP_FAST_MAX && !noLong) npPendAdd_(key, Date.now() + Math.floor(ttlSec) * 1000);
 }
 
 /* ---------- Один запрос в пути ---------- */
@@ -265,9 +448,9 @@ function npWhPeek_(cityRef) {
 /**
  * Весь список отделений города (страницы по 500). Из кэша; иначе грузит один раз (одновременные запросы ждут первого) и кладёт в оба слоя:
  * 24 часа, пустой город — 1 час. Остановка на первой же ошибке (в том числе на паузе из-за лимита). admin — счётчик и тихий режим админских вызовов.
- * eo — причина отказа (paused, retryAfter, text, api). Возвращает список или null.
+ * eo — причина отказа (paused, retryAfter, text, api). noLong — не ставить в очередь на запись в лист (поиск отправителя). Возвращает список или null.
  */
-function npWhLoad_(cityRef, admin, eo) {
+function npWhLoad_(cityRef, admin, eo, noLong) {
   var have = npWhPeek_(cityRef);
   if (have) return have;
   var key = npWhKey_(cityRef), lead = npLead_(key, 24, function () { return npCacheGet_(key, true); });
@@ -291,7 +474,7 @@ function npWhLoad_(cityRef, admin, eo) {
     if (!done) return null; // не дочитали — неполный список не отдаём и не кэшируем
     all.sort(function (a, b) { return a[0] - b[0] || (a[2] < b[2] ? -1 : 1); });
     var rich = { c: cityD, u: cityRu, l: all };
-    npCachePut_(key, JSON.stringify(rich), all.length ? NP_TTL_LONG : NP_TTL_EMPTY);
+    npCachePut_(key, JSON.stringify(rich), all.length ? NP_TTL_LONG : NP_TTL_EMPTY, noLong);
     return rich;
   } finally {
     lead.done();
