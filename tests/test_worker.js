@@ -446,6 +446,119 @@ async function main() {
     ok(kv.puts.length === b2, 'холодный изолят: каталог не изменился (кроме updated) — без записи');
   });
 
+  await run('копия старше 5 минут: сначала пробуем обновить', async () => {
+    const MIN = 60000;
+    const hdr = (r) => r.headers.get('X-Pamir-Cache');
+    const prep = async (extra) => {
+      const w = makeEnv(extra); const wk = await loadWorker();
+      await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      return { w, wk, old: w.goodCatalog(1) };
+    };
+    // 2 минуты: отдано сразу, обновление в фоне
+    {
+      const { w, wk, old } = await prep();
+      w.gas.catalog = () => ({ status: 200, body: w.goodCatalog(2) });
+      w.now += 2 * MIN;
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok((await r.text()) === old && hdr(r) === 'STALE', 'копия 2 минуты: отдана сразу (STALE)');
+      await w.flush();
+      ok(w.gasCalls.length === 2, 'копия 2 минуты: обновление ушло в фон');
+    }
+    // 10 минут, Apps Script отвечает за 1 с: новый каталог
+    {
+      const { w, wk } = await prep();
+      w.gas.catalog = async () => { await new Promise((res) => setTimeout(res, 1000)); return { status: 200, body: w.goodCatalog(2) }; };
+      w.now += 10 * MIN;
+      const t0 = Date.now(); const rt0 = process.hrtime.bigint();
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      const ms = Number(process.hrtime.bigint() - rt0) / 1e6;
+      ok((await r.text()) === w.goodCatalog(2) && hdr(r) === 'REFRESHED' && ms < 3000, 'копия 10 минут + Apps Script за 1 с: отдан НОВЫЙ каталог (' + Math.round(ms) + ' мс)');
+      void t0;
+    }
+    // 10 минут, Apps Script молчит: через <= 4,5 с старая копия, не 502
+    {
+      const { w, wk, old } = await prep();
+      let release; const gate = new Promise((res) => { release = res; });
+      w.gas.catalog = async () => { await gate; return { status: 200, body: w.goodCatalog(2) }; };
+      w.now += 10 * MIN;
+      const rt0 = process.hrtime.bigint();
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      const ms = Number(process.hrtime.bigint() - rt0) / 1e6;
+      ok(r.status === 200 && (await r.text()) === old && hdr(r) === 'EXPIRED' && ms >= 4400 && ms < 5500, 'копия 10 минут + Apps Script молчит: через ~4,5 с старая копия, не 502 (' + Math.round(ms) + ' мс)');
+      // пока зависший обмен идёт, следующие запросы не ждут заново
+      const rt1 = process.hrtime.bigint();
+      const r2 = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok((await r2.text()) === old && Number(process.hrtime.bigint() - rt1) / 1e6 < 500 && w.gasCalls.length === 2, 'следующий запрос при зависшем обмене: сразу старая копия, нового обращения нет');
+      release(); await w.flush();
+      const r3 = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok((await r3.text()) === w.goodCatalog(2), 'фоновый обмен довёл обновление: следующий запрос получает новый каталог');
+    }
+    // плохие ответы: старая копия
+    const BADS = {
+      'HTML': { status: 200, body: '<!DOCTYPE html><html><body>Error</body></html>' },
+      '500': { status: 500, body: 'Internal' },
+      'пустое': { status: 200, body: '' },
+      'обрезанный JSON': { status: 200, body: '{"ok":true,"products":[{"id":"p1"' },
+      'ok:false': { status: 200, body: JSON.stringify({ ok: false }) },
+    };
+    for (const k of Object.keys(BADS)) {
+      const { w, wk, old } = await prep();
+      w.gas.catalog = () => BADS[k];
+      w.now += 10 * MIN;
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      await w.flush();
+      ok(r.status === 200 && (await r.text()) === old && hdr(r) === 'EXPIRED' && w.gasCalls.length === 3, 'копия 10 минут + ' + k + ': старая копия (попытка и повтор)');
+    }
+    // пауза: после сбоя 30 с без попыток, потом снова пробуем
+    {
+      const { w, wk, old } = await prep();
+      w.gas.catalog = () => ({ status: 500, body: '' });
+      w.now += 10 * MIN;
+      await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush();
+      const base = w.gasCalls.length;
+      w.now += 10000;
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok((await r.text()) === old && w.gasCalls.length === base, 'в паузу копия старше 5 минут отдаётся сразу, без обращения');
+      w.gas.catalog = () => ({ status: 200, body: w.goodCatalog(4) });
+      w.now += 31000;
+      const r2 = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok((await r2.text()) === w.goodCatalog(4) && hdr(r2) === 'REFRESHED', 'через 30 с пауза кончилась: новый каталог');
+    }
+    // 10 одновременных запросов при старой копии: одно обращение
+    {
+      const { w, wk } = await prep();
+      let release; const gate = new Promise((res) => { release = res; });
+      w.gas.catalog = async () => { await gate; return { status: 200, body: w.goodCatalog(2) }; };
+      w.now += 10 * MIN;
+      const ps = Array.from({ length: 10 }, () => wk.fetch(req('GET', '/catalog'), w.env, w.ctx));
+      await new Promise((res) => setTimeout(res, 20));
+      release();
+      const rs = await Promise.all(ps);
+      const bodies = await Promise.all(rs.map((r) => r.text()));
+      ok(rs.every((r) => r.status === 200) && bodies.every((b) => b === w.goodCatalog(2)) && w.gasCalls.length === 2, '10 одновременных при старой копии: одно обращение к Apps Script (всего ' + w.gasCalls.length + ' с первым)');
+    }
+    // записи KV за сутки: запрос каждые 10 минут, каталог не меняется
+    {
+      const kv = makeKV();
+      const { w, wk } = await prep({ PAMIR_KV: kv });
+      let n = 0;
+      w.gas.catalog = () => ({ status: 200, body: JSON.stringify({ ok: true, updated: 'u' + (++n), products: [{ id: 'p1' }] }) });
+      const b = kv.puts.length;
+      for (let i = 0; i < 144; i++) { w.now += 10 * MIN; await wk.fetch(req('GET', '/catalog'), w.env, w.ctx); await w.flush(); }
+      ok(kv.puts.length - b <= 3, 'сутки при старой копии: записей KV ' + (kv.puts.length - b) + ' (<= 3)');
+    }
+    // purge: следующий запрос получает новый каталог
+    {
+      const { w, wk } = await prep();
+      w.gas.catalog = () => ({ status: 200, body: w.goodCatalog(8) });
+      w.now += 10 * MIN;
+      await wk.fetch(req('POST', '/purge', { 'X-Pamir-Key': SECRET }), w.env, w.ctx);
+      await w.flush();
+      const r = await wk.fetch(req('GET', '/catalog'), w.env, w.ctx);
+      ok((await r.text()) === w.goodCatalog(8) && hdr(r) === 'HIT', 'после /purge следующий запрос получает новый каталог');
+    }
+  });
+
   await run('scheduled: слежение', async (worker) => {
     const kv = makeKV();
     const w = makeEnv({ PAMIR_KV: kv, BOT_TOKEN: TOKEN, ADMIN_CHAT_IDS: '111, 222' });

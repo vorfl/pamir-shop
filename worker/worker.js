@@ -11,7 +11,8 @@
 // В этом файле секретов нет.
 
 const FRESH_MS = 60 * 1000;            // каталог свежий 60 с
-const KEEP_MS = 24 * 60 * 60 * 1000;   // прошлый хороший ответ живёт до 24 ч
+const MAX_STALE_SERVE_MS = 5 * 60 * 1000; // копию старше 5 минут сначала пробуем обновить, а не отдаём сразу
+const KEEP_MS =24 * 60 * 60 * 1000;   // прошлый хороший ответ живёт до 24 ч
 const KV_REWRITE_MS = 12 * 60 * 60 * 1000; // без изменений каталога KV обновляем не чаще раза в 12 ч (чтобы запись не истекла)
 const MSG_GAP_MS = 30 * 60 * 1000;     // сообщение одного вида не чаще раза в 30 мин
 const GAS_TIMEOUT_MS = 20 * 1000;
@@ -147,22 +148,39 @@ async function handleCatalog(env, ctx) {
     }
   }
   if (item && now - item.ts <= KEEP_MS) {
-    if (now - item.ts <= FRESH_MS) return catalogResponse(item.body, 'HIT');
-    ctx.waitUntil(refreshCatalog(env, false).catch(() => {}));
-    return catalogResponse(item.body, 'STALE');
+    const age = now - item.ts;
+    if (age <= FRESH_MS) return catalogResponse(item.body, 'HIT');
+    if (age <= MAX_STALE_SERVE_MS) {
+      // копия моложе 5 минут: отдаём сразу, обновляем в фоне
+      ctx.waitUntil(refreshCatalog(env, false).catch(() => {}));
+      return catalogResponse(item.body, 'STALE');
+    }
+    // копия старше 5 минут: сначала пробуем получить новый каталог (в пределах дедлайна).
+    // Пауза после сбоя действует: пока она не кончилась, отдаём старую копию без попытки (не дольше 30 с).
+    if (await isPaused(env)) return catalogResponse(item.body, 'EXPIRED');
+    const fresh = await waitRefresh(env, ctx);
+    if (fresh) return catalogResponse(fresh.body, 'REFRESHED');
+    // Apps Script не ответил вовремя или плохо: старая копия (до 24 ч); на 30 с останавливаем новые ожидания
+    mem.pauseUntil = Math.max(mem.pauseUntil, Date.now() + PAUSE_MS);
+    return catalogResponse(item.body, 'EXPIRED');
   }
   // кэша нет — идём в Apps Script (пауза не мешает: отдать всё равно нечего).
-  // Одновременные запросы делят один обмен; при быстром сбое одна повторная попытка.
-  // Ждём не дольше RESPONSE_DEADLINE_MS (витрина ждёт Worker 6 с, потом идёт в Apps Script сама);
-  // обмен при этом дорабатывает в фоне и наполняет кэш.
+  const fresh = await waitRefresh(env, ctx);
+  if (fresh) return catalogResponse(fresh.body, 'MISS');
+  return catalogError();
+}
+
+// Одновременные запросы делят один обмен; при быстром сбое одна повторная попытка.
+// Ждём не дольше RESPONSE_DEADLINE_MS (витрина ждёт Worker 6 с, потом идёт в Apps Script сама);
+// обмен при этом дорабатывает в фоне и наполняет кэш. Возвращает каталог или null.
+async function waitRefresh(env, ctx) {
   const work = refreshCatalog(env, false, true).catch(() => null);
   ctx.waitUntil(work);
   let timer;
   const deadline = new Promise((res) => { timer = setTimeout(() => res(null), RESPONSE_DEADLINE_MS); });
   const fresh = await Promise.race([work, deadline]);
   clearTimeout(timer);
-  if (fresh) return catalogResponse(fresh.body, 'MISS');
-  return catalogError();
+  return fresh;
 }
 
 /**
