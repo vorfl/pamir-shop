@@ -449,6 +449,21 @@ node tests/e2e.js
 
 Снимки экранов тесты складывают в `%TEMP%\pamir-shots`. «Старый бэкенд» в тестах — `Code.gs` из ветки `main` (другую ветку задаёт `OLD_BACKEND_REF`).
 
+## Этап 9, волна Б1 (ветка `stage9b1`)
+
+Отчёт, выпуск по шагам, проверки на телефоне и список «заполнить самому» — в `docs/STAGE9_REPORT_B1.md`; прогресс и решения — в `docs/STAGE9_STATUS.md`; задание — `docs/STAGE9B_PROMPT.md`; Worker по шагам — `worker/README.md`.
+
+- **Новый файл бэкенда** `apps-script/Stage9b.gs`: пункты меню «Етап 9Б: створити колонки», «Увімкнути / Вимкнути швидкий режим», «Зробити копію зараз», «Увімкнути / Вимкнути щотижневу копію»; буфер событий (`flushJob`), копии (`backupJob`), ошибки витрины (`errorsJob`, идёт из `hourlyJob`), сброс кэша Worker. Без этого файла остальное работает по-старому.
+- **Главная:** порядок блоков, строка «плюсов» (шторка `plus`), не больше `shop.railsMax` лент и чипы «Ще» (экран `rail`), рецепты лентой и экран `recipes`, «Наша курага» и «Спеції від батька» лентами.
+- **Фото:** уменьшенные копии 360 px в `webapp/img/products/s/` (`tools/make_thumbs.js`), замена больших (`tools/replace_photos.js`); витрина добавляет к локальным адресам `?v=<версия файлов>`; нет маленькой — большая.
+- **Новые необязательные настройки:** `home_rails_max` (3) → `shop.railsMax`; `theme_until`, `ny_snow`, `ny_ids`, `ny_order_until_ua/ru` → `shop.ny` (только при теме `newyear`); `gift_note` → `shop.giftNote`; `reply_1_ua` … `reply_5_ru`; `src_list` (`qr1,qr2,insert`); `cart_mute_days` (30).
+- **Новые необязательные колонки:** «Клієнти» → «Джерело» (первый источник); «Замовлення» → «Джерело клієнта» (старая «Джерело» по-прежнему хранит `miniapp` / `miniapp test`); «Кошики» → «Події нагадувань», а в «Стоп» теперь может стоять дата окончания паузы (старое `так` — навсегда).
+- **Заказ:** необязательные поля `giftNote` (до 120 знаков, при `gift_note` = 1) и `src`. Повтор с тем же ключом `rid` и другим содержимым → `{ ok:false, error:'dup_changed', number? }`, ничего не пишется.
+- **Новые запросы:** `GET ?action=ping`; `POST action:'err'` (`{ did, items:[{m,s,v}] }`, без initData); событие `src`; панель — `admin.today`, `admin.statusPreview` (право `st`), `admin.message` (право `st`, 20 в час на админа, 5 в час на заказ); в `admin.orders` — `replies` и `lang`; в `admin.stats` — `sources` и `cartRemind`.
+- **Script Properties (не секреты):** `WORKER_URL` (только `https://….workers.dev`), `FAST_MODE`, `BACKUP_FOLDER_ID`.
+- **Worker:** `GET /catalog` (кэш каталога), `POST /purge` (заголовок `X-Pamir-Key` = `WEBHOOK_SECRET`), cron — проверка `ping` и сообщения админам; новые секреты Cloudflare `BOT_TOKEN`, `ADMIN_CHAT_IDS`, привязка KV `PAMIR_KV`. Витрина: необязательный `CATALOG_URL` в `webapp/config.js`.
+- **Тесты:** добавлены `node tests/test_worker.js` и `node tests/load.js --fast` (без `--fast` — настоящий темп, 2 минуты на сценарий).
+
 ## Этап 9, выпуск А — запуск (ветка `stage9a-launch`)
 
 Отчёт, выпуск по шагам, проверки на телефоне и список «заполнить самому» — в `docs/STAGE9_REPORT_A.md`; прогресс, итог аудита безопасности и решения — в `docs/STAGE9_STATUS.md`; задание — `docs/STAGE9_PROMPT.md`.

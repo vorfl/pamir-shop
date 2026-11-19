@@ -95,14 +95,15 @@ function stage9Apply() {
   try {
     res = stage9Run_();
   } catch (err) {
-    console.error('stage9: ' + (err && err.stack || err));
-    res = { ok: false, error: 'fail', message: 'Помилка: ' + (err && err.message || err) + '. Частину змін могло бути внесено; повторний запуск безпечний.' };
+    console.error('stage9: ' + safeErr_(err, true));
+    res = { ok: false, error: 'fail', message: 'Помилка: ' + safeErr_(err) + '. Частину змін могло бути внесено; повторний запуск безпечний.' };
   } finally {
     lock.releaseLock();
   }
   if (res.ok && typeof clearCatalogCache_ === 'function' && res.changedCells > 0) {
     try { clearCatalogCache_(); } catch (e) { /* кэш живёт 5 минут и без этого */ }
   }
+  if (typeof purgeWorkerIfPending_ === 'function') purgeWorkerIfPending_(); // Worker: каталог изменился (вне блокировки)
   s9Alert_(res.message);
   return res;
 }

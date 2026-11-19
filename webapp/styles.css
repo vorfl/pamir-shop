@@ -32,6 +32,7 @@
   --space-5: 20px; --space-6: 24px; --space-8: 32px;
   --radius-sm: 6px; --radius-md: 12px; --radius-lg: 16px; --radius-xl: 24px; --radius-pill: 999px;
   --tap: 44px;
+  --section-gap: var(--space-3); /* одинаковый отступ между разделами главной */
 }
 
 :root[data-theme="dark"] {
@@ -508,10 +509,8 @@ select.input { -webkit-appearance: menulist; appearance: auto; }
 .total .price-old { font-size: 15px; }
 .sheet__badges { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
-.feature__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
 .feature__title { margin: 0; font-family: var(--font-display); font-size: 16px; line-height: 22px; font-weight: 600; overflow-wrap: anywhere; }
 .feature__text { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.feature__foot { margin-top: auto; padding-top: var(--space-2); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
 
 /* ---------- Этап 6: мои заказы ---------- */
 .my { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); list-style: none; }
@@ -547,8 +546,8 @@ textarea, select { font: inherit; color: inherit; }
   transition: transform .12s var(--ease), background-color .15s, border-color .15s, color .15s, box-shadow .15s;
 }
 .btn:active:not(:disabled), .chip:active, .toolbtn:active, .weights button:active:not(:disabled), .mini__add:active { transform: scale(.96); }
-.mini, .feature { transition: transform .15s var(--ease); }
-.mini:active, .feature:active { transform: scale(.98); }
+.mini { transition: transform .15s var(--ease); }
+.mini:active { transform: scale(.98); }
 .card__img img, .sheet__img img, .line__img img { animation: fade .3s ease-out; }
 
 /* ---------- Поиск и фильтры ---------- */
@@ -572,7 +571,7 @@ textarea, select { font: inherit; color: inherit; }
 .recent__clear { flex: none; height: var(--tap); padding: 0 var(--space-2); border: 0; background: transparent; color: var(--lapis); font-size: 13px; font-weight: 700; }
 
 /* ---------- Подборки (горизонтальные ряды) ---------- */
-.rail { margin: 0 calc(var(--space-4) * -1) var(--space-5); min-width: 0; }
+.rail { margin: 0 calc(var(--space-4) * -1) var(--section-gap); min-width: 0; }
 .rail__head { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: var(--space-2); padding: 0 var(--space-4); margin-bottom: var(--space-3); }
 .rail__title { margin: 0; font-family: var(--font-display); font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.01em; }
 .rail__sub { font-size: 13px; line-height: 18px; color: var(--ink-muted); }
@@ -619,19 +618,6 @@ textarea, select { font: inherit; color: inherit; }
 @keyframes pop { 0% { transform: scale(1); } 40% { transform: scale(1.35); } 100% { transform: scale(1); } }
 .badge--low { background: var(--apricot-soft); color: var(--on-apricot-soft); }
 .promo--set { background: var(--pistachio); color: var(--surface-raised); }
-
-/* ---------- Блок наверху каталога ---------- */
-.feature {
-  display: flex; align-items: stretch; gap: var(--space-3); padding: var(--space-3); margin-bottom: var(--space-4);
-  border: 1px solid var(--line); border-radius: 20px; cursor: pointer;
-  background: linear-gradient(135deg, var(--apricot-soft), var(--surface-raised) 72%);
-}
-.feature__img { flex: 0 0 116px; width: 116px; border-radius: 14px; }
-.feature__title { font-size: 17px; line-height: 24px; }
-.feature .btn { margin-top: 0; padding: 0 var(--space-4); }
-.perks { display: flex; flex-direction: column; gap: var(--space-2); margin-bottom: var(--space-5); }
-.perk { margin: 0; display: flex; align-items: flex-start; gap: 10px; padding: 10px var(--space-3); border-radius: var(--radius-md); background: var(--pistachio-soft); color: var(--pistachio); font-size: 13px; line-height: 18px; font-weight: 600; }
-.perk .ico { width: 18px; height: 18px; }
 
 /* ---------- Скелет загрузки ---------- */
 .skel { display: flex; flex-direction: column; gap: var(--space-2); padding: 10px; border-radius: 18px; background: var(--surface-raised); border: 1px solid var(--card-border); box-shadow: var(--shadow-card); }
@@ -790,10 +776,6 @@ body[data-season="navruz"] { --orn: var(--pistachio); }
 .top { position: relative; }
 .top > :not(.orn) { position: relative; }
 .top .orn { -webkit-mask-image: linear-gradient(90deg, transparent 30%, #000 75%); mask-image: linear-gradient(90deg, transparent 30%, #000 75%); }
-.feature { position: relative; overflow: hidden; }
-.feature > :not(.orn) { position: relative; }
-.feature .orn { -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 55%); mask-image: linear-gradient(200deg, #000 0%, transparent 55%); }
-.feature__story { align-self: flex-start; min-height: var(--tap); padding: 0; border: 0; background: none; font: inherit; font-size: 13px; font-weight: 700; color: var(--apricot-text); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .done { position: relative; overflow: hidden; padding: var(--space-6) var(--space-4); border-radius: var(--radius-lg); }
 .done > :not(.orn) { position: relative; }
 .done .orn { -webkit-mask-image: radial-gradient(circle at 50% 0, #000 0, transparent 70%); mask-image: radial-gradient(circle at 50% 0, #000 0, transparent 70%); }
@@ -825,7 +807,6 @@ body[data-season="navruz"] .season { color: var(--pistachio); }
 .chipline .ico { width: 14px; height: 14px; }
 .ico.is-on { fill: var(--apricot); stroke: var(--apricot); }
 .mini__till { margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--pomegranate); }
-.homegift .perk { margin: 0; }
 .usual .btn { margin-top: var(--space-2); }
 
 /* Паспорт товара, подсказка к весу */
@@ -969,26 +950,10 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .pay__acts .btn { padding: 0 var(--space-2); font-size: 13px; line-height: 16px; }
 
 /* ---------- Б4. Подборка «Спеції від батька» и состав ---------- */
-.father {
-  position: relative; overflow: hidden; display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-3) 0 var(--space-3); margin-bottom: var(--space-4);
-  border: 1px solid var(--line); border-radius: 20px;
-  background: linear-gradient(135deg, var(--pistachio-soft), var(--surface-raised) 72%);
-}
-.father > :not(.orn) { position: relative; }
-.father .orn { -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 55%); mask-image: linear-gradient(200deg, #000 0%, transparent 55%); }
-.father__head { display: flex; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-3); }
-.father .feature__text { -webkit-line-clamp: 4; }
-.father .rail__list { margin: 0; padding: 0 var(--space-3); }
 .sheet__comp { margin: 0; font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
 
 /* ---------- Б2. Опт ---------- */
 .linkbtn { align-self: flex-start; min-height: var(--tap); padding: 0; border: 0; background: none; font: inherit; font-size: 14px; font-weight: 700; color: var(--lapis); text-decoration: underline; text-underline-offset: 3px; text-align: left; }
-.bizline {
-  display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--tap); margin-bottom: var(--space-4); padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--lapis-soft); color: var(--lapis);
-  font: inherit; font-size: 14px; line-height: 20px; font-weight: 700; text-align: left;
-}
 .bizcard { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); border-radius: var(--radius-lg); background: var(--lapis-soft); color: var(--lapis); }
 .bizcard__title { margin: 0; font-family: var(--font-display); font-size: 17px; line-height: 24px; font-weight: 600; }
 .bizcard__text { margin: 0; font-size: 14px; line-height: 20px; }
@@ -1025,20 +990,184 @@ body[data-view="admin"] .perfline { display: block; } /* только в адм�
 .rec__p { margin: 0; font-size: 15px; line-height: 22px; overflow-wrap: anywhere; }
 
 /* ---------- В2. Квиз ---------- */
-.bizline--quiz { background: var(--apricot-soft); color: var(--on-apricot-soft); margin-bottom: var(--space-2); }
 .quiz__step { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
 .quiz__q { margin: 0 0 var(--space-2); font-family: var(--font-display); font-size: 20px; line-height: 28px; font-weight: 600; overflow-wrap: anywhere; }
 .quiz__opts { display: flex; flex-direction: column; gap: var(--space-2); }
 .quiz__opt { min-height: 52px; font-size: 16px; }
 
-/* ---------- Выпуск А: «Наша курага» из нескольких товаров ---------- */
-.featuregroup { margin-bottom: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
-.featuregroup__title { font-size: 17px; line-height: 24px; }
-.featuregroup__text { -webkit-line-clamp: unset; display: block; }
-.feature--item { margin-bottom: 0; }
-.feature--item .feature__img { flex-basis: 96px; width: 96px; align-self: flex-start; }
-.feature__title--item { font-size: 15px; line-height: 20px; }
-
 /* ---------- Нова пошта: статус поиска и подсказки ---------- */
 .np-busy, .np-hint { margin: var(--space-1) 0 0; font-size: 13px; line-height: 18px; color: var(--ink-muted); }
 .sugg button { overflow-wrap: anywhere; }
+
+/* ---------- Выпуск Б, блок 1: главная без хаоса ---------- */
+/* Одна строка «плюсов»: небольшие карточки-кнопки одного стиля, акцент — только в иконке */
+.plus { display: flex; gap: var(--space-2); margin: 0 calc(var(--space-4) * -1) var(--section-gap); padding: 2px var(--space-4); overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.plus::-webkit-scrollbar { display: none; }
+.plus__item {
+  flex: none; display: flex; align-items: center; gap: var(--space-2); width: 156px; height: 48px; padding: 0 var(--space-3);
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--ink);
+  font: inherit; font-size: 13px; line-height: 16px; font-weight: 700; text-align: left; cursor: pointer;
+}
+.plus__item .ico { flex: none; width: 22px; height: 22px; color: var(--apricot-text); }
+.plus__item span { min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.plus__item:active { transform: scale(.97); }
+.plus__text { margin: 0; font-size: 15px; line-height: 22px; overflow-wrap: anywhere; }
+/* «Ще: Знижки · Новинки …» */
+.morerails { display: flex; align-items: center; gap: var(--space-2); margin: 0 calc(var(--space-4) * -1) var(--section-gap); padding: 0 var(--space-4); overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.morerails::-webkit-scrollbar { display: none; }
+.morerails__label { flex: none; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--ink-muted); }
+/* Рецепты: лента карточек в одну строку */
+.recs .rail__head { align-items: center; justify-content: space-between; margin-bottom: var(--space-1); }
+.recs__all { align-self: center; }
+.rcard {
+  flex: 0 0 140px; width: 140px; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0; scroll-snap-align: start;
+  border: 0; background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+}
+.rcard__img { height: 84px; display: grid; place-items: center; overflow: hidden; border-radius: 14px; border: 1px solid var(--line); background: var(--surface-sunken); color: var(--apricot-text); }
+.rcard__img img { width: 100%; height: 100%; object-fit: cover; }
+.rcard__img .ico { width: 30px; height: 30px; }
+.rcard__img .mark { width: 36px; height: 36px; }
+.rcard__name { min-height: 36px; font-size: 13px; line-height: 18px; font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rcard:active { transform: scale(.97); }
+@media (prefers-reduced-motion: reduce) { .plus__item:active, .rcard:active { transform: none; } }
+
+/* ================= Этап 9, выпуск Б, Б1, блок 2: админка удобнее ================= */
+/* ---------- «Сьогодні» ---------- */
+.today { display: flex; flex-direction: column; gap: var(--space-2); }
+.today__grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.today__grid .tcard:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.tcard {
+  min-height: 72px; min-width: 0; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; padding: var(--space-3);
+  border: 1px solid var(--apricot-soft); border-radius: var(--radius-md); background: var(--apricot-soft); color: var(--on-apricot-soft);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.tcard__n { font-size: 24px; line-height: 28px; font-variant-numeric: tabular-nums; }
+.tcard__l { font-size: 13px; line-height: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.tcard.is-zero { background: var(--surface-sunken); border-color: var(--line); color: var(--ink-muted); }
+.tcard:active { transform: scale(.97); filter: brightness(.95); }
+
+/* ---------- Заказы ---------- */
+.ord--new { border-left: 4px solid var(--apricot); background: var(--apricot-soft); }
+.ord--new .ord__meta, .ord--new .ord__sum { color: var(--on-apricot-soft); }
+.ord--new .ord__body { border-top-color: var(--apricot); }
+.btn--big { min-height: 52px; font-size: 16px; line-height: 22px; }
+.ord__acts { grid-template-columns: minmax(0, 1fr) auto; }
+.ord__acts .btn { font-size: 15px; line-height: 20px; padding: 0 var(--space-4); }
+.ord__acts .btn--big { font-size: 16px; }
+.btn--wide { grid-column: 1 / -1; }
+.ord__more { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.ord__more .btn { font-size: 13px; line-height: 16px; padding: var(--space-2); }
+.ord__tools { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.ord__body a.btn { color: var(--ink); justify-content: center; font-weight: 700; }
+.ord__tools .btn { padding: 0 var(--space-2); }
+.copybuf { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
+
+/* ---------- Пустые и ошибочные состояния ---------- */
+.adm__empty { display: flex; flex-direction: column; gap: var(--space-2); align-items: stretch; padding: var(--space-5) var(--space-3); text-align: center; }
+.adm__empty-t { margin: 0; font-size: 16px; line-height: 22px; font-weight: 700; }
+.adm__empty-h { margin: 0; font-size: 14px; line-height: 20px; color: var(--ink-muted); }
+
+/* ---------- Товары: быстрая цена и «Збережено» ---------- */
+.prod--q { flex-wrap: wrap; }
+.prod__quick { flex: 1 0 100%; display: flex; align-items: center; gap: var(--space-2); padding: 0 0 var(--space-2) var(--space-3); min-width: 0; }
+.prod__quick .input { flex: 1; min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.prod__cur { flex: none; font-size: 13px; color: var(--ink-muted); font-weight: 600; }
+.prod__quick .btn { flex: none; padding: 0 var(--space-3); }
+.prod__err { flex: 1 0 100%; margin: 0 0 var(--space-2) var(--space-3); }
+.prod__err[hidden], .prod__ok[hidden] { display: none; }
+.prod__ok { flex: 1 0 100%; display: flex; align-items: center; gap: var(--space-1); margin: 0 0 var(--space-2) var(--space-3); color: var(--pistachio); font-size: 13px; line-height: 18px; font-weight: 700; }
+.prod__ok .ico { width: 16px; height: 16px; }
+.prod.is-saved { box-shadow: 0 0 0 2px var(--pistachio); }
+
+/* ---------- Настройки: группы, пояснения, превью ---------- */
+.sgroup { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface-raised); }
+.sgroup__sum {
+  min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-4);
+  font-size: 16px; font-weight: 700; cursor: pointer; list-style: none;
+}
+.sgroup__sum::-webkit-details-marker { display: none; }
+.sgroup__sum::after { content: ''; flex: none; width: 8px; height: 8px; border: solid var(--ink-muted); border-width: 0 2px 2px 0; transform: rotate(45deg); margin: -4px 4px 0 var(--space-2); }
+.sgroup[open] > .sgroup__sum::after { transform: rotate(-135deg); margin-top: 4px; }
+.sgroup__sum > span:first-child { flex: 1; }
+.sgroup__n { flex: none; min-width: 24px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--surface-sunken); color: var(--ink-muted); font-size: 13px; line-height: 22px; text-align: center; font-weight: 600; }
+.sgroup__body { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-2) var(--space-4) var(--space-4); }
+.sfield__sw { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--tap); }
+.sfield__sw .label { flex: 1; margin: 0; }
+.field__ex { color: var(--ink-muted); }
+.spv { margin-top: var(--space-2); }
+.spv__label { margin: 0 0 var(--space-1); font-size: 12px; line-height: 16px; font-weight: 600; color: var(--ink-muted); text-transform: none; }
+.spv__box { padding: var(--space-3); border-radius: var(--radius-md); background: var(--surface-sunken); overflow-wrap: anywhere; }
+.spv__empty { font-size: 13px; color: var(--ink-muted); }
+.spv__notice { padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: var(--apricot-soft); color: var(--on-apricot-soft); font-size: 13px; line-height: 18px; font-weight: 600; white-space: pre-wrap; }
+.spv__bubble { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--lapis-soft); color: var(--ink); font-size: 14px; line-height: 20px; white-space: pre-wrap; }
+.spv__plain { font-size: 14px; line-height: 20px; white-space: pre-wrap; }
+.spv__box .feature__title, .spv__box .feature__text { margin: 0; }
+.spv__quote { margin: 0; padding: var(--space-3); border-left: 4px solid var(--apricot); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-size: 14px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------- «Написати клієнту» ---------- */
+.msg__tpls { display: flex; flex-direction: column; gap: var(--space-2); }
+.msg__list { display: flex; flex-direction: column; gap: var(--space-2); }
+.msg__tpl { justify-content: flex-start; text-align: left; font-weight: 600; font-size: 14px; line-height: 20px; }
+.ord__body a.btn { text-decoration: none; }
+.ord--new .ord__body { background: var(--surface-raised); border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+
+/* ================= Этап 9, выпуск Б, Б1, блок 3: компактные ленты «Наша курага» и «Спеції від батька» ================= */
+/* Одна горизонтальная лента небольших карточек и одна строка текста; полный текст — в шторке по нажатию */
+.lane {
+  position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 2px; padding: 2px 0 4px; margin-bottom: var(--section-gap);
+  border: 1px solid var(--line); border-radius: 20px;
+}
+.feature.lane { background: linear-gradient(135deg, var(--apricot-soft), var(--surface-raised) 72%); }
+.father.lane { background: linear-gradient(135deg, var(--pistachio-soft), var(--surface-raised) 72%); }
+.lane > :not(.orn) { position: relative; }
+.lane .orn { -webkit-mask-image: linear-gradient(200deg, #000 0%, transparent 55%); mask-image: linear-gradient(200deg, #000 0%, transparent 55%); }
+.lane__hd { margin: 0; font: inherit; }
+.lane__btn {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center; width: 100%; min-height: var(--tap); padding: 2px var(--space-3); border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.lane__hd > .feature__title { display: block; padding: 4px var(--space-3); }
+.lane .feature__title { font-size: 16px; line-height: 22px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane .feature__text { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; -webkit-line-clamp: unset; }
+.lane .rail__list { margin: 0; padding: 2px var(--space-3) 2px; gap: var(--space-2); }
+.mini--row {
+  flex: 0 0 184px; width: 184px; height: 72px; flex-direction: row; align-items: center; gap: var(--space-2); padding: 6px;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--surface-raised);
+}
+.mini--row .mini__img { flex: none; width: 58px; height: 58px; aspect-ratio: auto; box-shadow: none; border-radius: 10px; }
+.mini__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mini--row .mini__name { min-height: 0; font-size: 13px; line-height: 16px; }
+.mini--row .card__meta { min-height: 0; column-gap: 4px; }
+.mini--row .price { font-size: 14px; line-height: 18px; }
+.mini--row .unit, .mini--row .price-old { font-size: 11px; line-height: 14px; }
+
+/* ================= Блок 3: Новый год (б11), источники, повтор заказа ================= */
+/* Гирлянда из ступенчатых ромбов под шапкой (не занимает места); приглушена в тёмной теме */
+.top > .garland { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; z-index: 1; pointer-events: none; }
+.top > .garland[hidden] { display: none; }
+.ny-strip { display: block; width: 100%; height: 9px; }
+:root[data-theme="dark"] .top > .garland, :root[data-theme="dark"] .ny-strip--lane { opacity: .55; }
+/* Праздничная обложка «Нашей кураги»: гирлянда по верхней кайме и рамка цвета лазурита */
+.ny-strip--lane { position: absolute !important; top: 0; left: 0; }
+body[data-season="newyear"] .feature.lane { padding-top: 9px; border-color: var(--lapis); }
+body[data-season="newyear"] .rail__sub { color: var(--lapis); }
+/* Снег: 14 мелких ромбиков ПОД содержимым (виден только на фоне страницы), только на главной и в каталоге; только transform, нажатия проходят насквозь; при prefers-reduced-motion скрыт */
+.snow { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; contain: strict; }
+.snow i {
+  position: absolute; top: -12px; width: var(--s); height: var(--s); background: var(--lapis); opacity: .28;
+  transform: translate3d(0, -12px, 0) rotate(45deg); animation: snowfall var(--d) linear var(--w) infinite; will-change: transform;
+}
+:root[data-theme="dark"] .snow i { background: var(--ink); opacity: .22; }
+body:not([data-view="catalog"]) .snow, body.is-locked .snow { display: none; }
+@keyframes snowfall { to { transform: translate3d(var(--dx), 105vh, 0) rotate(225deg); } }
+@media (prefers-reduced-motion: reduce) { .snow { display: none; } }
+.ny-until { margin-bottom: var(--space-3); }
+.gncount { margin: var(--space-1) 0 0; text-align: right; font-variant-numeric: tabular-nums; }
+.form__retry { margin-top: var(--space-2); }
+
+/* Статистика: источники (QR) — компактная таблица, без горизонтальной прокрутки на 360 px */
+.srct { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--fs-sm, 14px); }
+.srct th, .srct td { padding: var(--space-2) var(--space-1); text-align: right; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.srct th:first-child, .srct td:first-child { text-align: left; width: 34%; }
+.srct th { color: var(--ink-muted); font-weight: 600; }
+.srct td { color: var(--ink); font-variant-numeric: tabular-nums; }

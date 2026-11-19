@@ -21,6 +21,7 @@ async function open(browser, base, opts) {
     const hue = (r.request().url().split('/').pop().split('').reduce((a, c) => a + c.charCodeAt(0), 0) * 37) % 360;
     r.fulfill({ status: 200, contentType: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400"><defs><radialGradient id="g" cx="35%" cy="30%"><stop offset="0" stop-color="hsl(${hue},55%,78%)"/><stop offset="1" stop-color="hsl(${hue},45%,52%)"/></radialGradient></defs><rect width="400" height="400" fill="#f3ece0"/><circle cx="200" cy="215" r="130" fill="url(#g)"/></svg>` });
   });
+  if (opts.before) await opts.before(page, ctx); // подготовить страницу (например, подменить ответ каталога) до первой загрузки
   await page.goto(base + '/' + (opts.query || ''), { waitUntil: 'networkidle' });
   return { ctx, page, errors };
 }

@@ -4,6 +4,8 @@
  */
 (function () {
   'use strict';
+  var SCRIPT_V = ''; // версия файла из ?v= в index.html: уходит в записи об ошибках
+  try { SCRIPT_V = (/[?&]v=([\w.-]{1,12})/.exec(document.currentScript && document.currentScript.src || '') || [])[1] || ''; } catch (e) { /* нет currentScript */ }
 
   /* ------------------------------ Тексты ------------------------------ */
   var I18N = {
@@ -97,7 +99,7 @@
       errTestOff: 'Тестові замовлення вимкнені на сервері (властивість ALLOW_TEST_ORDERS).',
       cartChanged: 'Ціни або наявність щойно змінилися. Перевірте кошик і оформіть замовлення ще раз.',
       doneBack: 'Повернутися до каталогу',
-      admin: 'Адмін-панель', admOrders: 'Замовлення', admProducts: 'Товари', admToday: 'Сьогодні', admWeek: '7 днів',
+      admin: 'Адмін-панель', admOrders: 'Замовлення', admProducts: 'Товари', admToday: 'Сьогодні', admWeek: '7 днів', admOrdToday: 'Замовлень сьогодні', admOrdWeek: 'Замовлень за 7 днів',
       admSearchO: 'Номер, телефон або ім\u2019я', admSearchP: 'Назва або ID', admAll: 'Усі', admEmpty: 'Нічого немає',
       admLoading: 'Завантаження…', admError: 'Не вдалося завантажити. Спробуйте ще раз.',
       admForbidden: 'Немає доступу. Адмін-панель відкривається лише з Telegram-акаунта адміністратора.',
@@ -216,7 +218,7 @@
       errTestOff: 'Тестовые заказы выключены на сервере (свойство ALLOW_TEST_ORDERS).',
       cartChanged: 'Цены или наличие только что изменились. Проверьте корзину и оформите заказ ещё раз.',
       doneBack: 'Вернуться в каталог',
-      admin: 'Админ-панель', admOrders: 'Заказы', admProducts: 'Товары', admToday: 'Сегодня', admWeek: '7 дней',
+      admin: 'Админ-панель', admOrders: 'Заказы', admProducts: 'Товары', admToday: 'Сегодня', admWeek: '7 дней', admOrdToday: 'Заказов сегодня', admOrdWeek: 'Заказов за 7 дней',
       admSearchO: 'Номер, телефон или имя', admSearchP: 'Название или ID', admAll: 'Все', admEmpty: 'Ничего нет',
       admLoading: 'Загрузка…', admError: 'Не удалось загрузить. Попробуйте ещё раз.',
       admForbidden: 'Нет доступа. Админ-панель открывается только с Telegram-аккаунта администратора.',
@@ -427,6 +429,17 @@
     set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* хранилище недоступно */ } }
   };
 
+  /** Ключ попытки заказа живёт в хранилище устройства до ответа сервера (сервер помнит его 6 часов). */
+  var RID_KEY = 'pamir_rid_v1';
+  function loadRid() {
+    try {
+      var o = JSON.parse(store.get(RID_KEY) || 'null');
+      if (o && /^[\w-]{8,40}$/.test(o.r) && Date.now() - Number(o.t) < 5 * 3600 * 1000) return o.r;
+    } catch (e) { /* испорченная запись — игнорируем */ }
+    return '';
+  }
+  function setRid(rid) { state.rid = rid; store.set(RID_KEY, rid ? JSON.stringify({ r: rid, t: Date.now() }) : ''); }
+
   var state = {
     lang: 'ua',
     cat: String(params.get('cat') || '').toUpperCase().replace(/[^A-ZА-ЯІЇЄҐ0-9_-]/g, '').slice(0, 12), // код категории, '' = все; ?cat=SPC — кнопка «Відкрити категорію» из рассылки
@@ -437,10 +450,10 @@
     view: 'catalog',   // catalog | cart | checkout | done | admin | orders
     scrollY: 0,
     cart: { t: 0, i: [] }, // i: [{ id, g (граммы, 0 = штука/упаковка), q, pr (цена за единицу), was? }]
-    form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', npType: 'branch', point: '' },
+    form: { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', giftNote: '', npType: 'branch', point: '' },
     done: null,
     cartNotice: '',
-    rid: '',           // id попытки заказа: повторная отправка не создаст второй заказ
+    rid: loadRid(),    // id попытки заказа: повторная отправка не создаст второй заказ (переживает перезагрузку страницы)
     offline: false     // свежий каталог не загрузился, показываем сохранённую копию
   };
 
@@ -568,7 +581,30 @@
     openSheet(found.id);
   }
 
-  function loadCatalog() {
+  /** Один запрос каталога с таймаутом; ответ без ok и списка товаров — ошибка. */
+  function fetchCatalog(url, ms, isApi) {
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, ms);
+    return fetch(url, ctrl ? { signal: ctrl.signal } : undefined).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (data) {
+      clearTimeout(timer);
+      if (!data || !data.ok || !Array.isArray(data.products)) throw new Error('bad catalog');
+      return data;
+    }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) {
+      if (isApi) reportNet('catalog', err);
+      throw err;
+    });
+  }
+  /** Если в config.js задан CATALOG_URL (Worker), сначала идём туда (6 с); любая неудача — тот же запрос в Apps Script. */
+  function requestCatalog(direct) {
+    var apiLoad = function () { return fetchCatalog(catalogUrl(), 20000, !!cfg.API_URL); };
+    if (direct || !cfg.API_URL || !/^https?:\/\//.test(String(cfg.CATALOG_URL || ''))) return apiLoad(); // direct: после «ціни змінилися» Worker мог ещё держать прежние цены
+    return fetchCatalog(cfg.CATALOG_URL, 6000, false).catch(apiLoad);
+  }
+
+  function loadCatalog(direct) {
     // 1) Мгновенно показываем сохранённую копию, 2) в фоне берём свежую.
     var cachedText = cfg.API_URL ? store.get(CACHE_KEY) : null;
     if (cachedText && !state.catalog) {
@@ -580,18 +616,10 @@
     if (!state.catalog) state.status = 'loading';
     renderAll();
     openDeepLink();
+    captureSrc();
 
-    var ctrl = window.AbortController ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 20000);
-
-    return fetch(catalogUrl(), ctrl ? { signal: ctrl.signal } : undefined)
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
+    return requestCatalog(direct === true)
       .then(function (data) {
-        clearTimeout(timer);
-        if (!data || !data.ok || !Array.isArray(data.products)) throw new Error('bad catalog');
         if (state.offline) { state.offline = false; renderBanner(); }
         var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
         var old = state.catalog
@@ -604,9 +632,9 @@
         }
         openDeepLink();
         deepId = '';
+        captureSrc();
       })
       .catch(function () {
-        clearTimeout(timer);
         if (!state.catalog) {
           state.status = 'error';
           renderMain();
@@ -776,6 +804,109 @@
     } catch (e) { /* аналитика не должна мешать магазину */ }
   }
 
+  /* ------------------------------ Источник перехода (б4) ------------------------------ */
+  /*
+   * Метка из ссылки (?startapp=qr1, ?p=insert): латиница, цифры, _ и -, до 24 знаков. Не метка: ID товара, ref_…, adm_…, rec….
+   * Первая метка хранится на устройстве 30 дней и уходит в заказ; событие «src» шлётся один раз за открытие с меткой.
+   */
+  var SRC_KEY = 'pamir_src_v1', SRC_DAYS = 30;
+  var srcDone = false, srcOpen = String((inTelegram && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || params.get('p') || params.get('tgWebAppStartParam') || '').trim().toLowerCase();
+  function srcLabel(raw, catalog) {
+    var v = String(raw || '');
+    if (!/^[a-z0-9_-]{1,24}$/.test(v)) return '';
+    if (/^(ref_|adm_|rec)/.test(v) || /^[a-z]{3}-\d{3}$/.test(v)) return '';
+    if (catalog && catalog.products.some(function (p) { return String(p.id).toLowerCase() === v; })) return '';
+    return v;
+  }
+  function srcStored() {
+    try {
+      var o = JSON.parse(store.get(SRC_KEY) || 'null');
+      if (o && /^[a-z0-9_-]{1,24}$/.test(o.s) && Date.now() - Number(o.t) < SRC_DAYS * 86400000) return o.s;
+    } catch (e) { /* испорченная запись — игнорируем */ }
+    return '';
+  }
+  /** Вызывается, когда каталог уже есть (сохранённая копия или свежий): только тогда видно, не ID ли это товара. */
+  function captureSrc() {
+    if (srcDone || !srcOpen || !state.catalog) return;
+    srcDone = true;
+    var label = srcLabel(srcOpen, state.catalog);
+    if (!label) return;
+    if (!srcStored()) store.set(SRC_KEY, JSON.stringify({ s: label, t: Date.now() }));
+    track('src', '', label);
+  }
+
+  /* ------------------------------ Ошибки витрины (б7) ------------------------------ */
+  /*
+   * Ошибки скрипта и неудачные запросы к API уходят на сервер короткой записью: текст ошибки, экран, версия файла.
+   * Без initData, имени, телефона, адреса и данных формы. С одного устройства — не больше 5 записей в час;
+   * одинаковые подряд не дублируются; сбой самой отправки новых записей не порождает.
+   */
+  var ERR_KEY = 'pamir_err_v1', DID_KEY = 'pamir_did', ERR_PER_HOUR = 5;
+  var errQueue = [], errTimer = null, errLast = '', errDid = '';
+  function errDidGet() {
+    if (errDid) return errDid;
+    var v = store.get(DID_KEY) || '';
+    if (!/^[a-z0-9]{8,32}$/.test(v)) {
+      v = '';
+      for (var i = 0; i < 16; i++) v += Math.floor(Math.random() * 36).toString(36);
+      store.set(DID_KEY, v);
+    }
+    return (errDid = v);
+  }
+  function errScrub(text) {
+    return String(text === undefined || text === null ? '' : text).replace(/https?:\/\/[^\s)]*/g, function (u) { return u.split(/[?#]/)[0]; })
+      .replace(/\+?\d[\d\s()-]{7,}\d/g, '#').replace(/\s+/g, ' ').trim();
+  }
+  /** Можно ли записать ещё одну ошибку в этот час (счётчик в хранилище устройства). */
+  function errAllowed() {
+    var hour = Math.floor(Date.now() / 3600000), n = 0;
+    try {
+      var o = JSON.parse(store.get(ERR_KEY) || 'null');
+      if (o && o.h === hour) n = Number(o.n) || 0;
+    } catch (e) { n = 0; }
+    if (n >= ERR_PER_HOUR) return false;
+    store.set(ERR_KEY, JSON.stringify({ h: hour, n: n + 1 }));
+    return true;
+  }
+  function reportError(msg) {
+    try {
+      if (!cfg.API_URL) return;
+      var m = errScrub(msg).slice(0, 200);
+      var view = String(state && state.view || '').replace(/[^\w.:-]/g, '').slice(0, 24);
+      if (!m || m === errLast) return;
+      if (!errAllowed()) return;
+      errLast = m;
+      errQueue.push({ m: m, s: view, v: SCRIPT_V });
+      if (!errTimer) errTimer = setTimeout(function () { flushErrors(false); }, 2500);
+    } catch (e) { /* отчёт об ошибках сам не должен ломать магазин */ }
+  }
+  function flushErrors(leaving) {
+    clearTimeout(errTimer);
+    errTimer = null;
+    if (!errQueue.length || !cfg.API_URL) return;
+    try {
+      var body = JSON.stringify({ action: 'err', did: errDidGet(), items: errQueue.splice(0, 5) });
+      if (leaving && navigator.sendBeacon) { navigator.sendBeacon(cfg.API_URL, new Blob([body], { type: 'text/plain;charset=utf-8' })); return; }
+      fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, keepalive: true })
+        .then(function (r) { return r.json(); }).catch(function () { /* старый бэкенд или нет сети — молча */ });
+    } catch (e) { /* без записи */ }
+  }
+  /** Неудачный запрос к API (сеть, таймаут, HTTP-ошибка). Отмену пользователем (не наш таймаут) не считаем. */
+  function reportNet(action, err) {
+    var msg = err && err.message ? String(err.message) : '';
+    if (err && err.name === 'AbortError' && !msg) return;
+    reportError('net ' + String(action).replace(/[^\w.]/g, '').slice(0, 24) + ': ' + (/^HTTP \d{3}$/.test(msg) ? msg : err && err.name === 'AbortError' ? 'timeout' : 'network'));
+  }
+  window.addEventListener('error', function (ev) {
+    var file = String(ev && ev.filename || '').split(/[?#]/)[0].split('/').pop();
+    reportError((ev && ev.message ? ev.message : 'error') + (file ? ' @ ' + file + ':' + (ev.lineno || 0) : ''));
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    var r = ev && ev.reason;
+    reportError('promise: ' + (r && r.message ? r.message : r));
+  });
+  window.addEventListener('pagehide', function () { flushErrors(true); });
+
   /* ------------------------------ Отрисовка ------------------------------ */
   function renderAll() {
     document.documentElement.lang = state.lang === 'ru' ? 'ru' : 'uk';
@@ -918,10 +1049,22 @@
     return list.filter(function (p) { return p.a; }).concat(list.filter(function (p) { return !p.a; }));
   }
 
-  function photoHtml(p, eager) {
-    return p.img
-      ? '<img src="' + esc(p.img) + '" alt="" ' + (eager === true ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"') + ' decoding="async" referrerpolicy="no-referrer">'
-      : MARK;
+  /** Адрес маленькой копии (360 px) — только для файлов витрины вида …/img/products/<ID>.webp; остальные адреса (Google Drive и т. п.) не меняются. */
+  function thumbUrl(u) {
+    var m = /^(.*\/img\/products\/)([^\/?#]+\.webp)$/i.exec(String(u || ''));
+    return m ? m[1] + 's/' + m[2] : '';
+  }
+  /** К файлам витрины …/img/products/<ID>.webp (и s/<ID>.webp) добавляется ?v=<версия из index.html>: после замены фото телефоны не показывают старый кэш. Остальные адреса не меняются. */
+  function verUrl(u) {
+    u = String(u || '');
+    return SCRIPT_V && /\/img\/products\/(s\/)?[^\/?#]+\.webp$/i.test(u) ? u + '?v=' + SCRIPT_V : u;
+  }
+  /** small — карточки, ленты, корзина: берут маленькую копию; шторка товара — большую. Нет маленькой — один раз подставляется большая (см. обработчик error). */
+  function photoHtml(p, eager, small) {
+    if (!p.img) return MARK;
+    var thumb = small ? thumbUrl(p.img) : '';
+    return '<img src="' + esc(verUrl(thumb || p.img)) + '"' + (thumb ? ' data-full="' + esc(verUrl(p.img)) + '"' : '') + ' alt="" ' +
+      (eager === true ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"') + ' decoding="async" referrerpolicy="no-referrer">';
   }
 
   function leftText(p) {
@@ -948,50 +1091,109 @@
       (cp.old ? '<s class="price-old">' + money(cp.old) + '</s>' : '') + '<span class="unit">' + esc(cp.unit) + '</span>';
   }
 
-  /** Блок наверху каталога («Наша курага»): виден на главной, пока товар в наличии. */
-  function featureHtml() {
+  /** Компактная карточка для лент «Наша курага» и «Спеції від батька»: фото слева, название и цена справа, одна нажимаемая поверхность. */
+  function rowCardHtml(p, eager) {
+    var cp = cardPrice(p);
+    return '<article class="mini mini--row" data-id="' + esc(p.id) + '"><div class="mini__img card__img">' + photoHtml(p, eager, true) + '</div>' +
+      '<div class="mini__body"><h3 class="mini__name">' + esc(name(p)) + '</h3><div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div></div></article>';
+  }
+  /** Заголовок ленты: название и одна строка текста (обрезается многоточием); нажатие открывает шторку с полным текстом. */
+  function laneHeadHtml(key, title, line) {
+    if (!line) return '<h2 class="lane__hd"><span class="feature__title">' + esc(title) + '</span></h2>';
+    return '<h2 class="lane__hd"><button type="button" class="lane__btn" data-w1="info" data-k="' + key + '"><span class="feature__title">' + esc(title) + '</span>' +
+      '<span class="feature__text">' + esc(line) + '</span></button></h2>';
+  }
+
+  /** Данные блока «Наша курага»: товары в наличии (скрытых и пропавших из каталога нет), заголовок, текст. null — блока нет. */
+  function featureData() {
     var f = shopInfo().feature;
-    if (!f) return '';
-    // Старый бэкенд даёт один id; новый — список ids. Скрытых и пропавших из каталога пропускаем.
+    if (!f || !state.catalog) return null;
+    // Старый бэкенд даёт один id; новый — список ids.
     var ids = Array.isArray(f.ids) && f.ids.length ? f.ids : [f.id], seenIds = {}, list = [];
     ids.forEach(function (id) {
       var q = state.catalog.byId[id];
       if (q && q.a && !seenIds[id]) { seenIds[id] = 1; list.push(q); }
     });
-    if (!list.length) return '';
-    var ru = state.lang === 'ru';
-    var ft = f.title || {}, fx = f.text || {};
-    var gTitle = (ru ? ft.ru : ft.ua) || '';
-    var text = (ru ? fx.ru : fx.ua) || '';
-    var story = shopInfo().story ? '<button type="button" class="feature__story" data-w1="go" data-view="story">' + esc(t('storyBtn')) + '</button>' : '';
-    if (list.length === 1) {
-      var p = list[0], cp = cardPrice(p);
-      return '<article class="feature" data-id="' + esc(p.id) + '">' + ORN + '<div class="feature__img card__img">' + photoHtml(p, true) + '</div>' +
-        '<div class="feature__body"><h2 class="feature__title">' + esc(gTitle || name(p)) + '</h2>' +
-        (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') + story +
-        '<div class="feature__foot"><div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
-        '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
-    }
-    // Несколько товаров: общий заголовок и вертикальный список, у каждого своё фото 1:1.
-    var html = '<section class="featuregroup"><h2 class="feature__title featuregroup__title">' + esc(gTitle || t('featureAll')) + '</h2>' +
-      (text ? '<p class="feature__text featuregroup__text">' + esc(text) + '</p>' : '') + story;
-    list.forEach(function (q, i) {
-      var c = cardPrice(q);
-      html += '<article class="feature feature--item" data-id="' + esc(q.id) + '"><div class="feature__img card__img">' + photoHtml(q, i === 0) + '</div>' +
-        '<div class="feature__body"><h3 class="feature__title feature__title--item">' + esc(name(q)) + '</h3>' +
-        '<div class="feature__foot"><div class="card__meta">' + (c ? priceHtml(c) : '') + '</div>' +
-        '<button type="button" class="btn btn--primary">' + esc(t('featureCta')) + '</button></div></div></article>';
-    });
-    return html + '</section>';
+    if (!list.length) return null;
+    return { list: list, title: loc(f.title) || (list.length === 1 ? name(list[0]) : t('featureAll')), text: loc(f.text), story: !!shopInfo().story };
+  }
+  function fatherData() {
+    var f = shopInfo().father;
+    if (!f || !Array.isArray(f.ids)) return null;
+    var list = inStockList(f.ids).slice(0, 12);
+    if (!list.length) return null;
+    return { list: list, title: loc(f.title) || t('fatherTitle'), text: loc(f.text), story: false };
+  }
+  /** Блок наверху каталога («Наша курага»): одна лента карточек, одна строка текста; всё остальное — в шторке по нажатию. */
+  function featureHtml() {
+    var d = featureData();
+    if (!d) return '';
+    return '<section class="feature lane" data-lane="feature">' + ORN + (nyOnTheme() ? nyStrip('nyl', 'ny-strip ny-strip--lane') : '') + laneHeadHtml('feature', d.title, d.text || (d.story ? t('storyBtn') : '')) +
+      '<div class="rail__list">' + d.list.map(function (q, i) { return rowCardHtml(q, i === 0); }).join('') + '</div></section>';
+  }
+  /** Шторка «Подробнее» к ленте: заголовок, полный текст, ссылка «Від саду до столу» (если есть история). */
+  function infoSheetHtml(key) {
+    var d = key === 'father' ? fatherData() : featureData();
+    if (!d) return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button><div class="sheet__grab" aria-hidden="true"></div><div class="sheet__body"></div>';
+    return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
+      '<div class="sheet__grab" aria-hidden="true"></div>' +
+      '<div class="sheet__body"><h2 class="sheet__title sheet__title--pad" id="sheetTitle">' + esc(d.title) + '</h2>' +
+      (d.text ? '<p class="plus__text">' + esc(d.text) + '</p>' : '') + '</div>' +
+      (d.story ? '<div class="sheet__foot"><button type="button" class="btn btn--primary btn--block" data-w1="go" data-view="story">' + esc(t('storyBtn')) + '</button></div>' : '');
+  }
+  function openInfo(key) {
+    if (!(key === 'father' ? fatherData() : featureData())) return;
+    state.sheet = { kind: 'info', key: key };
+    renderSheet();
+    showSheet(false);
   }
 
-  /** Подарок от суммы и подарок постоянным клиентам — если они заданы в настройках магазина. */
-  function perksHtml() {
-    var s = shopInfo(), ru = state.lang === 'ru', out = '';
-    function perk(ico, text) { return '<p class="perk">' + icon(ico) + '<span>' + esc(text) + '</span></p>'; }
-    if (s.gift) out += '<div id="homeGift" class="homegift">' + homeGiftHtml() + '</div>';
-    if (s.loyal) out += perk('users', tf('loyalText', { k: s.loyal.every, g: ru ? s.loyal.ru : s.loyal.ua }));
-    return (out ? '<div class="perks">' + out + '</div>' : '') + quizBannerHtml() + bizBannerHtml();
+  /* ---- Б9. Одна строка «плюсов»: подарок, подарок постоянным, подбор, опт ---- */
+  /** Подпись плашки подарка: условие, пока корзина пустая; потом — сколько осталось. Подробности и шкала — в шторке. */
+  function giftPlusInner() {
+    var s = shopInfo(), total = cartTotal();
+    var label = !(total > 0) ? tf('plusGift', { n: money(s.gift.from) })
+      : total >= s.gift.from ? t('plusGiftOk') : tf('plusGiftLeft', { n: money(s.gift.from - total) });
+    return icon('gift') + '<span>' + esc(label) + '</span>';
+  }
+  /** Показ каждой плашки — по тем же условиям, что раньше: подарок и постоянным — если заданы в настройках, подбор — если есть теги, опт — для не оптовика в Telegram. */
+  function plusKeys() {
+    var s = shopInfo(), keys = [];
+    if (s.gift) keys.push('gift');
+    if (s.loyal) keys.push('loyal');
+    if (quizOn()) keys.push('quiz');
+    if (bizPlusOn()) keys.push('biz');
+    return keys;
+  }
+  function plusHtml() {
+    var s = shopInfo(), out = '';
+    function item(key, ico, label) {
+      return '<button type="button" class="plus__item" data-w1="plus" data-k="' + key + '">' + icon(ico) + '<span>' + esc(label) + '</span></button>';
+    }
+    plusKeys().forEach(function (k) {
+      if (k === 'gift') out += '<button type="button" class="plus__item" id="homeGift" data-w1="plus" data-k="gift">' + giftPlusInner() + '</button>';
+      else if (k === 'loyal') out += item(k, 'users', t('loyalTitle'));
+      else if (k === 'quiz') out += item(k, 'sliders', t('quizBtn'));
+      else out += item(k, 'store', t('plusBiz'));
+    });
+    return out ? '<div class="plus" role="group">' + out + '</div>' : '';
+  }
+  function plusSheetHtml(key) {
+    var s = shopInfo(), title = '', body = '', go = '', goText = '';
+    if (key === 'gift' && s.gift) { title = t('plusGiftTitle'); body = homeGiftHtml(); }
+    else if (key === 'loyal' && s.loyal) { title = t('loyalTitle'); body = '<p class="plus__text">' + esc(tf('loyalText', { k: s.loyal.every, g: loc(s.loyal) })) + '</p>'; }
+    else if (key === 'quiz') { title = t('quizTitle'); body = '<p class="plus__text">' + esc(t('plusQuizText')) + '</p>'; go = 'quiz'; goText = t('quizBtn'); }
+    else if (key === 'biz') { title = t('bizTitle'); body = '<p class="plus__text">' + esc(t('bizIntro')) + '</p>'; go = 'biz'; goText = t('bizBtn'); }
+    return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
+      '<div class="sheet__grab" aria-hidden="true"></div>' +
+      '<div class="sheet__body"><h2 class="sheet__title sheet__title--pad" id="sheetTitle">' + esc(title) + '</h2>' + body + '</div>' +
+      (go ? '<div class="sheet__foot"><button type="button" class="btn btn--primary btn--block" data-w1="go" data-view="' + go + '">' + esc(goText) + '</button></div>' : '');
+  }
+  function openPlus(key) {
+    if (plusKeys().indexOf(key) < 0) return;
+    state.sheet = { kind: 'plus', key: key };
+    renderSheet();
+    showSheet(false);
   }
 
   /** Кнопка под карточкой. Штучный товар кладётся в корзину сразу; у весового сначала выбирают вес. */
@@ -1015,7 +1217,7 @@
   function cardHtml(p, eager) {
     var cp = cardPrice(p);
     return '<article class="card' + (p.a ? '' : ' card--out') + '" data-id="' + esc(p.id) + '">' +
-      '<div class="card__img">' + photoHtml(p, eager) + badgeHtml(p) + promoHtml(p) + favBtn(p) + '</div>' +
+      '<div class="card__img">' + photoHtml(p, eager, true) + badgeHtml(p) + promoHtml(p) + favBtn(p) + '</div>' +
       '<h2 class="card__name">' + esc(name(p)) + '</h2>' + cardExtraHtml(p) +
       '<div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
       '<div class="card__act" data-act="' + esc(p.id) + '">' + actHtml(p) + '</div></article>';
@@ -1024,7 +1226,7 @@
   /** Маленькая карточка для горизонтальных подборок. quick — с кнопкой «+» (в корзине). */
   function miniHtml(p, quick) {
     var cp = cardPrice(p);
-    return '<article class="mini" data-id="' + esc(p.id) + '"><div class="mini__img card__img">' + photoHtml(p) + promoHtml(p) +
+    return '<article class="mini" data-id="' + esc(p.id) + '"><div class="mini__img card__img">' + photoHtml(p, false, true) + promoHtml(p) +
       (quick ? '<button type="button" class="mini__add" data-quick="1" aria-label="' + esc(t('addToCart')) + '">' + icon('plus') + '</button>' : '') + '</div>' +
       '<h3 class="mini__name">' + esc(name(p)) + '</h3>' +
       '<div class="card__meta">' + (cp ? priceHtml(cp) : '') + '</div>' +
@@ -1061,20 +1263,57 @@
       .sort(function (a, b) { return (cats[b.c] - cats[a.c]) || ((b.n || 0) - (a.n || 0)); }).slice(0, 10);
   }
 
-  function homeRails() {
-    var all = state.catalog.products, html = usualHtml();
-    function two(list) { return list.length >= 2 ? list.slice(0, 10) : []; }
-    html += railHtml(t('secAgain'), '', inStockList(my.bought || []).slice(0, 10));
-    if (all.length >= 8) { // в совсем маленьком каталоге подборки только повторяли бы список ниже
-      var pop = popular(10);
-      html += railHtml(t('secPop'), pop.real ? t('secPopSub') : '', two(pop.list));
-      html += railHtml(t('secSale'), '', two(all.filter(function (p) { return p.a && hasOld(p); })));
-      html += railHtml(t('secNew'), '', two(all.filter(function (p) { return p.a && p.b === 'new'; })));
-      html += railHtml(t('secSets'), '', two(all.filter(function (p) { return p.a && p.b === 'set'; })));
-      html += railHtml(t('secForYou'), '', two(forYou()));
+  /** Сколько лент показывать на главной: настройка магазина railsMax (1…8); нет поля (старый бэкенд) или не число — 3. */
+  function railsMax() {
+    var v = shopInfo().railsMax, n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+    if (!isFinite(n)) return 3;
+    return Math.max(1, Math.min(8, Math.floor(n)));
+  }
+  /**
+   * Ленты главной списком объектов {key, title, sub, list, html}; в списке они уже в порядке показа.
+   * Приоритет: «Ваше звичне» (нет — «Купити знову»), «Популярне», «Набори», дальше по прежнему порядку.
+   * Точка расширения (Б11): праздничную подборку добавить вызовом add(-1, key, title, sub, list) в railItems() ниже — она встанет первой.
+   */
+  function railItems() {
+    var all = state.catalog.products, items = [], usual = usualLines();
+    function add(pri, key, title, sub, full, html) {
+      if (!full.length) return;
+      items.push({ key: key, title: title, sub: sub, list: full, pri: pri, html: html || railHtml(title, sub, full.slice(0, 10)), seq: items.length });
     }
-    html += railHtml(t('secSeen'), '', seen.map(product).filter(Boolean).slice(0, 10));
+    function two(list) { return list.length >= 2 ? list : []; }
+    add(-1, 'gift', t('nyGiftsTitle'), nyUntilText(), nyGiftList()); // Б11: праздничная подборка — всегда первая и вне лимита railsMax
+    if (usual.length) add(0, 'usual', t('usualTitle'), t('usualSub'), usual.map(function (l) { return product(l[0]); }), usualHtml());
+    add(usual.length ? 3 : 0, 'again', t('secAgain'), '', inStockList(my.bought || []));
+    if (all.length >= 8) { // в совсем маленьком каталоге подборки только повторяли бы список ниже
+      var pop = popular(40);
+      add(1, 'pop', t('secPop'), pop.real ? t('secPopSub') : '', two(pop.list));
+      add(4, 'sale', t('secSale'), '', two(all.filter(function (p) { return p.a && hasOld(p); })));
+      add(5, 'new', t('secNew'), '', two(all.filter(function (p) { return p.a && p.b === 'new'; })));
+      add(2, 'sets', t('secSets'), '', two(all.filter(function (p) { return p.a && p.b === 'set'; })));
+      add(6, 'foryou', t('secForYou'), '', two(forYou()));
+    }
+    add(7, 'seen', t('secSeen'), '', seen.map(product).filter(Boolean));
+    items.sort(function (x, y) { return (x.pri - y.pri) || (x.seq - y.seq); });
+    return items;
+  }
+  function homeRails() {
+    var all = railItems(), max = railsMax();
+    var items = all.filter(function (i) { return i.key !== 'gift'; });
+    var html = all.filter(function (i) { return i.key === 'gift'; }).concat(items.slice(0, max)).map(function (i) { return i.html; }).join('');
+    var rest = items.slice(max);
+    if (rest.length) { // лишние непустые ленты — строкой чипов; чип открывает отдельный экран со списком
+      html += '<div class="morerails"><span class="morerails__label">' + esc(t('plusMore')) + '</span>' + rest.map(function (i) {
+        return '<button type="button" class="chip chip--sm" data-w1="rail" data-k="' + esc(i.key) + '">' + esc(i.title) + '</button>';
+      }).join('') + '</div>';
+    }
     return html + recipesHomeHtml();
+  }
+  function railPageHtml() {
+    var it = null;
+    if (state.catalog) railItems().forEach(function (i) { if (i.key === state.rail) it = i; });
+    if (!it) return pageHead(t('secAll')) + '<p class="state__text adm__msg">' + esc(t('railGone')) + '</p>';
+    return pageHead(it.title) + (it.sub ? '<p class="rail__sub">' + esc(it.sub) + '</p>' : '') +
+      '<div class="grid">' + it.list.map(function (p) { return cardHtml(p); }).join('') + '</div>' + (it.key === 'usual' ? usualBtnHtml() : '');
   }
 
   function skeletonHtml() {
@@ -1106,7 +1345,7 @@
         railHtml(t('secPop'), '', popular(10).list);
       return;
     }
-    var html = home ? featureHtml() + fatherHtml() + perksHtml() + homeRails() : '';
+    var html = home ? featureHtml() + fatherHtml() + plusHtml() + homeRails() : '';
     // Список листается страницами по PAGE_SIZE товаров; номер страницы живёт в flt.page.
     flt.page = clampPage(flt.page, list.length, PAGE_SIZE);
     var from = (flt.page - 1) * PAGE_SIZE;
@@ -1244,6 +1483,8 @@
   function renderSheet() {
     var s = state.sheet;
     if (s.kind === 'filter') { el.sheet.innerHTML = filterSheetHtml(); return; }
+    if (s.kind === 'plus') { el.sheet.innerHTML = plusSheetHtml(s.key); return; }
+    if (s.kind === 'info') { el.sheet.innerHTML = infoSheetHtml(s.key); return; }
     if (s.kind === 'confirm') { // подтверждение рисуется один раз: фоновое обновление каталога не должно сбрасывать его кнопки
       if (!s.drawn) { el.sheet.innerHTML = confirmSheetHtml(s.o); s.drawn = true; }
       return;
@@ -1543,7 +1784,7 @@
     refreshActs();
     updateChrome();
     var homeGift = document.getElementById('homeGift');
-    if (homeGift) homeGift.innerHTML = homeGiftHtml();
+    if (homeGift && shopInfo().gift) homeGift.innerHTML = giftPlusInner();
     if (state.view === 'cart') renderPage();
     if (bump) {
       var count = document.getElementById('cartCount');
@@ -1650,6 +1891,7 @@
       if (reload) loadAdmin(false);
       return;
     }
+    if (state.view === 'recipe' && state.recFrom === 'recipes') { go('recipes'); return; }
     if (SUB_VIEWS[state.view]) { go(state.back && state.back !== 'done' ? state.back : 'catalog'); return; }
     if (state.view !== 'catalog') go('catalog');
   }
@@ -1720,6 +1962,8 @@
     else if (state.view === 'biz') el.page.innerHTML = bizHtml();
     else if (state.view === 'recipe') el.page.innerHTML = recipeHtml();
     else if (state.view === 'quiz') el.page.innerHTML = quizHtml();
+    else if (state.view === 'rail') el.page.innerHTML = railPageHtml();
+    else if (state.view === 'recipes') el.page.innerHTML = recipesPageHtml();
     else el.page.innerHTML = '';
   }
 
@@ -1799,7 +2043,7 @@
       if (!info.ok) note = '<p class="line__note line__note--out">' + esc(p ? t('lineOut') : t('lineGone')) + '</p>';
       else if (l.was) note = '<p class="line__note">' + esc(t('priceWas')) + ' ' + money(l.was) + '</p>';
       html += '<li class="line' + (info.ok ? '' : ' line--out') + '">' +
-        '<div class="line__img">' + (p ? photoHtml(p) : MARK) + '</div>' +
+        '<div class="line__img">' + (p ? photoHtml(p, false, true) : MARK) + '</div>' +
         '<div class="line__text"><p class="line__name">' + esc(p ? name(p) : l.id) + '</p>' +
         '<p class="line__sub">' + esc(lineLabel(l, info)) +(info.ok ? ' · ' + money(info.price) : '') + (info.wh ? ' <span class="badge badge--opt">' + esc(t('whTag')) + '</span>' : '') + '</p>' + note + '</div>' +
         '<button type="button" class="iconbtn iconbtn--plain" data-line-del="' + i + '" aria-label="' + esc(t('remove')) + '">' + icon('trash-2') + '</button>';
@@ -1814,7 +2058,7 @@
     });
     html += '</ul>';
     if (hasOut) html += '<button type="button" class="btn btn--block" data-action="clear-out">' + esc(t('removeOut')) + '</button>';
-    html += whCartHtml() + refCartHtml() + cartPerksHtml();
+    html += nyUntilHtml() + whCartHtml() + refCartHtml() + cartPerksHtml();
     html += '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total">' + money(cartTotal()) + '</span></div>';
     html += railHtml(t('cartMore'), '', crossSell(), true);
     html += '<button type="button" class="btn btn--ghost btn--block" data-action="clear-cart">' + icon('trash-2') + esc(t('clearCart')) + '</button>';
@@ -1835,7 +2079,8 @@
 
   function saveForm() {
     var f = state.form;
-    store.set(FORM_KEY, JSON.stringify({ name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point }));
+    // Комментарий и подпись к подарку тоже хранятся на устройстве (не в облаке): сбой отправки или перезагрузка не стирают текст.
+    store.set(FORM_KEY, JSON.stringify({ name: f.name, phone: f.phone, delivery: f.delivery, city: f.city, branch: f.branch, pay: f.pay, npType: f.npType, point: f.point, comment: f.comment, giftNote: f.giftNote }));
   }
 
   /** Маска +380 XX XXX XX XX. Понимает ввод с 0, 80 и 380 в начале. */
@@ -1889,7 +2134,7 @@
 
     var gift = shop.gift && cartTotal() >= shop.gift.from
       ? '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf('giftOk', { g: shop.gift[L] || shop.gift.ua })) + '</span></p>' : '';
-    return pageHead(t('checkout')) +
+    return pageHead(t('checkout')) + nyUntilHtml() +
       '<div class="cosum"><div><p class="cosum__n">' + esc(tf('coItems', { n: cartCount() })) + '</p><p class="total js-sum">' + money(cartTotal()) + '</p></div>' +
       '<button type="button" class="btn" data-nav="back">' + esc(t('edit')) + '</button></div>' + gift +
       '<form class="form" id="form" novalidate>' +
@@ -1908,6 +2153,7 @@
 
       '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
       '<textarea class="input input--area" id="f-comment" name="comment" rows="3" maxlength="300" placeholder="' + esc(t('commentPh')) + '">' + esc(f.comment) + '</textarea></div>' +
+      giftNoteHtml() +
 
       '<div class="sum"><span>' + esc(t('total')) + '</span><span class="total js-sum">' + money(cartTotal()) + '</span></div>' +
       '</form>';
@@ -1948,6 +2194,7 @@
     f.city = form.elements.city.value.trim();
     f.branch = form.elements.branch.value.trim();
     f.comment = form.elements.comment.value.trim();
+    if (form.elements.giftNote) f.giftNote = form.elements.giftNote.value.replace(/\s+/g, ' ').trim().slice(0, 120);
     f.delivery = form.elements.delivery.value === 'np' ? 'np' : 'pickup';
     f.npType = { locker: 'locker', courier: 'courier' }[form.elements.npType ? form.elements.npType.value : ''] || 'branch';
     if (form.elements.point && form.elements.point.value) f.point = form.elements.point.value;
@@ -1996,7 +2243,7 @@
       name: f.name, phone: f.phone.replace(/\s+/g, ''),
       delivery: f.delivery, city: f.delivery === 'np' ? f.city : '', branch: f.delivery === 'np' ? f.branch : '',
       npType: f.delivery === 'np' ? (f.npType || 'branch') : '', point: f.delivery === 'pickup' ? (f.point || '') : '',
-      pay: f.pay, comment: f.comment, lang: state.lang, total: cartTotal(), ref: refStored(),
+      pay: f.pay, comment: f.comment, giftNote: giftNoteOn() ? f.giftNote : '', src: srcStored(), lang: state.lang, total: cartTotal(), ref: refStored(),
       initData: inTelegram ? tg.initData : '', test: DEBUG
     };
   }
@@ -2008,7 +2255,7 @@
   /** Отправка на сервер. text/plain — чтобы браузер не делал предварительный CORS-запрос. */
   function sendOrder(order) {
     if (!cfg.API_URL) return Promise.resolve({ ok: true, number: '', stub: true }); // демо без бэкенда
-    if (!state.rid) state.rid = newRid();
+    if (!state.rid) setRid(newRid());
     order.action = 'order';
     order.rid = state.rid;
     var ctrl = window.AbortController ? new AbortController() : null;
@@ -2022,7 +2269,7 @@
       clearTimeout(timer);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }, function (err) { clearTimeout(timer); throw err; });
+    }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) { reportNet('order', err); throw err; });
   }
 
   /** Просим разрешение писать клиенту в Telegram: иначе бот не сможет сообщить статус. */
@@ -2038,11 +2285,12 @@
     });
   }
 
-  function showFormError(text, linkBot) {
+  function showFormError(text, linkBot, retry) {
     var box = document.getElementById('formErr');
     if (!box) return;
     box.innerHTML = esc(text) + (linkBot && cfg.BOT
-      ? ' <a href="https://t.me/' + esc(cfg.BOT) + '">@' + esc(cfg.BOT) + '</a>' : '');
+      ? ' <a href="https://t.me/' + esc(cfg.BOT) + '">@' + esc(cfg.BOT) + '</a>' : '') +
+      (retry ? '<button type="button" class="btn btn--block form__retry" data-action="retry-order">' + esc(t('retryOrder')) + '</button>' : '');
     box.hidden = false;
     box.scrollIntoView({ block: 'center' });
   }
@@ -2071,7 +2319,7 @@
     var total = cartTotal();
     setBusy(true);
     askWriteAccess().then(function () { return sendOrder(buildOrder()); }).then(function (res) {
-      if (!res || !res.ok) { orderFailed(res && res.error); return; }
+      if (!res || !res.ok) { orderFailed(res && res.error, res); return; }
       state.done = { number: res.number || '', stub: !!res.stub, test: DEBUG && !res.stub, lines: lines, total: total, delivery: state.form.delivery, pay: state.form.pay,
         npType: state.form.npType, point: state.form.delivery === 'pickup' && pointById(state.form.point) ? loc(pointById(state.form.point)) : '',
         gifts: Array.isArray(res.gifts) ? res.gifts : [] };
@@ -2080,8 +2328,9 @@
       flushEvents(false);
       saveFormCloud();
       state.cart.i = [];
-      state.form.comment = '';
-      state.rid = '';
+      state.form.comment = ''; state.form.giftNote = '';
+      saveForm();
+      setRid('');
       saveCart();
       setBusy(false);
       haptic('success');
@@ -2089,13 +2338,33 @@
     }).catch(function () { orderFailed('network'); });
   }
 
-  function orderFailed(code) {
+  /** Сервер уже принял заказ с этим ключом, а корзина с тех пор изменилась: ничего не очищаем, следующий заказ — с новым ключом. */
+  function dupChanged(res) {
+    var box = document.getElementById('formErr');
+    var num = res && /^[\w-]{1,20}$/.test(String(res.number || '')) ? String(res.number) : '';
+    if (!box) return;
+    box.innerHTML = esc(num ? tf('dupChanged', { n: num }) : t('dupChangedNoNum')) +
+      '<button type="button" class="btn btn--block form__retry" data-go="orders">' + esc(t('myOrders')) + '</button>' +
+      '<button type="button" class="btn btn--primary btn--block form__retry" data-go="cart">' + esc(t('dupEditCart')) + '</button>' +
+      '<button type="button" class="btn btn--block btn--wrap form__retry" data-action="send-new">' + esc(t('sendAsNew')) + '</button>' +
+      (shopInfo().contact ? '<button type="button" class="btn btn--block form__retry" data-w1="contact">' + esc(t('dupWrite')) + '</button>' : '');
+    box.hidden = false;
+    box.scrollIntoView({ block: 'center' });
+  }
+
+  function orderFailed(code, res) {
     haptic('error');
+    if (code === 'dup_changed') {
+      setRid('');
+      setBusy(false);
+      dupChanged(res);
+      return;
+    }
     if (code === 'changed') {
       // Сервер пересчитал заказ по таблице и получил другую сумму: показываем свежую корзину.
-      state.rid = '';
+      setRid('');
       loadWh(true); // статус оптовика мог измениться — цены в корзине пересчитаются
-      loadCatalog().then(function () {
+      loadCatalog(true).then(function () {
         setBusy(false);
         state.cartNoticeInfo = false; state.cartNotice = t('cartChanged');
         go('cart');
@@ -2104,7 +2373,10 @@
     }
     setBusy(false);
     if (code === 'min_order') { showFormError(t('minOrder') + ' ' + money(Number(shopInfo().min) || 0)); return; }
-    showFormError(t({ rate_limit: 'errRate', bad_auth: 'errAuth', test_off: 'errTestOff' }[code] || 'errSend'));
+    var known = { rate_limit: 'errRate', bad_auth: 'errAuth', test_off: 'errTestOff' }[code];
+    if (known) { showFormError(t(known)); return; }
+    // Сеть, таймаут, ошибка сервера: корзина, форма и ключ попытки сохранены — повтор не создаст второй заказ.
+    showFormError(t('errSendRetry'), false, true);
   }
 
   function doneHtml() {
@@ -2137,7 +2409,8 @@
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
     Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
     return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .catch(function (err) { reportNet(action, err); throw err; });
   }
 
   /** quiet — фоновая загрузка при старте: нужна для подборки «Купити знову» и программы для постоянных клиентов. */
@@ -2284,7 +2557,8 @@
   var adm = { tab: 'orders', orders: null, stats: null, filter: '', q: '', open: '', products: null, cats: null, pq: '',
     edit: '', catEdit: '', settings: null, loading: false, error: '', busy: false, sales: null, salesOpen: false,
     me: null, admins: null, invites: null, permList: null, admEdit: '', invite: null, logOpen: false, log: null, reviews: null, pending: {},
-    pp: 1, pcat: '', pf: { out: false, hidden: false, nophoto: false },
+    pp: 1, pcat: '', pf: { out: false, hidden: false, nophoto: false, noprice: false }, pvis: false,
+    today: null, todayOld: false, replies: [], canMsg: false, more: '', saved: {}, qdraft: {}, setOpen: {},
     archOpen: false, arch: null, archErr: false, aq: '', ap: 1 }; // экран «Архів» // товары в панели: страница, категория, фильтры
 
   /** Есть ли у меня право. Пока сервер не прислал роль (или бэкенд ещё старый) — показываем всё: решает всё равно сервер. */
@@ -2303,7 +2577,7 @@
     }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }).then(function (res) {
+    }).catch(function (err) { reportNet(action, err); throw err; }).then(function (res) {
       if (res && res._t) perfShow(action, Date.now() - started, res._t); // замер включён на сервере (PERF_LOG = 1)
       return res;
     });
@@ -2327,13 +2601,14 @@
         store.set(ADMIN_KEY, '1');
         admAt[kind] = Date.now();
         if (res.me) adm.me = res.me;
-        if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; }
+        if (kind === 'orders') { adm.orders = res.orders || []; adm.stats = res.stats || null; adm.replies = Array.isArray(res.replies) ? res.replies : []; adm.canMsg = Array.isArray(res.replies); fetchToday(); }
         else if (kind === 'settings') adm.settings = res.fields || [];
         else if (kind === 'reviews') adm.reviews = res.reviews || [];
         else if (kind === 'admins') { adm.admins = res.admins || []; adm.invites = res.invites || []; adm.permList = res.permList || []; }
         else if (kind === 'wh') adm.wh = { apps: res.apps || [], clients: res.clients || [] };
         else if (kind === 'mail') adm.mail = { mails: res.mails || [], every: res.every || 0, trigger: res.trigger ? 1 : 0 };
         else { adm.products = res.products || []; adm.cats = res.categories || []; }
+        renderToday();
       } else if (res && res.error === 'forbidden') {
         store.set(ADMIN_KEY, '0'); adminHint = false; el.adminBtn.hidden = true;
       }
@@ -2367,14 +2642,14 @@
       btnFree(document.querySelector('[data-action="adm-refresh"]'));
       if (adm.loading !== kind) return; // пока шёл ответ, открыли другую вкладку: данные сохранены, экран не трогаем
       adm.loading = false;
-      if (!res || !res.ok) adm.error = res && res.error === 'forbidden' ? 'admForbidden' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admError';
+      if (!res || !res.ok) adm.error = res && res.error === 'forbidden' ? 'admForbidden' : res && res.error === 'no_perm' ? 'admNoPerm' : 'admOffline';
       if (state.view === 'admin') renderPage();
       if (res && res.ok && kind === 'orders') prefetchAdmin('products'); // следующая вкладка, куда обычно идут
     }).catch(function () {
       btnFree(document.querySelector('[data-action="adm-refresh"]'));
       if (adm.loading !== kind) return;
-      adm.loading = false; adm.error = 'admError';
-      if (state.view === 'admin') renderAdminList();
+      adm.loading = false; adm.error = 'admOffline';
+      if (state.view === 'admin') renderPage(); // вся страница: нижняя «Оновити» убирается, остаётся кнопка в сообщении
     });
   }
 
@@ -2392,9 +2667,10 @@
       return '<button type="button" data-tab="' + tab[0] + '" aria-pressed="' + (adm.tab === tab[0]) + '">' + esc(t(tab[1])) + '</button>';
     }).join('') + '</div>';
     if (adm.tab === 'orders') {
+      html += '<div id="admToday">' + todayHtml() + '</div>';
       if (adm.stats) {
-        html += '<div class="stats"><div><span>' + esc(t('admToday')) + '</span><b>' + adm.stats.today.n + ' · ' + money(adm.stats.today.sum) + '</b></div>' +
-          '<div><span>' + esc(t('admWeek')) + '</span><b>' + adm.stats.week.n + ' · ' + money(adm.stats.week.sum) + '</b></div></div>' +
+        html += '<div class="stats"><div><span>' + esc(t('admOrdToday')) + '</span><b>' + adm.stats.today.n + ' · ' + money(adm.stats.today.sum) + '</b></div>' +
+          '<div><span>' + esc(t('admOrdWeek')) + '</span><b>' + adm.stats.week.n + ' · ' + money(adm.stats.week.sum) + '</b></div></div>' +
           '<button type="button" class="btn btn--block" data-action="adm-sales">' + esc(t('admStats')) + '</button>';
       }
       html += '<input class="input" id="admQ" type="search" autocomplete="off" placeholder="' + esc(t('admSearchO')) + '" value="' + esc(adm.q) + '">' +
@@ -2413,7 +2689,7 @@
         '<button type="button" class="btn btn--block" data-action="adm-log">' + esc(t('admLog')) + '</button>';
     }
     return html + '<div id="admList">' + adminListHtml() + '</div>' +
-      (adm.tab === 'settings' ? '' : '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>');
+      (adm.tab === 'settings' || adm.error ? '' : '<button type="button" class="btn btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>');
   }
 
   /* ---- Статистика продаж ---- */
@@ -2438,7 +2714,7 @@
     }
     html += '<div class="stats"><div><span>' + esc(t('admStats30')) + '</span><b>' + s.m30.n + ' · ' + money(s.m30.sum) + '</b></div>' +
       '<div><span>' + esc(t('admStatsAll')) + '</span><b>' + s.all.n + ' · ' + money(s.all.sum) + '</b></div></div>';
-    html += behaviorHtml(s);
+    html += behaviorHtml(s) + sourcesHtml(s);
     if (!s.all.n) return html + '<p class="state__text adm__msg">' + esc(t('admStatsEmpty')) + '</p>';
     if (s.products.length) {
       html += '<p class="label">' + esc(t('admStatsTop')) + '</p><ul class="rows">' + s.products.map(function (p) {
@@ -2451,6 +2727,22 @@
     }).join('') + '</ul>';
     return html + '<p class="info info__muted">' + esc(t('admStatsSheet')) + '</p>' +
       '<button type="button" class="btn btn--block" data-action="adm-sales">' + esc(t('admRefresh')) + (adm.salesLoading ? '…' : '') + '</button>';
+  }
+
+  /** Источники (QR) и напоминания о корзине: только если сервер прислал поля (старый бэкенд и менеджер без права stats их не получают). */
+  function sourcesHtml(s) {
+    var html = '';
+    if (Array.isArray(s.sources) && s.sources.length) {
+      html += '<p class="label">' + esc(t('admSources')) + '</p><table class="srct" id="srcTable"><thead><tr><th scope="col">' + esc(t('admSrcTag')) + '</th><th scope="col">' + esc(t('admSrcOpen')) + '</th><th scope="col">' + esc(t('admSrcOrd')) + '</th></tr></thead><tbody>' +
+        s.sources.map(function (r) {
+          return '<tr><td>' + esc(r.src) + '</td><td>' + (Number(r.open7) || 0) + ' / ' + (Number(r.open14) || 0) + '</td><td>' + (Number(r.ord7) || 0) + ' / ' + (Number(r.ord14) || 0) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    if (s.cartRemind && typeof s.cartRemind === 'object') {
+      html += '<ul class="rows" id="cartRemind"><li><span class="rows__name">' + esc(t('admCartSent')) + '</span><span class="rows__sub"></span><b>' + (Number(s.cartRemind.sent30) || 0) + '</b></li>' +
+        '<li><span class="rows__name">' + esc(t('admCartMuted')) + '</span><span class="rows__sub"></span><b>' + (Number(s.cartRemind.muted30) || 0) + '</b></li></ul>';
+    }
+    return html;
   }
 
   /** Средний чек, повторные покупки и воронка: что люди делают в магазине до заказа. */
@@ -2486,18 +2778,13 @@
     var box = document.getElementById('admList');
     if (box) box.innerHTML = adminListHtml();
     // Числа на чипах-фильтрах товаров («Без фото · 12») обновляются вместе со списком; прокрутка ряда категорий сохраняется.
-    var chips = document.getElementById('admPChips');
-    if (chips && adm.tab === 'products') {
-      var row = chips.querySelector('.chips'), left = row ? row.scrollLeft : 0;
-      chips.innerHTML = productChipsHtml();
-      row = chips.querySelector('.chips');
-      if (row) row.scrollLeft = left;
-    }
+    refreshChips();
+    renderToday();
   }
 
   function adminListHtml() {
     if (adm.loading) return '<p class="state__text adm__msg">' + esc(t('admLoading')) + '</p>';
-    if (adm.error) return '<p class="form__err">' + esc(t(adm.error)) + '</p>';
+    if (adm.error) return adminErrHtml();
     if (adm.tab === 'orders') return ordersHtml();
     if (adm.tab === 'products') return productsHtml();
     if (adm.tab === 'cats') return catsHtml();
@@ -2508,37 +2795,79 @@
     return settingsHtml();
   }
 
+  /** Следующий шаг заказа: код статуса для большой кнопки. Из других статусов (выполнено, нет в наличии) большой кнопки нет. */
+  var NEXT_STEP = { 'новий': 'c', 'підтверджено': 's', 'відправлено': 'd' };
+  function orderById(num) {
+    var found = null;
+    (adm.orders || []).forEach(function (o) { if (o.num === num) found = o; });
+    return found;
+  }
+  function stBtnHtml(b, o, big) {
+    var pend = adm.stPending && adm.stPending.num === o.num; // статус уже показан новым, сервер ещё отвечает
+    return '<button type="button" class="btn' + (big ? ' btn--primary btn--big' : '') + (!big && o.status === b[2] ? ' btn--soft' : '') +
+      (pend && adm.stPending.code === b[0] ? ' is-busy" aria-busy="true' : '') +
+      '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' + (o.status === b[2] || pend ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
+  }
+  /** Одна большая кнопка следующего шага; остальные статусы — под кнопкой «Ще». */
+  function orderActsHtml(o) {
+    var next = NEXT_STEP[o.status] || '', open = adm.more === o.num;
+    var html = '<div class="ord__acts">';
+    STATUS_BTNS.forEach(function (b) { if (b[0] === next) html += stBtnHtml(b, o, true); });
+    html += '<button type="button" class="btn' + (next ? '' : ' btn--wide') + '" data-more="' + esc(o.num) + '" aria-expanded="' + open + '">' + esc(t(next ? 'ordMore' : 'stChange')) + '</button>';
+    if (open) {
+      html += '<div class="ord__more">' + STATUS_BTNS.filter(function (b) { return b[0] !== next; }).map(function (b) { return stBtnHtml(b, o, false); }).join('') + '</div>';
+    }
+    return html + '</div>';
+  }
+  function orderAddress(o) {
+    return [o.city, o.branch].filter(function (x) { return x && String(x).trim(); }).join(', ');
+  }
+  function telHref(phone) { return 'tel:' + String(phone || '').replace(/[^\d+]/g, ''); }
+  function chatUrl(o) { return o.username ? 'https://t.me/' + o.username.replace(/^@/, '') : 'https://t.me/' + o.phone; }
+
   function ordersHtml() {
     var q = adm.q.trim().toLowerCase().replace(/\s+/g, '');
     var list = (adm.orders || []).filter(function (o) {
       if (adm.filter && o.status !== adm.filter) return false;
       return !q || (o.num + ' ' + o.phone + ' ' + o.name).toLowerCase().replace(/\s+/g, '').indexOf(q) >= 0;
     });
-    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    if (!list.length) return emptyHtml(!(adm.orders || []).length ? 'admEmptyOrders' : 'admNoMatch', !(adm.orders || []).length ? 'admEmptyOrdersHint' : 'admNoMatchHint', !!(adm.filter || q));
+    // Новые — сверху (порядок внутри групп прежний: свежие раньше).
+    list = list.filter(function (o) { return o.status === 'новий'; }).concat(list.filter(function (o) { return o.status !== 'новий'; }));
     return '<ul class="lines">' + list.map(function (o) {
       var open = adm.open === o.num;
-      var html = '<li class="ord"><button type="button" class="ord__head" data-ord="' + esc(o.num) + '" aria-expanded="' + open + '">' +
+      var html = '<li class="ord' + (o.status === 'новий' ? ' ord--new' : '') + '"><button type="button" class="ord__head" data-ord="' + esc(o.num) + '" aria-expanded="' + open + '">' +
         '<span class="ord__num">' + esc(o.num) + '</span><span class="badge ' + (STATUS_BADGE[o.status] || '') + '">' + esc(o.status) + '</span>' +
         (o.test ? '<span class="badge">' + esc(t('admTest')) + '</span>' : '') + (o.wh ? '<span class="badge badge--opt">' + esc(t('whOrder')) + '</span>' : '') +
         '<span class="ord__sum">' + money(o.total) + '</span>' +
         '<span class="ord__meta">' + esc(o.date) + ' · ' + esc(o.name) + '</span></button>';
       if (open) {
+        var addr = orderAddress(o);
         html += '<div class="ord__body"><ul class="ord__items">' + String(o.items).split('; ').map(function (s) {
           return s ? '<li>' + esc(s) + '</li>' : '';
         }).join('') + '</ul>' +
-          '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br><a href="tel:' + esc(o.phone) + '">' + esc(o.phone) + '</a></p>' +
+          '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br>' + esc(o.phone) + '</p>' +
           '<p>' + esc(o.delivery) + (o.city ? ': ' + esc(o.city) + ', ' + esc(o.branch) : '') + '<br>' + esc(o.pay) + '</p>' +
           (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) + payAdminHtml(o) +
-          (can('st') ? '<div class="ord__acts">' + STATUS_BTNS.map(function (b) {
-            var pend = adm.stPending && adm.stPending.num === o.num; // статус уже показан новым, сервер ещё отвечает
-            return '<button type="button" class="btn' + (o.status === b[2] ? ' btn--soft' : '') + (pend && adm.stPending.code === b[0] ? ' is-busy" aria-busy="true' : '') +
-              '" data-st="' + b[0] + '" data-num="' + esc(o.num) + '"' + (o.status === b[2] || pend ? ' disabled' : '') + '>' + esc(t(b[1])) + '</button>';
-          }).join('') + '</div>' : '') +
-          '<button type="button" class="btn btn--block" data-chat="' + esc(o.username ? 'https://t.me/' + o.username.replace(/^@/, '') : 'https://t.me/' + o.phone) + '">' +
-          esc(t('admWrite')) + '</button></div>';
+          (can('st') ? orderActsHtml(o) : '') +
+          '<div class="ord__tools">' + (o.phone ? '<a class="btn" href="' + esc(telHref(o.phone)) + '" data-call="' + esc(o.num) + '">' + esc(t('ordCall')) + '</a>' : '') +
+          (can('st') && adm.canMsg ? '<button type="button" class="btn" data-write="' + esc(o.num) + '">' + esc(t('ordWrite')) + '</button>'
+            : '<button type="button" class="btn" data-chat="' + esc(chatUrl(o)) + '">' + esc(t('admWrite')) + '</button>') +
+          (addr ? '<button type="button" class="btn btn--wide" data-copyaddr="' + esc(o.num) + '">' + esc(t('ordCopy')) + '</button>' : '') + '</div></div>';
       }
       return html + '</li>';
     }).join('') + '</ul>';
+  }
+
+  /** Пустой или ошибочный список: что произошло и что нажать. reset — кнопка «Скинути фільтри». */
+  function emptyHtml(titleKey, hintKey, reset) {
+    return '<div class="adm__empty"><p class="adm__empty-t">' + esc(t(titleKey)) + '</p><p class="adm__empty-h">' + esc(t(hintKey)) + '</p>' +
+      (reset ? '<button type="button" class="btn btn--block" data-action="adm-reset">' + esc(t('admReset')) + '</button>' : '') + '</div>';
+  }
+  function adminErrHtml() {
+    var perm = adm.error === 'admNoPerm' || adm.error === 'admForbidden';
+    return '<div class="adm__empty" role="alert"><p class="adm__empty-t">' + esc(t(adm.error)) + '</p>' +
+      (perm ? '' : '<button type="button" class="btn btn--primary btn--block" data-action="adm-refresh">' + esc(t('admRefresh')) + '</button>') + '</div>';
   }
 
   function adminPrice(p) {
@@ -2553,11 +2882,13 @@
       if (adm.pf.out && p.stock) return false;
       if (adm.pf.hidden && !p.hidden) return false;
       if (adm.pf.nophoto && p.img) return false;
+      if (adm.pf.noprice && p.price > 0) return false;
+      if (adm.pvis && p.hidden) return false; // открыто с карточки «Сьогодні»: сервер считает только видимые товары
       return !q || (p.ua + ' ' + p.ru + ' ' + p.id).toLowerCase().indexOf(q) >= 0;
     });
   }
 
-  /** Чипы над списком товаров: категории и фильтры «немає в наявності», «приховані», «без фото» (с числом товаров). */
+  /** Чипы над списком товаров: категории и фильтры «приховані», «чекають ціну», «немає», «без фото» (с числом товаров). */
   function productChipsHtml() {
     var all = adm.products || [];
     if (!all.length) return '';
@@ -2565,8 +2896,8 @@
     (adm.cats || []).forEach(function (c) { if (!seenCat[c.ua]) { seenCat[c.ua] = 1; cats.push(c.ua); } });
     all.forEach(function (p) { if (p.cat && !seenCat[p.cat]) { seenCat[p.cat] = 1; cats.push(p.cat); } }); // категория, которой нет в листе «Категорії»
     function n(test) { return all.filter(test).length; }
-    var flags = [['out', 'admFltOut', n(function (p) { return !p.stock; })], ['hidden', 'admFltHidden', n(function (p) { return p.hidden; })],
-      ['nophoto', 'admFltNoPhoto', n(function (p) { return !p.img; })]];
+    var flags = [['hidden', 'admFltHidden', n(function (p) { return p.hidden; })], ['noprice', 'admFltPrice', n(function (p) { return !(p.price > 0); })],
+      ['out', 'admFltOut', n(function (p) { return !p.stock; })], ['nophoto', 'admFltNoPhoto', n(function (p) { return !p.img; })]];
     return '<div class="chips chips--flush" role="group" aria-label="' + esc(t('admCat')) + '">' +
       '<button type="button" class="chip" data-pcat="" aria-pressed="' + (adm.pcat === '') + '">' + esc(t('admAll')) + '</button>' +
       cats.map(function (c) { return '<button type="button" class="chip" data-pcat="' + esc(c) + '" aria-pressed="' + (adm.pcat === c) + '">' + esc(c) + '</button>'; }).join('') + '</div>' +
@@ -2575,17 +2906,32 @@
       }).join('') + '</div>';
   }
 
+  var SAVED_MS = 2200; // сколько на карточке товара видна отметка «Збережено»
+  function priceText(v) { return v > 0 ? String(v).replace('.', ',') : ''; }
+  /** Одна строка товара: название, переключатель «є / немає», быстрая цена. */
+  function prodRowHtml(p) {
+    var mark = adm.saved[p.id] && Date.now() - adm.saved[p.id] < SAVED_MS;
+    var draft = adm.qdraft[p.id], val = draft !== undefined ? draft : priceText(p.price);
+    var busyQ = adm.pending['q:' + p.id];
+    var dirty = draft !== undefined && draft !== priceText(p.price);
+    var cur = p.t === 'w' ? '₴/' + weight(1000) : '₴';
+    return '<li class="prod prod--q' + (mark ? ' is-saved' : '') + '" data-pid="' + esc(p.id) + '"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
+      '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) +
+      (p.hidden ? ' · ' + esc(t('admHiddenTag')) : '') + (p.img ? '' : ' · ' + esc(t('admNoPhoto'))) + '</span></button>' +
+      '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"' + (can('stock') && !adm.pending[p.id] ? '' : ' disabled') + (adm.pending[p.id] ? ' aria-busy="true"' : '') + '><span></span></button>' +
+      (can('price') ? '<div class="prod__quick"><input class="input" type="text" inputmode="decimal" maxlength="9" autocomplete="off" data-qprice="' + esc(p.id) + '" aria-label="' +
+        esc(t(p.t === 'w' ? 'admPriceKg' : 'admPriceUnit')) + '" value="' + esc(val) + '"' + (busyQ ? ' disabled' : '') + '><span class="prod__cur">' + esc(cur) + '</span>' +
+        '<button type="button" class="btn' + (busyQ ? ' is-busy" aria-busy="true' : '') + '" data-qsave="' + esc(p.id) + '"' + (dirty && !busyQ ? '' : ' disabled') + '>' + esc(t('qpSave')) + '</button></div>' +
+        '<p class="form__err prod__err" role="alert" hidden></p>' : '') +
+      '<span class="prod__ok" role="status"' + (mark ? '' : ' hidden') + '>' + icon('check') + esc(t('admSaved')) + '</span></li>';
+  }
+
   function productsHtml() {
     var list = adminProductList();
-    if (!list.length) return '<p class="state__text adm__msg">' + esc(t('admEmpty')) + '</p>';
+    if (!list.length) return emptyHtml(!(adm.products || []).length ? 'admEmptyProducts' : 'admNoMatch', !(adm.products || []).length ? 'admEmptyProductsHint' : 'admNoMatchHint', !!(adm.products || []).length);
     adm.pp = clampPage(adm.pp, list.length, PAGE_SIZE);
     var from = (adm.pp - 1) * PAGE_SIZE;
-    var html = '<ul class="lines">' + list.slice(from, from + PAGE_SIZE).map(function (p) {
-      return '<li class="prod"><button type="button" class="prod__main" data-edit="' + esc(p.id) + '">' +
-        '<span class="prod__name">' + esc(p.ua) + '</span><span class="prod__sub">' + esc(p.id) + ' · ' + adminPrice(p) +
-        (p.hidden ? ' · ' + esc(t('admHiddenTag')) : '') + (p.img ? '' : ' · ' + esc(t('admNoPhoto'))) + '</span></button>' +
-        '<button type="button" class="sw" role="switch" aria-checked="' + (p.stock ? 'true' : 'false') + '" data-stock="' + esc(p.id) + '" aria-label="' + esc(t('admStock')) + '"' + (can('stock') && !adm.pending[p.id] ? '' : ' disabled') + (adm.pending[p.id] ? ' aria-busy="true"' : '') + '><span></span></button></li>';
-    }).join('') + '</ul>';
+    var html = (adm.pvis ? '<p class="field__hint">' + esc(t('admVisOnly')) + '</p>' : '') + '<ul class="lines">' + list.slice(from, from + PAGE_SIZE).map(prodRowHtml).join('') + '</ul>';
     return html + pagerHtml(list.length, adm.pp, PAGE_SIZE);
   }
 
@@ -2614,7 +2960,7 @@
   }
   function fVal(id) { var x = document.getElementById('a-' + id); return x ? x.value.trim() : ''; }
   function fNum(id) { return Number(fVal(id).replace(/\s/g, '').replace(',', '.') || 0); }
-  function fOn(id) { var x = document.getElementById('a-' + id); return !!(x && x.checked); }
+  function fOn(id) { var x = document.getElementById('a-' + id); return !!(x && (x.getAttribute('role') === 'switch' ? x.getAttribute('aria-checked') === 'true' : x.checked)); }
   function fErr(key) {
     var err = document.getElementById('admErr');
     if (err) { err.textContent = t(key); err.hidden = false; err.scrollIntoView({ block: 'center' }); }
@@ -2634,9 +2980,10 @@
     if (p.cat && !cats.some(function (c) { return c[0] === p.cat; })) cats.unshift([p.cat, p.cat]);
     var photo = isNew
       ? '<p class="info info__muted">' + esc(t('admPhotoLater')) + '</p>'
-      : '<div class="photo"><div class="photo__box">' + (p.img ? '<img src="' + esc(p.img) + '" alt="" referrerpolicy="no-referrer">' : MARK) + '</div>' +
-        '<div class="photo__acts">' + (can('photo') ? '<label class="btn btn--block">' + esc(t(p.img ? 'admPhotoChange' : 'admPhotoPick')) +
-        '<input type="file" id="a-photo" accept="image/*" hidden></label>' +
+      : '<div class="photo"><div class="photo__box">' + (p.img ? '<img src="' + esc(verUrl(p.img)) + '" alt="" referrerpolicy="no-referrer">' : MARK) + '</div>' +
+        '<div class="photo__acts">' + (can('photo') ? '<label class="btn btn--block">' + esc(t('admPhotoCam')) +
+        '<input type="file" id="a-photo-cam" accept="image/*" capture="environment" hidden></label>' +
+        '<label class="btn btn--block">' + esc(t('admPhotoGal')) + '<input type="file" id="a-photo" accept="image/*" hidden></label>' +
         (p.img ? '<button type="button" class="btn btn--block" data-action="adm-photo-del">' + esc(t('admPhotoDel')) + '</button>' : '') : '') +
         '<p class="field__hint" id="photoMsg"></p></div></div>';
     var lockedNote = Object.keys(PATCH_PERM).some(function (k) { return !can(PATCH_PERM[k]); }) ? '<p class="info info__muted">' + esc(t('admLocked')) + '</p>' : '';
@@ -2769,7 +3116,8 @@
     if (!p || !file || adm.busy) return;
     adm.busy = true;
     var pick = document.querySelector('.photo__acts label.btn');
-    if (pick) pick.classList.add('is-busy');
+    var picks = Array.prototype.slice.call(document.querySelectorAll('.photo__acts label.btn'));
+    picks.forEach(function (x) { x.classList.add('is-busy'); });
     if (msg) msg.textContent = t('admPhotoUp');
     compressPhoto(file).then(function (data) {
       return api('admin.photo', { id: p.id, data: data });
@@ -2782,7 +3130,7 @@
       if (state.view === 'admin' && adm.edit === p.id) renderPage();
     }).catch(function () {
       adm.busy = false;
-      if (pick) pick.classList.remove('is-busy');
+      picks.forEach(function (x) { x.classList.remove('is-busy'); });
       if (msg) msg.textContent = t('admPhotoFail');
     });
   }
@@ -2963,30 +3311,109 @@
   }
 
   /* ---- Настройки магазина ---- */
+  /** Группы настроек. Ключ, которого нет ни в одной группе (новый на сервере), попадает в «Інше» — без пояснения. */
+  var SET_GROUPS = [
+    ['shop', 'setGShop', /^(notice_|contact$|feature_|father_|home_rails_max$|low_stock$|fresh_days$|src_list$)/],
+    ['gifts', 'setGGifts', /^(gift_|loyal_|referral_)/],
+    ['pay', 'setGPay', /^(pay_|min_order$|address_|hours_)/],
+    ['texts', 'setGTexts', /^(bot_|greeting|welcome_|biz_soon_|confirm_|story_|reply_)/],
+    ['remind', 'setGRemind', /^(remind_days$|remind_text_|review_days$|cart_remind_hours$|cart_mute_days$|mail_every_days$)/],
+    ['season', 'setGSeason', /^(theme|ny_)/]
+  ];
+  var SET_SWITCH = /^(pay_|ny_snow$|gift_note$|referral_on$)/; // включено/выключено — переключателем
+  function settingGroup(k) {
+    for (var i = 0; i < SET_GROUPS.length; i++) if (SET_GROUPS[i][2].test(k)) return SET_GROUPS[i][0];
+    return 'other';
+  }
+  function setBase(k) { return k.replace(/^reply_\d_(ua|ru)$/, 'reply').replace(/_(ua|ru)$/, ''); }
+  /** Что видит покупатель под полем: какой макет и на каком языке. null — для этой настройки превью нет. */
+  function previewKind(k) {
+    var m = k.match(/_(ua|ru)$/), lang = m ? m[1] : state.lang;
+    var kind = /^notice(_text)?_(ua|ru)$/.test(k) ? 'notice' : /^gift_text_/.test(k) ? 'gift' : /^loyal_text_/.test(k) ? 'loyal' :
+      /^(feature|father)_title_/.test(k) ? 'title' : /^(feature|father)_text_/.test(k) ? 'text' : /^reply_\d_/.test(k) ? 'reply' : /^ny_order_until_/.test(k) ? 'plain' : '';
+    return kind ? { kind: kind, lang: lang } : null;
+  }
+  function tIn(lang, key) { return (I18N[lang] && I18N[lang][key]) || I18N.ua[key] || key; }
+  function previewHtml(k, value) {
+    var pk = previewKind(k);
+    if (!pk) return '';
+    var v = String(value || '').trim();
+    if (!v) return '<span class="spv__empty">' + esc(t('spvEmpty')) + '</span>';
+    if (pk.kind === 'notice') return '<div class="spv__notice">' + esc(v) + '</div>';
+    if (pk.kind === 'gift') return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'giftOk').replace('{g}', function () { return v; })) + '</span></div>';
+    if (pk.kind === 'loyal') {
+      var every = document.getElementById('a-loyal_every'), n = every ? Math.round(Number(every.value)) : 0;
+      return '<div class="note note--gift">' + icon('gift') + '<span>' + esc(tIn(pk.lang, 'loyalText').replace('{k}', n >= 2 ? n : 'N').replace('{g}', function () { return v; })) + '</span></div>';
+    }
+    if (pk.kind === 'title') return '<div class="feature__title">' + esc(v) + '</div>';
+    if (pk.kind === 'text') return '<div class="feature__text">' + esc(v) + '</div>';
+    if (pk.kind === 'reply') return '<div class="spv__bubble">' + esc(v) + '</div>';
+    return '<div class="spv__plain">' + esc(v) + '</div>';
+  }
+  function refreshPreview(k) {
+    var box = document.getElementById('pv-' + k), input = document.getElementById('a-' + k);
+    if (box && input) box.innerHTML = previewHtml(k, input.value);
+  }
+  function setHintsHtml(k) {
+    var base = setBase(k), h = I18N[state.lang]['sh_' + base] || I18N.ua['sh_' + base] || '';
+    var ex = I18N.ua['sx_' + k] || I18N.ua['sx_' + base] || ''; // пример — это образец текста, он на языке самого поля
+    var html = '';
+    if (h) html += '<p class="field__hint">' + esc(h) + '</p>';
+    if (h && ex) html += '<p class="field__hint field__ex">' + esc(t('setExample')) + ' ' + esc(ex) + '</p>';
+    return html;
+  }
+  function setPreviewBox(f) {
+    return previewKind(f.k) ? '<div class="spv"><p class="spv__label">' + esc(t('spvTitle')) + '</p><div class="spv__box" id="pv-' + esc(f.k) + '" aria-live="polite">' + previewHtml(f.k, f.v) + '</div></div>' : '';
+  }
+  function setFieldHtml(f) {
+    if (SET_SWITCH.test(f.k)) {
+      var on = f.k.indexOf('pay_') === 0 ? /^так$/i.test(f.v) : /^(1|так|да|yes|true)$/i.test(String(f.v).trim());
+      return '<div class="field sfield"><div class="sfield__sw"><span class="label" id="l-' + esc(f.k) + '">' + esc(f.label) + '</span>' +
+        '<button type="button" class="sw" role="switch" id="a-' + esc(f.k) + '" aria-labelledby="l-' + esc(f.k) + '" aria-checked="' + on + '" data-setsw="' + esc(f.k) + '"><span></span></button></div>' +
+        setHintsHtml(f.k) + '</div>';
+    }
+    var inner;
+    if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days' || f.k === 'cart_mute_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+    else if (/^(gift|loyal)_text_/.test(f.k)) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
+    else if (f.k === 'referral_min_order' || f.k === 'mail_every_days') inner = fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
+    else if (f.k.indexOf('referral_gift') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
+    else if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
+    else if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
+    else inner = fArea(f.k, f.label, f.v, /^reply_/.test(f.k) ? 300 : 500);
+    // подсказка и превью — внутрь того же блока поля
+    return inner.replace(/<\/div>$/, setHintsHtml(f.k) + setPreviewBox(f) + '</div>').replace('<div class="field">', '<div class="field sfield">')
+      .replace(' id="a-' + f.k + '"', ' id="a-' + f.k + '"' + (previewKind(f.k) ? ' data-prev="' + f.k + '"' : ''));
+  }
   function settingsHtml() {
     if (!adm.settings) return '';
-    return '<form class="form" id="admForm" novalidate>' + FORM_ERR + adm.settings.map(function (f) {
-      if (f.k.indexOf('pay_') === 0) return fCheck(f.k, f.label, /^так$/i.test(f.v));
-      if (f.k === 'min_order' || f.k === 'gift_from' || f.k === 'loyal_every' || f.k === 'remind_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
-      if (/^(gift|loyal)_text_/.test(f.k)) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
-      if (f.k === 'referral_on' || f.k === 'referral_min_order' || f.k === 'mail_every_days') return fRow(f.k, f.label, f.v, 'type="text" inputmode="numeric" maxlength="6"');
-      if (f.k.indexOf('referral_gift') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="120"');
-      if (f.k === 'father_ids' || f.k.indexOf('father_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="' + (f.k === 'father_ids' ? 240 : 60) + '" autocapitalize="' + (f.k === 'father_ids' ? 'characters' : 'sentences') + '"');
-      if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) return fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
-      return fArea(f.k, f.label, f.v, 500);
+    var groups = {};
+    adm.settings.forEach(function (f) { var g = settingGroup(f.k); (groups[g] = groups[g] || []).push(f); });
+    var order = SET_GROUPS.map(function (g) { return [g[0], g[1]]; }).concat([['other', 'setGOther']]);
+    return '<form class="form" id="admForm" novalidate>' + FORM_ERR + order.filter(function (g) { return groups[g[0]]; }).map(function (g) {
+      var open = adm.setOpen[g[0]] === undefined ? g[0] === 'shop' : !!adm.setOpen[g[0]]; // по умолчанию раскрыта только первая группа («Магазин»)
+      return '<details class="sgroup" data-sg="' + g[0] + '"' + (open ? ' open' : '') + '><summary class="sgroup__sum"><span>' + esc(t(g[1])) + '</span><span class="sgroup__n">' + groups[g[0]].length + '</span></summary>' +
+        '<div class="sgroup__body">' + groups[g[0]].map(setFieldHtml).join('') + '</div></details>';
     }).join('') + saveBtn() + '</form>';
   }
 
+  /** Раскрывает группу настроек (например, с ошибкой), чтобы её было видно. */
+  function openSettingGroup(name) {
+    adm.setOpen[name] = true;
+    var d = document.querySelector('details[data-sg="' + name + '"]');
+    if (d) d.open = true;
+  }
   function saveSettingsForm() {
     if (adm.busy || !adm.settings) return;
     var values = {};
-    adm.settings.forEach(function (f) { values[f.k] = f.k.indexOf('pay_') === 0 ? fOn(f.k) : fVal(f.k); });
-    if (!values.pay_cash && !values.pay_card) { fErr('admErrPay'); return; }
+    adm.settings.forEach(function (f) {
+      values[f.k] = f.k.indexOf('pay_') === 0 ? fOn(f.k) : SET_SWITCH.test(f.k) ? (fOn(f.k) ? '1' : '0') : fVal(f.k);
+    });
+    if (!values.pay_cash && !values.pay_card) { openSettingGroup('pay'); fErr('admErrPay'); return; }
     var btn = saveBtnEl();
     adm.busy = true; btnBusy(btn);
     api('admin.settingsSave', { values: values }).then(function (res) {
       adm.busy = false;
-      if (!res || !res.ok) { btnFree(btn); fErr(res && res.error === 'no_payment' ? 'admErrPay' : 'admFail'); return; }
+      if (!res || !res.ok) { btnFree(btn); if (res && res.error === 'no_payment') openSettingGroup('pay'); fErr(res && res.error === 'no_payment' ? 'admErrPay' : 'admFail'); return; }
       adm.settings = res.fields;
       catalogSoon();
       btnSaved(btn); // форма остаётся на экране: «Збережено» видно на самой кнопке
@@ -3006,6 +3433,7 @@
     }
     var pc = e.target.closest('[data-pcat], [data-pflt]');
     if (pc) { // категория или фильтр товаров: список с первой страницы
+      adm.pvis = false;
       if (pc.hasAttribute('data-pcat')) adm.pcat = pc.getAttribute('data-pcat');
       else adm.pf[pc.getAttribute('data-pflt')] = !adm.pf[pc.getAttribute('data-pflt')];
       adm.pp = 1;
@@ -3024,30 +3452,20 @@
     var ord = e.target.closest('[data-ord]');
     if (ord) { var num = ord.getAttribute('data-ord'); adm.open = adm.open === num ? '' : num; renderAdminList(); return true; }
     var st = e.target.closest('[data-st]');
-    if (st && !st.disabled) {
-      var order = null;
-      adm.orders.forEach(function (o) { if (o.num === st.getAttribute('data-num')) order = o; });
-      if (!order || adm.busy) return true;
-      // Новый статус показываем сразу, не дожидаясь сервера; если сервер откажет — возвращаем прежний и говорим об этом.
-      var stCode = st.getAttribute('data-st'), stWas = order.status, stNext = stWas;
-      STATUS_BTNS.forEach(function (b) { if (b[0] === stCode) stNext = b[2]; });
-      adm.busy = true; adm.stPending = { num: order.num, code: stCode };
-      order.status = stNext;
-      renderAdminList();
-      var stDone = function (text, back) {
-        adm.busy = false; adm.stPending = null;
-        if (back) { order.status = stWas; haptic('error'); }
-        toast(text);
-        if (state.view === 'admin') renderAdminList();
-      };
-      api('admin.status', { num: order.num, code: stCode }).then(function (res) {
-        if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
-        if (!res || !res.ok) throw new Error('fail');
-        order.status = res.status;
-        stDone(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''), false);
-      }).catch(function () { stDone(t('admStBack'), true); });
-      return true;
-    }
+    if (st) { if (!st.disabled) startStatus(st); return true; }
+    var more = e.target.closest('[data-more]');
+    if (more) { var mn = more.getAttribute('data-more'); adm.more = adm.more === mn ? '' : mn; renderAdminList(); return true; }
+    var wr = e.target.closest('[data-write]');
+    if (wr) { var wo = orderById(wr.getAttribute('data-write')); if (wo) openMessageSheet(wo); return true; }
+    var ca = e.target.closest('[data-copyaddr]');
+    if (ca) { copyAddress(ca); return true; }
+    if (e.target.closest('[data-call]')) return false; // обычная ссылка tel:
+    var td = e.target.closest('[data-today]');
+    if (td) { goToday(td.getAttribute('data-today')); return true; }
+    var qs = e.target.closest('[data-qsave]');
+    if (qs) { if (!qs.disabled) saveQuickPrice(qs); return true; }
+    var ssw = e.target.closest('[data-setsw]');
+    if (ssw) { ssw.setAttribute('aria-checked', String(ssw.getAttribute('aria-checked') !== 'true')); return true; }
     var chat = e.target.closest('[data-chat]');
     if (chat) {
       var url = chat.getAttribute('data-chat');
@@ -3068,6 +3486,9 @@
     var act = e.target.closest('[data-action]');
     var name = act ? act.getAttribute('data-action') : '';
     if (name === 'adm-refresh') { if (!adm.loading) { btnBusy(act); loadAdmin(true); } return true; }
+    if (name === 'adm-reset') {
+      adm.filter = ''; adm.q = ''; resetProductFilters(); renderPage(); return true;
+    }
     if (name === 'adm-sales') { if (!adm.salesLoading) loadSales(); return true; }
     if (name === 'adm-save') {
       if (adm.edit) saveProductForm(); else if (adm.catEdit) saveCategoryForm(); else if (adm.admEdit) saveAdminForm(); else saveSettingsForm();
@@ -3116,7 +3537,7 @@
       if (goBtn) { go(goBtn.getAttribute('data-go')); return; }
       var lg = e.target.closest('button[data-lang]');
       if (lg) { setLang(lg.getAttribute('data-lang')); return; }
-      if ((state.view === 'fav' || state.view === 'cart' || state.view === 'recipe' || state.view === 'quiz') && productClick(e)) return;
+      if ((state.view === 'fav' || state.view === 'cart' || state.view === 'recipe' || state.view === 'quiz' || state.view === 'rail') && productClick(e)) return;
       var rep = e.target.closest('[data-repeat]');
       if (rep) { repeatOrder(rep.getAttribute('data-repeat')); return; }
       var myr = e.target.closest('[data-action="my-refresh"]');
@@ -3160,6 +3581,11 @@
         } catch (err) { clear(window.confirm(t('clearAsk'))); }
         return;
       }
+      if (act.getAttribute('data-action') === 'send-new') {
+        askConfirm({ title: t('sendAsNew'), text: t('sendAsNewAsk'), ok: t('sendAsNewOk'), run: function (done) { submitOrder(); done(); } });
+        return;
+      }
+      if (act.getAttribute('data-action') === 'retry-order') { submitOrder(); return; }
       if (act.getAttribute('data-action') === 'home-screen') {
         try { tg.addToHomeScreen(); } catch (err) { /* старый клиент Telegram */ }
         return;
@@ -3187,12 +3613,26 @@
       var input = e.target;
       if (input.id === 'admQ') { adm.q = input.value; renderAdminList(); return; }
       if (input.id === 'admPQ') { adm.pq = input.value; adm.pp = 1; renderAdminList(); return; }
+      if (input.hasAttribute && input.hasAttribute('data-qprice')) {
+        var qid = input.getAttribute('data-qprice'), qp = adminProduct(qid), qli = input.closest('.prod');
+        adm.qdraft[qid] = input.value;
+        input.removeAttribute('aria-invalid');
+        if (qli) {
+          var qe = qli.querySelector('.prod__err'), qb = qli.querySelector('[data-qsave]');
+          if (qe) qe.hidden = true;
+          if (qb) qb.disabled = !qp || input.value === priceText(qp.price) || !!adm.pending['q:' + qid];
+        }
+        return;
+      }
+      if (input.hasAttribute && input.hasAttribute('data-prev')) refreshPreview(input.getAttribute('data-prev'));
+      if (input.id === 'a-loyal_every') { refreshPreview('loyal_text_ua'); refreshPreview('loyal_text_ru'); }
       if (input.id === 'admAQ') { adm.aq = input.value; adm.ap = 1; renderArchiveList(); return; }
       if (!input.name || state.view !== 'checkout') return;
       if (input.name === 'phone') input.value = formatPhone(input.value);
       if (input.getAttribute('aria-invalid')) setError(input.name, '');
       if (!el.page.querySelector('[aria-invalid]')) document.getElementById('formErr').hidden = true;
       readForm();
+      if (input.name === 'giftNote') updateGiftCount();
       syncCheckout();
     });
     el.page.addEventListener('focusin', function (e) {
@@ -3200,7 +3640,7 @@
     });
     el.page.addEventListener('change', function (e) {
       if (e.target.id === 'a-role' && adm.admEdit) { var pb = document.getElementById('admPerms'); if (pb) pb.hidden = e.target.value === 'admin'; return; }
-      if (e.target.id === 'a-photo' && e.target.files && e.target.files[0]) uploadPhoto(e.target.files[0]);
+      if ((e.target.id === 'a-photo' || e.target.id === 'a-photo-cam') && e.target.files && e.target.files[0]) { uploadPhoto(e.target.files[0]); try { e.target.value = ''; } catch (err) { /* поле файла не сбрасывается — не страшно */ } }
       if ((e.target.id === 'a-stock' || e.target.id === 'a-hidden') && adm.edit && adm.edit !== '+') toggleInForm(e.target);
     });
     el.page.addEventListener('submit', function (e) { e.preventDefault(); });
@@ -3329,7 +3769,9 @@
     document.addEventListener('error', function (e) {
       var img = e.target;
       if (img && img.tagName === 'IMG' && img.parentNode &&
-          /(^| )(card|sheet|line|mini|feature)__img( |$)/.test(img.parentNode.className)) {
+          /(^| )(card|sheet|line|mini|feature|rcard)__img( |$)/.test(img.parentNode.className)) {
+        var full = img.getAttribute('data-full');
+        if (full) { img.removeAttribute('data-full'); img.src = full; return; } // маленькой копии нет — один раз пробуем большую
         var holder = document.createElement('span');
         holder.innerHTML = MARK;
         img.parentNode.replaceChild(holder.firstChild, img);
@@ -3562,11 +4004,81 @@
     })(0);
   }
 
+  /* ---- Б11. Новый год ---- */
+  /** Настройки праздника: только при теме newyear (после theme_until сервер сам перестаёт её отдавать). null — праздника нет. */
+  function nyOnTheme() { return shopInfo().theme === 'newyear'; }
+  function nyInfo() {
+    var s = shopInfo();
+    return s.theme === 'newyear' && s.ny && typeof s.ny === 'object' ? s.ny : null;
+  }
+  /** Подборка «Подарунки до свят»: товары из ny.ids, которых нет в каталоге или нет в наличии, пропускаются. */
+  function nyGiftList() {
+    var ny = nyInfo(), seenIds = {}, list = [];
+    if (!ny || !Array.isArray(ny.ids) || !state.catalog) return list;
+    ny.ids.forEach(function (id) {
+      var p = product(String(id));
+      if (p && p.a && !seenIds[p.id]) { seenIds[p.id] = 1; list.push(p); }
+    });
+    return list;
+  }
+  /** Строка о сроке на языке интерфейса (нет своего языка — другой). Без таймера. */
+  function nyUntilText() {
+    var ny = nyInfo(), u = ny && ny.until;
+    if (!u || typeof u !== 'object') return '';
+    return String((state.lang === 'ru' ? u.ru || u.ua : u.ua || u.ru) || '').trim();
+  }
+  function nyUntilHtml() {
+    var text = nyUntilText();
+    return text ? '<p class="note note--opt ny-until" role="note">' + esc(text) + '</p>' : '';
+  }
+  function giftNoteOn() { return Number(shopInfo().giftNote) === 1; }
+  function giftNoteHtml() {
+    if (!giftNoteOn()) return '';
+    var v = state.form.giftNote || '';
+    return '<div class="field"><label class="label" for="f-giftNote">' + esc(t('fGiftNote')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
+      '<textarea class="input input--area" id="f-giftNote" name="giftNote" rows="2" maxlength="120" placeholder="' + esc(t('giftNotePh')) + '" aria-describedby="gnCount">' + esc(v) + '</textarea>' +
+      '<p class="field__hint gncount" id="gnCount">' + esc(tf('giftNoteCount', { n: v.length })) + '</p></div>';
+  }
+  function updateGiftCount() {
+    var c = document.getElementById('gnCount'), i = document.getElementById('f-giftNote');
+    if (c && i) c.textContent = tf('giftNoteCount', { n: i.value.length });
+  }
+  /** Полоска из ступенчатых ромбов (орнамент #o1: тот же ромб) в цветах apricot, lapis, pistachio. id шаблона у каждой полоски свой. */
+  function nyStrip(id, cls) {
+    var d = function (x, c) { return '<use href="#d-step" transform="translate(' + x + ' -1) scale(.5)" style="fill:var(--' + c + ')"/>'; };
+    return '<svg class="' + cls + '" aria-hidden="true" focusable="false"><defs><pattern id="' + id + '" width="42" height="9" patternUnits="userSpaceOnUse">' +
+      d(-1, 'apricot') + d(13, 'lapis') + d(27, 'pistachio') + '</pattern></defs><rect width="100%" height="9" fill="url(#' + id + ')"/></svg>';
+  }
+  /** Снег: только при ny.snow = 1, не больше 14 снежинок, чистый CSS, без перехвата нажатий; при prefers-reduced-motion его нет. */
+  function applySnow(want) {
+    var box = document.getElementById('snow');
+    var calm = false;
+    try { calm = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { /* нет matchMedia */ }
+    if (!want || calm) { if (box) box.parentNode.removeChild(box); return; }
+    if (box) return;
+    box = document.createElement('div');
+    box.id = 'snow'; box.className = 'snow'; box.setAttribute('aria-hidden', 'true');
+    var html = '';
+    for (var i = 0; i < 14; i++) {
+      html += '<i style="left:' + ((i * 37 + 11) % 100) + '%;--s:' + (4 + (i * 5) % 4) + 'px;--d:' + (11 + (i * 7) % 9) + 's;--w:-' + ((i * 13) % 17) + 's;--dx:' + (((i * 29) % 41) - 20) + 'px"></i>';
+    }
+    box.innerHTML = html;
+    document.body.appendChild(box);
+  }
+
   /** Сезонная тема из настроек магазина: newyear | navruz | пусто. */
   function applySeason() {
     var theme = shopInfo().theme || '';
     document.body.setAttribute('data-season', theme);
     var box = document.getElementById('season');
+    var ny = !!nyInfo() || theme === 'newyear';
+    var g = document.getElementById('garland');
+    if (g) {
+      g.hidden = !ny;
+      if (ny && !g.firstChild) g.innerHTML = nyStrip('nyg', 'ny-strip');
+      else if (!ny) g.innerHTML = '';
+    }
+    applySnow(!!nyInfo() && Number(nyInfo().snow) === 1);
     if (!box) return;
     box.hidden = !theme;
     box.innerHTML = theme === 'newyear'
@@ -4004,7 +4516,7 @@
     var s = shopInfo();
     if (!s.gift) return '';
     var total = cartTotal(), g = loc(s.gift);
-    if (!(total > 0)) return '<p class="perk">' + icon('gift') + '<span>' + esc(tf('giftFrom', { n: money(s.gift.from), g: g })) + '</span></p>';
+    if (!(total > 0)) return '<p class="plus__text">' + esc(tf('giftFrom', { n: money(s.gift.from), g: g })) + '</p>';
     return total >= s.gift.from
       ? '<p class="note note--gift">' + icon('gift') + '<span>' + esc(tf('giftOk', { g: g })) + '</span></p>'
       : progressHtml(total / s.gift.from, tf('giftLeft', { n: money(s.gift.from - total), g: g }), 'gift');
@@ -4031,11 +4543,13 @@
   function usualHtml() {
     var lines = usualLines();
     if (!lines.length) return '';
-    var sum = 0;
-    lines.forEach(function (l) { sum += unitPrice(product(l[0]), l[1]) * l[2]; });
     return '<section class="rail usual"><div class="rail__head"><h2 class="rail__title">' + esc(t('usualTitle')) + '</h2><span class="rail__sub">' + esc(t('usualSub')) + '</span></div>' +
-      '<div class="rail__list">' + lines.map(function (l) { return miniHtml(product(l[0])); }).join('') + '</div>' +
-      '<button type="button" class="btn btn--soft btn--block" data-w1="usual">' + icon('plus') + esc(t('usualAdd')) + ' · ' + money(sum) + '</button></section>';
+      '<div class="rail__list">' + lines.map(function (l) { return miniHtml(product(l[0])); }).join('') + '</div>' + usualBtnHtml() + '</section>';
+  }
+  function usualBtnHtml() {
+    var sum = 0;
+    usualLines().forEach(function (l) { sum += unitPrice(product(l[0]), l[1]) * l[2]; });
+    return '<button type="button" class="btn btn--soft btn--block" data-w1="usual">' + icon('plus') + esc(t('usualAdd')) + ' · ' + money(sum) + '</button>';
   }
   function addUsual() {
     var added = 0;
@@ -4091,6 +4605,7 @@
   function applyForm(f) {
     if (!f) return;
     ['name', 'phone', 'city', 'branch', 'point'].forEach(function (k) { if (typeof f[k] === 'string' && f[k]) state.form[k] = f[k].slice(0, 120); });
+    ['comment', 'giftNote'].forEach(function (k) { if (typeof f[k] === 'string' && f[k] && !state.form[k]) state.form[k] = f[k].slice(0, k === 'giftNote' ? 120 : 300); });
     if (f.delivery === 'np' || f.delivery === 'pickup') state.form.delivery = f.delivery;
     if (f.pay === 'cash' || f.pay === 'card' || f.pay === 'cod') state.form.pay = f.pay;
     if (f.npType === 'branch' || f.npType === 'locker' || f.npType === 'courier') state.form.npType = f.npType;
@@ -4117,6 +4632,13 @@
       refShare(false);
     } else if (kind === 'ref-copy') {
       refShare(true);
+    } else if (kind === 'plus') {
+      openPlus(b.getAttribute('data-k'));
+    } else if (kind === 'info') {
+      openInfo(b.getAttribute('data-k'));
+    } else if (kind === 'rail') {
+      state.rail = b.getAttribute('data-k');
+      go('rail');
     } else if (kind === 'rec') {
       openRecipe(b.getAttribute('data-id'));
     } else if (kind === 'rec-add') {
@@ -4341,6 +4863,8 @@
       quizBtn: 'Підібрати смаколики', quizTitle: 'Підібрати смаколики', quizQ1: 'Для чого обираєте?', quizQ2: 'Солодке чи солоне?', quizQ3: 'Скільки готові витратити на одну позицію?',
       quizAny: 'Байдуже', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без обмежень', quizStep: 'Питання {a} з {b}', quizResult: 'Ось що вам підійде', quizPopular: 'Точного збігу немає. Ось те, що зараз беруть найчастіше',
       quizAgain: 'Підібрати ще раз', quizBack: 'Назад',
+      plusGift: 'Подарунок від {n}', plusGiftLeft: 'Ще {n} до подарунка', plusGiftOk: 'Подарунок у замовленні', plusGiftTitle: 'Подарунок до замовлення',
+      plusQuizText: 'Дайте відповідь на три короткі запитання — підберемо товари, які вам підійдуть.', plusBiz: 'Оптові ціни', plusMore: 'Ще:', railGone: 'Цієї підбірки зараз немає.', recAll: 'Усі рецепти',
       'tag_до чаю': 'До чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарунок', 'tag_солодке': 'Солодке', 'tag_солоне': 'Солоне', 'tag_для плову': 'Для плову', 'tag_для випічки': 'Для випічки',
       'tag_сніданок': 'На сніданок', 'tag_випічка': 'Для випічки', "tag_до м'яса": 'До м’яса', 'tag_суп': 'У суп', 'tag_узвар': 'На узвар', 'tag_спеції батька': 'Спеції від батька',
       mailBtn_rec: 'Відкрити рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Розсилка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
@@ -4356,6 +4880,8 @@
       quizBtn: 'Подобрать вкусности', quizTitle: 'Подобрать вкусности', quizQ1: 'Для чего выбираете?', quizQ2: 'Сладкое или солёное?', quizQ3: 'Сколько готовы потратить на одну позицию?',
       quizAny: 'Неважно', quizB1: 'до 150 ₴', quizB2: 'до 400 ₴', quizB3: 'без ограничений', quizStep: 'Вопрос {a} из {b}', quizResult: 'Вот что вам подойдёт', quizPopular: 'Точного совпадения нет. Вот то, что сейчас берут чаще всего',
       quizAgain: 'Подобрать ещё раз', quizBack: 'Назад',
+      plusGift: 'Подарок от {n}', plusGiftLeft: 'Ещё {n} до подарка', plusGiftOk: 'Подарок в заказе', plusGiftTitle: 'Подарок к заказу',
+      plusQuizText: 'Ответьте на три коротких вопроса — подберём товары, которые вам подойдут.', plusBiz: 'Оптовые цены', plusMore: 'Ещё:', railGone: 'Этой подборки сейчас нет.', recAll: 'Все рецепты',
       'tag_до чаю': 'К чаю', 'tag_перекус': 'Перекус', 'tag_подарунок': 'Подарок', 'tag_солодке': 'Сладкое', 'tag_солоне': 'Солёное', 'tag_для плову': 'Для плова', 'tag_для випічки': 'Для выпечки',
       'tag_сніданок': 'На завтрак', 'tag_випічка': 'Для выпечки', "tag_до м'яса": 'К мясу', 'tag_суп': 'В суп', 'tag_узвар': 'На компот', 'tag_спеції батька': 'Специи от отца',
       mailBtn_rec: 'Открыть рецепт', mailRecTitle: 'Шаблон «Рецепт»', mailRecBtn: 'Рассылка: {name}', mailRecUa: 'Рецепт: {name} 📖\nЩо знадобиться та як готувати — у магазині.', mailRecRu: 'Рецепт: {name} 📖\nЧто понадобится и как готовить — в магазине.'
@@ -4364,7 +4890,7 @@
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_2C[lang]).forEach(function (k) { I18N[lang][k] = I18N_2C[lang][k]; });
   });
-  var SUB_VIEWS = { points: 1, story: 1, biz: 1, recipe: 1, quiz: 1 };
+  var SUB_VIEWS = { points: 1, story: 1, biz: 1, recipe: 1, quiz: 1, rail: 1, recipes: 1 };
 
   /* ---- В1. «Як їсти» и рецепты ---- */
   /** Рецепт виден, только когда его главный ингредиент (первый в списке товаров) есть на витрине и в наличии. Рецепт без товаров виден всегда. */
@@ -4392,12 +4918,23 @@
       return '<button type="button" class="linkbtn" data-w1="rec" data-id="' + esc(r.id) + '">' + esc(recName(r)) + '</button>';
     }).join('') + '</div>';
   }
+  /** Главная: горизонтальная лента карточек (фото рецепта или иконка + название) и «Усі рецепти» — экран со списком всех. */
   function recipesHomeHtml() {
     var list = recipes();
     if (!list.length) return '';
-    return '<section class="rail recs"><div class="rail__head"><h2 class="rail__title">' + esc(t('recTitle')) + '</h2></div><div class="recs__list">' + list.slice(0, 8).map(function (r) {
-      return '<button type="button" class="recs__item" data-w1="rec" data-id="' + esc(r.id) + '">' + icon('sprout') + '<span>' + esc(recName(r)) + '</span></button>';
+    return '<section class="rail recs"><div class="rail__head"><h2 class="rail__title">' + esc(t('recTitle')) + '</h2>' +
+      '<button type="button" class="linkbtn recs__all" data-w1="go" data-view="recipes">' + esc(t('recAll')) + '</button></div><div class="rail__list">' + list.slice(0, 8).map(function (r) {
+      return '<button type="button" class="rcard" data-w1="rec" data-id="' + esc(r.id) + '"><span class="rcard__img">' +
+        (r.img ? '<img src="' + esc(r.img) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">' : icon('sprout')) +
+        '</span><span class="rcard__name">' + esc(recName(r)) + '</span></button>';
     }).join('') + '</div></section>';
+  }
+  function recipesPageHtml() {
+    var list = recipes(), html = pageHead(t('recTitle'));
+    if (!list.length) return html + '<p class="state__text adm__msg">' + esc(t('recGone')) + '</p>';
+    return html + '<div class="recs__list">' + list.map(function (r) {
+      return '<button type="button" class="recs__item" data-w1="rec" data-id="' + esc(r.id) + '">' + icon('sprout') + '<span>' + esc(recName(r)) + '</span></button>';
+    }).join('') + '</div>';
   }
   var startRec = String(params.get('rec') || '').toUpperCase();
   function openStartRecipe() { // ссылка ?rec=ID из рассылки: открываем один раз, когда каталог загружен
@@ -4408,6 +4945,7 @@
   function openRecipe(id) {
     if (!recipeById(id)) return;
     state.recipe = id; state.recipeNote = '';
+    state.recFrom = state.view === 'recipes' ? 'recipes' : ''; // «Назад» из рецепта возвращает в список, если открыли из него
     go('recipe');
     window.scrollTo(0, 0);
   }
@@ -4519,10 +5057,6 @@
     return set;
   }
   function quizOn() { return Object.keys(quizTagSet()).length > 0; }
-  function quizBannerHtml() {
-    if (!quizOn()) return '';
-    return '<button type="button" class="bizline bizline--quiz" data-w1="go" data-view="quiz">' + icon('gift') + '<span>' + esc(t('quizBtn')) + '</span></button>';
-  }
   /** Самая маленькая цена, за которую товар можно купить: младшая фасовка у весового, упаковка или штука у остальных. */
   function minPrice(p) {
     if (p.t !== 'w') return p.p > 0 ? p.p : Infinity;
@@ -4883,10 +5417,9 @@
   function bizAvailable() {
     return inTelegram && !!cfg.API_URL && (wh.ok || (!!state.catalog && state.catalog.products.some(function (p) { return p.wb; })));
   }
-  /** Строка на главной — только когда в магазине есть товары с оптовой ценой и человек ещё не оптовик. */
-  function bizBannerHtml() {
-    if (!inTelegram || wh.on || !state.catalog || !state.catalog.products.some(function (p) { return p.wb; })) return '';
-    return '<button type="button" class="bizline" data-w1="go" data-view="biz">' + icon('users') + '<span>' + esc(t('bizBanner')) + '</span></button>';
+  /** Плашка на главной — только когда в магазине есть товары с оптовой ценой и человек ещё не оптовик. */
+  function bizPlusOn() {
+    return inTelegram && !wh.on && !!state.catalog && state.catalog.products.some(function (p) { return p.wb; });
   }
   var biz = { type: '', busy: false };
   function bizHtml() {
@@ -5037,16 +5570,12 @@
   }
 
   /* ---- Б4. Специи и смеси отца ---- */
-  /** Подборка на главной сразу после «Наша курага», в том же стиле. Товары и тексты — из настроек; нет товаров в наличии — блока нет. */
+  /** Подборка на главной сразу после «Наша курага», в том же стиле: одна лента карточек; товары и тексты — из настроек; нет товаров в наличии — блока нет. */
   function fatherHtml() {
-    var f = shopInfo().father;
-    if (!f || !Array.isArray(f.ids)) return '';
-    var list = inStockList(f.ids).slice(0, 12);
-    if (!list.length) return '';
-    var text = loc(f.text);
-    return '<section class="father">' + ORN + '<div class="father__head"><h2 class="feature__title">' + esc(loc(f.title) || t('fatherTitle')) + '</h2>' +
-      (text ? '<p class="feature__text">' + esc(text) + '</p>' : '') + '</div>' +
-      '<div class="rail__list">' + list.map(function (p) { return miniHtml(p); }).join('') + '</div></section>';
+    var d = fatherData();
+    if (!d) return '';
+    return '<section class="father lane" data-lane="father">' + ORN + laneHeadHtml('father', d.title, d.text) +
+      '<div class="rail__list">' + d.list.map(function (p) { return rowCardHtml(p); }).join('') + '</div></section>';
   }
   /** «Склад: …» в карточке товара — только если состав вписан в таблицу. */
   function compHtml(p) {
@@ -5170,6 +5699,7 @@
       if (!res || !res.ok) throw new Error(res && res.error === 'no_perm' ? 'admNoPerm' : 'admSwFail');
       Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
       delete adm.pending[p.id];
+      markSaved(p.id); fetchToday(true);
       catalogSoon();
       if (state.view === 'admin') renderAdminList();
     }).catch(function (err) {
@@ -5469,6 +5999,546 @@
       }
     });
   }
+
+  /* ======================================================================== */
+  /* ЭТАП 9, выпуск Б, волна Б1, блок 2: админка удобнее                       */
+  /* ======================================================================== */
+  /* ---- «Сьогодні»: числа первого экрана ---- */
+  var todayAgain = false;
+  /** Числа считает сервер (admin.today). Старый бэкенд такого действия не знает — тогда считаем честно по уже загруженным спискам. */
+  function fetchToday(force) {
+    if (!cfg.API_URL || !inTelegram || adm.todayOld) return;
+    if (admFlight.today) { if (force) todayAgain = true; return; }
+    admFlight.today = api('admin.today').then(function (res) {
+      delete admFlight.today;
+      if (res && res.ok && res.today && typeof res.today === 'object') { adm.today = res.today; adm.todayOld = false; }
+      else if (res && res.error !== 'forbidden' && res.error !== 'no_perm') adm.todayOld = true;
+      if (todayAgain) { todayAgain = false; fetchToday(false); }
+      renderToday();
+    }, function () { delete admFlight.today; todayAgain = false; });
+  }
+  function isRealOrder(o) { return !o.test; }
+  function todayItems() {
+    var out = [];
+    function add(key, label, n) { if (typeof n === 'number' && isFinite(n)) out.push({ key: key, label: label, n: n }); }
+    if (adm.today && !adm.todayOld) {
+      add('new', 'tdNew', adm.today.newOrders); add('ship', 'tdShip', adm.today.toShip);
+      add('out', 'tdOut', adm.today.outOfStock); add('price', 'tdPrice', adm.today.noPrice); add('photo', 'tdPhoto', adm.today.noPhoto);
+    } else if (adm.todayOld) { // старый бэкенд: только то, что видно в уже загруженных списках
+      var os = adm.orders, ps = adm.products;
+      if (os && can('st')) {
+        add('new', 'tdNew', os.filter(function (o) { return isRealOrder(o) && o.status === 'новий'; }).length);
+        add('ship', 'tdShip', os.filter(function (o) { return isRealOrder(o) && o.status === 'підтверджено'; }).length);
+      }
+      if (ps && can('stock')) add('out', 'tdOut', ps.filter(function (p) { return !p.hidden && !p.stock; }).length);
+      if (ps && can('price')) add('price', 'tdPrice', ps.filter(function (p) { return !(p.price > 0); }).length);
+      if (ps && can('photo')) add('photo', 'tdPhoto', ps.filter(function (p) { return !p.hidden && !p.img; }).length);
+    }
+    return out;
+  }
+  function todayHtml() {
+    var items = todayItems();
+    if (!items.length) return '';
+    return '<section class="today" aria-label="' + esc(t('admToday')) + '"><p class="label">' + esc(t('admToday')) + '</p><div class="today__grid">' + items.map(function (c) {
+      return '<button type="button" class="tcard' + (c.n ? '' : ' is-zero') + '" data-today="' + c.key + '"><b class="tcard__n">' + c.n + '</b><span class="tcard__l">' + esc(t(c.label)) + '</span></button>';
+    }).join('') + '</div></section>';
+  }
+  function renderToday() {
+    var box = document.getElementById('admToday');
+    if (box && state.view === 'admin' && adm.tab === 'orders') box.innerHTML = todayHtml();
+  }
+  function setOrderFilter(value) {
+    adm.filter = value; adm.q = ''; adm.open = '';
+    var q = document.getElementById('admQ'); if (q) q.value = '';
+    Array.prototype.forEach.call(document.querySelectorAll('#admFilter .chip'), function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-filter') === adm.filter));
+    });
+    renderAdminList();
+  }
+  function resetProductFilters() {
+    adm.pcat = ''; adm.pq = ''; adm.pp = 1; adm.pvis = false;
+    adm.pf = { out: false, hidden: false, nophoto: false, noprice: false };
+  }
+  /** Нажатие на карточку «Сьогодні»: открывается именно тот список, число из которого на карточке. */
+  function goToday(kind) {
+    if (kind === 'new' || kind === 'ship') {
+      setOrderFilter(kind === 'new' ? 'новий' : 'підтверджено');
+      scrollToList(document.getElementById('admFilter'));
+      return;
+    }
+    resetProductFilters();
+    if (kind === 'out') { adm.pf.out = true; adm.pvis = true; }
+    else if (kind === 'photo') { adm.pf.nophoto = true; adm.pvis = true; }
+    else adm.pf.noprice = true;
+    adm.tab = 'products'; adm.error = '';
+    renderPage(); loadAdmin(false); window.scrollTo(0, 0);
+  }
+
+  /* ---- Смена статуса: шторка с точным текстом для клиента ---- */
+  function stLabel(code) { var v = ''; STATUS_BTNS.forEach(function (b) { if (b[0] === code) v = b[2]; }); return v; }
+  function startStatus(btn) {
+    var order = orderById(btn.getAttribute('data-num')), code = btn.getAttribute('data-st');
+    if (!order || adm.busy) return;
+    adm.busy = true; btnBusy(btn, '.ord__acts'); // кнопка сразу «занята», пока идёт запрос превью
+    function release() { adm.busy = false; if (state.view === 'admin') renderAdminList(); }
+    function sheet(text, extra) {
+      release();
+      openStatusSheet(order, code, text, extra);
+    }
+    if (!adm.canMsg) { sheet('', ''); return; } // старый бэкенд превью не умеет: текст недоступен, подтвердить можно
+    api('admin.statusPreview', { num: order.num, code: code }).then(function (res) {
+      if (res && res.error === 'no_perm') { release(); haptic('error'); toast(t('admNoPerm')); return; }
+      if (res && res.error === 'not_found') { release(); haptic('error'); toast(t('stGone')); return; }
+      if (res && res.ok && res.willSend === false) { adm.busy = false; applyStatusDirect(order, code, t('stNoMsg')); return; }
+      if (res && res.ok && res.willSend === true) { sheet(String(res.text || ''), res.extra || ''); return; }
+      sheet('', '');
+    }).catch(function () { sheet('', ''); });
+  }
+  function openStatusSheet(order, code, text, extra) {
+    var html = '<p class="confirm__text">' + esc(tf('stAskText', { num: order.num })) + '</p>' +
+      (text ? '<blockquote class="spv__quote" id="stText">' + esc(text) + '</blockquote>' : '<p class="note note--out" id="stText">' + esc(t('stNoPreview')) + '</p>') +
+      (extra === 'fop' ? '<p class="info info__muted">' + esc(t('stFop')) + '</p>' : '');
+    askConfirm({
+      title: tf('stAskTitle', { s: stLabel(code) }), html: html, ok: t('stOk'),
+      run: function (done) {
+        api('admin.status', { num: order.num, code: code }).then(function (res) {
+          if (res && res.error === 'no_perm') { done(t('admNoPerm')); return; }
+          if (!res || !res.ok) throw new Error('fail');
+          order.status = res.status;
+          done();
+          haptic('success');
+          toast(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : ''));
+          if (state.view === 'admin') renderAdminList();
+          fetchToday(true);
+        }).catch(function () { done(t('stFail')); });
+      }
+    });
+  }
+  /** Клиент сообщения не получит (или шторка не нужна): новый статус виден сразу, при ошибке возвращается прежний. */
+  function applyStatusDirect(order, stCode, note) {
+    if (adm.busy) return;
+    var stWas = order.status, stNext = stLabel(stCode) || stWas;
+    adm.busy = true; adm.stPending = { num: order.num, code: stCode };
+    order.status = stNext;
+    renderAdminList();
+    var stDone = function (text, back) {
+      adm.busy = false; adm.stPending = null;
+      if (back) { order.status = stWas; haptic('error'); }
+      toast(text);
+      if (state.view === 'admin') renderAdminList();
+      fetchToday(true);
+    };
+    api('admin.status', { num: order.num, code: stCode }).then(function (res) {
+      if (res && res.error === 'no_perm') { stDone(t('admNoPerm'), true); return; }
+      if (!res || !res.ok) throw new Error('fail');
+      order.status = res.status;
+      stDone(t('admSaved') + (res.told === false ? '. ' + t('admNotTold') : note ? '. ' + note : ''), false);
+    }).catch(function () { stDone(t('admStBack'), true); });
+  }
+
+  /* ---- «Написати»: шторка с шаблонами ---- */
+  var MSG_ERR = { bad_form: 'msgBad', not_found: 'msgNotFound', test_order: 'msgTest', no_chat: 'msgNoChat', rate_limit: 'msgRate', no_perm: 'admNoPerm' };
+  var MSG_MAX = 500;
+  function tplListHtml(lang) {
+    return (adm.replies || []).map(function (r, i) {
+      var text = String((lang === 'ru' ? r.ru : r.ua) || r.ua || r.ru || '');
+      return text ? '<button type="button" class="btn btn--wrap msg__tpl" data-tpl="' + i + '">' + esc(text) + '</button>' : '';
+    }).join('');
+  }
+  function msgSheetBody(o, lang) {
+    var tpl = (adm.replies || []).length
+      ? '<div class="msg__tpls"><p class="label">' + esc(t('msgTpl')) + '</p>' +
+        '<div class="chips chips--flush chips--wrap" role="group" aria-label="' + esc(t('msgLang')) + '">' + ['ua', 'ru'].map(function (l) {
+          return '<button type="button" class="chip" data-tlang="' + l + '" aria-pressed="' + (lang === l) + '">' + l.toUpperCase() + '</button>';
+        }).join('') + '</div><div class="msg__list" id="msgTpls">' + tplListHtml(lang) + '</div></div>' : '';
+    return tpl + '<div class="field"><label class="label" for="msgText">' + esc(t('msgField')) + '</label>' +
+      '<textarea class="input input--area" id="msgText" rows="4" maxlength="' + MSG_MAX + '"></textarea>' +
+      '<p class="field__hint" id="msgCnt" aria-live="polite">0 / ' + MSG_MAX + '</p><p class="field__hint">' + esc(t('msgHint')) + '</p></div>' +
+      '<button type="button" class="btn btn--block" data-chat="' + esc(chatUrl(o)) + '">' + esc(t('ordTgChat')) + '</button>';
+  }
+  function openMessageSheet(o) {
+    var lang = o.lang === 'ru' ? 'ru' : o.lang === 'ua' ? 'ua' : state.lang; // язык заказа клиента; если сервер его не прислал — язык панели
+    adm.msgLang = lang;
+    askConfirm({
+      title: tf('msgTitle', { num: o.num }), html: msgSheetBody(o, lang), ok: t('msgSend'), msg: o,
+      run: function (done) {
+        var ta = document.getElementById('msgText'), text = ta ? ta.value.trim() : '';
+        if (!text) { done(t('msgEmpty')); return; }
+        api('admin.message', { num: o.num, text: text }).then(function (res) {
+          if (res && res.ok) {
+            if (res.told === false) { done(t('msgNotTold')); return; }
+            done(); haptic('success'); toast(t('msgSent'));
+            return;
+          }
+          done(t((res && MSG_ERR[res.error]) || 'msgFail'));
+        }).catch(function () { done(t('msgFail')); });
+      }
+    });
+  }
+  function msgCount() {
+    var ta = document.getElementById('msgText'), c = document.getElementById('msgCnt');
+    if (ta && c) c.textContent = ta.value.length + ' / ' + MSG_MAX;
+  }
+  /** Нажатия внутри шторки «Написати»: язык шаблонов, шаблон, чат в Telegram. */
+  function sheetExtraClick(e) {
+    if (!state.sheet || !state.sheet.o || !state.sheet.o.msg) return false;
+    var chat = e.target.closest('[data-chat]');
+    if (chat) {
+      var url = chat.getAttribute('data-chat');
+      try { tg.openTelegramLink(url); } catch (err) { window.open(url, '_blank'); }
+      return true;
+    }
+    var tl = e.target.closest('[data-tlang]');
+    if (tl) {
+      adm.msgLang = tl.getAttribute('data-tlang');
+      Array.prototype.forEach.call(el.sheet.querySelectorAll('[data-tlang]'), function (b) { b.setAttribute('aria-pressed', String(b === tl)); });
+      var box = document.getElementById('msgTpls');
+      if (box) box.innerHTML = tplListHtml(adm.msgLang);
+      return true;
+    }
+    var tp = e.target.closest('[data-tpl]');
+    if (tp) {
+      var r = (adm.replies || [])[Number(tp.getAttribute('data-tpl'))], ta = document.getElementById('msgText');
+      if (r && ta) {
+        ta.value = String((adm.msgLang === 'ru' ? r.ru : r.ua) || r.ua || r.ru || '').slice(0, MSG_MAX);
+        msgCount();
+        var err = document.getElementById('cfErr'); if (err) err.hidden = true;
+        try { ta.focus({ preventScroll: true }); } catch (x) { /* не страшно */ }
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /* ---- Копирование адреса ---- */
+  function copyAddress(btn) {
+    var o = orderById(btn.getAttribute('data-copyaddr')), text = o ? orderAddress(o) : '';
+    if (!text || btn.disabled) return;
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.className = 'copybuf';
+    document.body.appendChild(ta);
+    copyText(text, ta).then(function (ok) {
+      if (ta.parentNode) ta.parentNode.removeChild(ta);
+      if (!ok) { haptic('error'); toast(t('admLinkFail')); return; }
+      haptic('success');
+      var was = btn.innerHTML;
+      btn.classList.add('is-saved'); btn.disabled = true; btn.innerHTML = icon('check') + esc(t('ordCopied'));
+      setTimeout(function () { btn.classList.remove('is-saved'); btn.disabled = false; btn.innerHTML = was; }, 1400);
+    });
+  }
+
+  /* ---- Быстрая цена в списке товаров ---- */
+  function refreshChips() {
+    var chips = document.getElementById('admPChips');
+    if (chips && adm.tab === 'products') {
+      var row = chips.querySelector('.chips'), left = row ? row.scrollLeft : 0;
+      chips.innerHTML = productChipsHtml();
+      row = chips.querySelector('.chips');
+      if (row) row.scrollLeft = left;
+    }
+  }
+  function redrawRow(id) {
+    var li = document.querySelector('#admList .prod[data-pid="' + id + '"]'), p = adminProduct(id);
+    if (!li || !p) return null;
+    var tmp = document.createElement('ul');
+    tmp.innerHTML = prodRowHtml(p);
+    li.parentNode.replaceChild(tmp.firstChild, li);
+    return document.querySelector('#admList .prod[data-pid="' + id + '"]');
+  }
+  /** «Збережено» на карточке на пару секунд; потом отметка гаснет, а товар, который уже не подходит под фильтр, уходит из списка. */
+  function markSaved(id) {
+    adm.saved[id] = Date.now();
+    setTimeout(clearMarks, SAVED_MS + 60);
+  }
+  function clearMarks() {
+    if (state.view !== 'admin' || adm.tab !== 'products' || adm.loading) return;
+    var ids = adminProductList().map(function (p) { return p.id; }), stale = false;
+    Array.prototype.forEach.call(document.querySelectorAll('#admList .prod'), function (li) {
+      var id = li.getAttribute('data-pid');
+      if (adm.saved[id] && Date.now() - adm.saved[id] >= SAVED_MS) {
+        li.classList.remove('is-saved');
+        var ok = li.querySelector('.prod__ok'); if (ok) ok.hidden = true;
+      }
+      if (ids.indexOf(id) < 0) stale = true;
+    });
+    var a = document.activeElement;
+    if (stale && !(a && a.hasAttribute && a.hasAttribute('data-qprice'))) renderAdminList();
+  }
+  function saveQuickPrice(btn) {
+    var id = btn.getAttribute('data-qsave'), p = adminProduct(id);
+    if (!p || adm.pending['q:' + id]) return;
+    var li = btn.closest('.prod'), input = li && li.querySelector('[data-qprice]'), err = li && li.querySelector('.prod__err');
+    if (!input) return;
+    var n = Number(String(input.value).replace(/\s/g, '').replace(',', '.'));
+    if (!(n > 0) || !isFinite(n)) {
+      input.setAttribute('aria-invalid', 'true');
+      if (err) { err.textContent = t('qpBad'); err.hidden = false; }
+      haptic('error');
+      return;
+    }
+    n = Math.round(n * 100) / 100;
+    adm.pending['q:' + id] = true;
+    btnBusy(btn); input.disabled = true;
+    if (err) err.hidden = true;
+    api('admin.product', { id: id, patch: { price: n } }).then(function (res) {
+      if (!res || !res.ok) throw new Error(res && res.error === 'no_perm' ? 'admNoPerm' : 'qpFail');
+      Object.keys(res.product).forEach(function (k) { p[k] = res.product[k]; });
+      delete adm.pending['q:' + id]; delete adm.qdraft[id];
+      haptic('success'); markSaved(id); catalogSoon(); fetchToday(true);
+      if (state.view === 'admin' && adm.tab === 'products') { redrawRow(id); refreshChips(); }
+    }).catch(function (e2) {
+      delete adm.pending['q:' + id]; delete adm.qdraft[id]; // прежнее значение возвращается в поле
+      haptic('error');
+      if (state.view !== 'admin' || adm.tab !== 'products') return;
+      var row = redrawRow(id), msg = row && row.querySelector('.prod__err');
+      if (msg) { msg.textContent = t(e2 && e2.message === 'admNoPerm' ? 'admNoPerm' : 'qpFail'); msg.hidden = false; }
+    });
+  }
+
+  /* ---- Тексты ---- */
+  var I18N_B10 = {
+    ua: {
+      tdNew: 'Нові замовлення', tdShip: 'Треба відправити', tdOut: 'Немає в наявності', tdPrice: 'Чекають ціну', tdPhoto: 'Без фото',
+      ordMore: 'Ще', stChange: 'Змінити статус', ordCall: 'Подзвонити', ordWrite: 'Написати', ordCopy: 'Скопіювати адресу', ordCopied: 'Скопійовано',
+      ordTgChat: 'Відкрити чат у Telegram',
+      stAskTitle: 'Змінити статус на «{s}»?', stAskText: 'Замовлення {num}. Клієнт отримає таке повідомлення:', stOk: 'Надіслати й змінити статус',
+      stNoPreview: 'Текст повідомлення зараз недоступний. Клієнт може отримати повідомлення про зміну статусу.',
+      stFop: 'Реквізити для оплати клієнт отримає окремим повідомленням.', stNoMsg: 'Клієнт повідомлення не отримує',
+      stFail: 'Не вдалося змінити статус. Статус не змінено — спробуйте ще раз.', stGone: 'Замовлення не знайдено. Натисніть «Оновити».',
+      msgTitle: 'Написати клієнту · {num}', msgTpl: 'Готові відповіді', msgLang: 'Мова відповіді', msgField: 'Текст повідомлення', msgSend: 'Надіслати', msgSent: 'Надіслано',
+      msgHint: 'Клієнт отримає це від бота PAMIR у чаті з ботом. Можна виправити шаблон перед надсиланням.',
+      msgEmpty: 'Напишіть текст повідомлення.', msgBad: 'Повідомлення порожнє або довше за 500 знаків.', msgNotFound: 'Замовлення не знайдено. Закрийте вікно й натисніть «Оновити».',
+      msgTest: 'Це тестове замовлення — клієнту нічого не надсилається.', msgNoChat: 'У цього клієнта немає чату з ботом. Зателефонуйте йому або напишіть у Telegram самі.',
+      msgRate: 'Забагато повідомлень за годину — спробуйте пізніше', msgFail: 'Не вдалося надіслати. Спробуйте ще раз.',
+      msgNotTold: 'Повідомлення не доставлено: клієнт, схоже, заблокував бота. Зателефонуйте йому або напишіть у Telegram.',
+      qpSave: 'Зберегти', qpBad: 'Введіть число більше нуля.', qpFail: 'Не вдалося зберегти ціну — повернули попередню.',
+      admFltPrice: 'Чекають ціну', admFltOut: 'Немає', admVisOnly: 'Приховані товари тут не показано — так само їх рахує картка «Сьогодні».',
+      admPhotoCam: 'Зняти фото', admPhotoGal: 'Вибрати з галереї',
+      admEmptyOrders: 'Замовлень поки немає', admEmptyOrdersHint: 'Нові замовлення з’являться тут самі. Щоб перевірити зараз, натисніть «Оновити».',
+      admNoMatch: 'Нічого не знайдено', admNoMatchHint: 'Змініть пошук або зніміть фільтри.', admReset: 'Скинути фільтри',
+      admEmptyProducts: 'Товарів поки немає', admEmptyProductsHint: 'Товари з’являться тут, щойно їх буде додано в таблицю.',
+      admOffline: 'Немає зв’язку — натисніть «Оновити»', admNoPerm: 'Немає прав на цю дію — зверніться до власника',
+      setGShop: 'Магазин', setGGifts: 'Подарунки', setGPay: 'Оплата й доставка', setGTexts: 'Тексти', setGRemind: 'Нагадування й розсилки', setGSeason: 'Сезон', setGOther: 'Інше',
+      setExample: 'Приклад:', spvTitle: 'Так це бачить покупець', spvEmpty: 'Порожньо — нічого не показується.',
+      sh_notice: 'Рядок угорі магазину; покупець може його закрити. Якщо заповнена «Смужка запуску», показується вона. Порожньо — рядка немає.',
+      sh_notice_text: 'Смужка угорі магазину; головніша за звичайне оголошення. Покупець може її закрити. Порожньо — смужки немає.',
+      sh_gift_from: 'Від якої суми замовлення клієнт отримує подарунок. 0 — подарунка немає. Працює, лише якщо нижче вписано, що саме дарується.',
+      sh_gift_text: 'Що саме дарується, коли сума замовлення досягла порогу.',
+      sh_loyal_every: 'Кожне N-те замовлення клієнта — з подарунком. 0 — вимкнено, мінімум 2. Працює, лише якщо нижче вписано подарунок.',
+      sh_loyal_text: 'Що саме дарується постійному клієнтові.',
+      sh_min_order: 'Менше цієї суми оформити замовлення не вийде. 0 — без обмеження.',
+      sh_pay_cash: 'Чи пропонувати оплату при отриманні. Хоча б один із двох способів — «при отриманні» або «на картку» — має лишатися увімкненим.',
+      sh_pay_card: 'Чи пропонувати оплату переказом на картку. Хоча б один із двох способів — «при отриманні» або «на картку» — має лишатися увімкненим.',
+      sh_pay_cod: 'Накладений платіж пропонується лише при доставці Новою поштою.',
+      sh_address: 'Адреса самовивозу, яку бачать покупці.', sh_hours: 'Години роботи, які бачать покупці.',
+      sh_contact: 'Кому веде кнопка «Написати нам»: @нік або номер телефону. Порожньо — кнопки немає.',
+      sh_feature_id: 'ID товару (або кількох через кому) для блоку угорі каталогу. Порожньо — блоку немає.',
+      sh_feature_title: 'Заголовок блоку угорі каталогу.', sh_feature_text: 'Текст під заголовком блоку угорі каталогу.',
+      sh_father_ids: 'ID товарів через кому для добірки на головній. Порожньо — добірки немає.',
+      sh_father_title: 'Заголовок добірки на головній.', sh_father_text: 'Текст під заголовком добірки. Порожньо — без тексту.',
+      sh_home_rails_max: 'Скільки стрічок товарів показувати на головній. Від 1 до 8.',
+      sh_theme: 'Сезонне оформлення магазину. Порожньо — звичайне; доступні newyear і navruz.',
+      sh_theme_until: 'Остання дата, коли діє сезонна тема (включно). Порожньо — без обмеження.',
+      sh_confirm: 'Текст, який бот пише клієнтові одразу після прийняття замовлення.',
+      sh_reply: 'Готова відповідь для кнопки «Написати» у замовленні: адмін обирає її одним дотиком і може виправити перед надсиланням. Порожньо — шаблону немає.',
+      sx_notice_ua: 'Сьогодні не працюємо. Питання — @ваш_нік', sx_notice_ru: 'Сегодня не работаем. Вопросы — @ваш_ник',
+      sx_notice_text_ua: 'Магазин щойно відкрився — питання пишіть нам', sx_notice_text_ru: 'Магазин только открылся — вопросы пишите нам',
+      sx_gift_from: '500', sx_gift_text_ua: '100 г кураги', sx_gift_text_ru: '100 г кураги',
+      sx_loyal_every: '5', sx_loyal_text_ua: 'чурчхела', sx_loyal_text_ru: 'чурчхела', sx_min_order: '300',
+      sx_contact: '@ваш_нік', sx_feature_id: 'DRY-039', sx_feature_title_ua: 'Наша курага', sx_feature_title_ru: 'Наша курага',
+      sx_feature_text_ua: 'З нашого родинного саду в Ісфарі.', sx_feature_text_ru: 'Из нашего семейного сада в Исфаре.',
+      sx_father_ids: 'SPC-001, SPC-004', sx_father_title_ua: 'Спеції від батька', sx_father_title_ru: 'Специи от отца',
+      sx_father_text_ua: 'Ці суміші батько збирає сам.', sx_father_text_ru: 'Эти смеси отец собирает сам.',
+      sx_home_rails_max: '3', sx_theme: 'newyear', sx_theme_until: '10.01.2027',
+      sx_confirm_ua: 'Ми підтвердимо наявність і напишемо вам сюди.', sx_confirm_ru: 'Мы подтвердим наличие и напишем вам сюда.',
+      sx_reply_ua: 'Замовлення зібрано, відправимо сьогодні.', sx_reply_ru: 'Заказ собран, отправим сегодня.'
+    },
+    ru: {
+      tdNew: 'Новые заказы', tdShip: 'Надо отправить', tdOut: 'Нет в наличии', tdPrice: 'Ждут цену', tdPhoto: 'Без фото',
+      ordMore: 'Ещё', stChange: 'Сменить статус', ordCall: 'Позвонить', ordWrite: 'Написать', ordCopy: 'Скопировать адрес', ordCopied: 'Скопировано',
+      ordTgChat: 'Открыть чат в Telegram',
+      stAskTitle: 'Сменить статус на «{s}»?', stAskText: 'Заказ {num}. Клиент получит такое сообщение:', stOk: 'Отправить и сменить статус',
+      stNoPreview: 'Текст сообщения сейчас недоступен. Клиент может получить сообщение о смене статуса.',
+      stFop: 'Реквизиты для оплаты клиент получит отдельным сообщением.', stNoMsg: 'Клиент сообщение не получает',
+      stFail: 'Не удалось сменить статус. Статус не изменён — попробуйте ещё раз.', stGone: 'Заказ не найден. Нажмите «Обновить».',
+      msgTitle: 'Написать клиенту · {num}', msgTpl: 'Готовые ответы', msgLang: 'Язык ответа', msgField: 'Текст сообщения', msgSend: 'Отправить', msgSent: 'Отправлено',
+      msgHint: 'Клиент получит это от бота PAMIR в чате с ботом. Шаблон можно поправить перед отправкой.',
+      msgEmpty: 'Напишите текст сообщения.', msgBad: 'Сообщение пустое или длиннее 500 знаков.', msgNotFound: 'Заказ не найден. Закройте окно и нажмите «Обновить».',
+      msgTest: 'Это тестовый заказ — клиенту ничего не отправляется.', msgNoChat: 'У этого клиента нет чата с ботом. Позвоните ему или напишите в Telegram сами.',
+      msgRate: 'Слишком много сообщений за час — попробуйте позже', msgFail: 'Не удалось отправить. Попробуйте ещё раз.',
+      msgNotTold: 'Сообщение не доставлено: клиент, похоже, заблокировал бота. Позвоните ему или напишите в Telegram.',
+      qpSave: 'Сохранить', qpBad: 'Введите число больше нуля.', qpFail: 'Не удалось сохранить цену — вернули прежнюю.',
+      admFltPrice: 'Ждут цену', admFltOut: 'Нет', admVisOnly: 'Скрытые товары здесь не показаны — так же их считает карточка «Сегодня».',
+      admPhotoCam: 'Снять фото', admPhotoGal: 'Выбрать из галереи',
+      admEmptyOrders: 'Заказов пока нет', admEmptyOrdersHint: 'Новые заказы появятся здесь сами. Чтобы проверить сейчас, нажмите «Обновить».',
+      admNoMatch: 'Ничего не найдено', admNoMatchHint: 'Измените поиск или снимите фильтры.', admReset: 'Сбросить фильтры',
+      admEmptyProducts: 'Товаров пока нет', admEmptyProductsHint: 'Товары появятся здесь, как только их добавят в таблицу.',
+      admOffline: 'Нет связи — нажмите «Обновить»', admNoPerm: 'Нет прав на это действие — обратитесь к владельцу',
+      setGShop: 'Магазин', setGGifts: 'Подарки', setGPay: 'Оплата и доставка', setGTexts: 'Тексты', setGRemind: 'Напоминания и рассылки', setGSeason: 'Сезон', setGOther: 'Прочее',
+      setExample: 'Пример:', spvTitle: 'Так это видит покупатель', spvEmpty: 'Пусто — ничего не показывается.',
+      sh_notice: 'Строка вверху магазина; покупатель может её закрыть. Если заполнена «Полоска запуска», показывается она. Пусто — строки нет.',
+      sh_notice_text: 'Полоска вверху магазина; главнее обычного объявления. Покупатель может её закрыть. Пусто — полоски нет.',
+      sh_gift_from: 'С какой суммы заказа клиент получает подарок. 0 — подарка нет. Работает, только если ниже вписано, что именно дарится.',
+      sh_gift_text: 'Что именно дарится, когда сумма заказа достигла порога.',
+      sh_loyal_every: 'Каждый N-й заказ клиента — с подарком. 0 — выключено, минимум 2. Работает, только если ниже вписан подарок.',
+      sh_loyal_text: 'Что именно дарится постоянному клиенту.',
+      sh_min_order: 'Меньше этой суммы оформить заказ не получится. 0 — без ограничения.',
+      sh_pay_cash: 'Предлагать ли оплату при получении. Хотя бы один из двух способов — «при получении» или «на карту» — должен остаться включённым.',
+      sh_pay_card: 'Предлагать ли оплату переводом на карту. Хотя бы один из двух способов — «при получении» или «на карту» — должен остаться включённым.',
+      sh_pay_cod: 'Наложенный платёж предлагается только при доставке Новой почтой.',
+      sh_address: 'Адрес самовывоза, который видят покупатели.', sh_hours: 'Часы работы, которые видят покупатели.',
+      sh_contact: 'Куда ведёт кнопка «Написать нам»: @ник или номер телефона. Пусто — кнопки нет.',
+      sh_feature_id: 'ID товара (или нескольких через запятую) для блока вверху каталога. Пусто — блока нет.',
+      sh_feature_title: 'Заголовок блока вверху каталога.', sh_feature_text: 'Текст под заголовком блока вверху каталога.',
+      sh_father_ids: 'ID товаров через запятую для подборки на главной. Пусто — подборки нет.',
+      sh_father_title: 'Заголовок подборки на главной.', sh_father_text: 'Текст под заголовком подборки. Пусто — без текста.',
+      sh_home_rails_max: 'Сколько лент товаров показывать на главной. От 1 до 8.',
+      sh_theme: 'Сезонное оформление магазина. Пусто — обычное; доступны newyear и navruz.',
+      sh_theme_until: 'Последняя дата, когда действует сезонная тема (включительно). Пусто — без ограничения.',
+      sh_confirm: 'Текст, который бот пишет клиенту сразу после принятия заказа.',
+      sh_reply: 'Готовый ответ для кнопки «Написать» в заказе: админ выбирает его одним касанием и может поправить перед отправкой. Пусто — шаблона нет.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B10[lang]).forEach(function (k) { I18N[lang][k] = I18N_B10[lang][k]; });
+  });
+
+  /* Тексты выпуска Б, блок 3: Новый год, подпись к подарку, повтор заказа, пояснения настроек сезона. */
+  var I18N_B3 = {
+    ua: {
+      nyGiftsTitle: 'Подарунки до свят', fGiftNote: 'Підпис до подарунка', giftNotePh: 'Наприклад: Мамі від Олени', giftNoteCount: '{n} / 120',
+      errSendRetry: 'Не вдалося надіслати — спробуйте ще раз', retryOrder: 'Спробувати ще раз',
+      dupChanged: 'Попереднє замовлення {n} уже прийняте. У кошику зараз усі товари, зокрема вже замовлені. Приберіть зайве й надішліть решту окремим замовленням — або напишіть нам, і ми додамо до першого.',
+      dupChangedNoNum: 'Попереднє замовлення вже прийняте. У кошику зараз усі товари, зокрема вже замовлені. Приберіть зайве й надішліть решту окремим замовленням — або напишіть нам, і ми додамо до першого.',
+      sendAsNew: 'Надіслати кошик як нове замовлення', dupEditCart: 'Змінити кошик', dupWrite: 'Напишіть нам',
+      sendAsNewAsk: 'У кошику можуть бути вже замовлені товари. Надіслати все як нове замовлення?', sendAsNewOk: 'Надіслати все',
+      sh_theme: 'Сезонне оформлення магазину. Порожньо — звичайне; доступні newyear (гірлянда, святкова добірка, рядок про строки) і navruz.',
+      sh_theme_until: 'Остання дата, коли діє сезонна тема (включно); після неї тема вимикається сама. Порожньо — без обмеження.',
+      sh_ny_snow: 'Падаючий сніг на новорічній темі. Вимкнено за замовчуванням; не заважає натисканню кнопок і не показується тим, у кого на телефоні вимкнено анімацію.',
+      sh_ny_ids: 'ID товарів через кому для добірки «Подарунки до свят» — вона стоїть першою. Порожньо — добірки немає. Працює лише при темі newyear.',
+      sh_ny_order_until: 'Рядок про строк біля святкової добірки, у кошику й при оформленні. Порожньо — рядка немає. Працює лише при темі newyear.',
+      sh_gift_note: 'Поле «Підпис до подарунка» (до 120 знаків) при оформленні; текст приходить вам у замовленні.',
+      sh_home_rails_max: 'Скільки стрічок товарів показувати на головній (від 1 до 8); решта — рядком «Ще». Святкова добірка сюди не входить. Порожньо — 3.',
+      sx_ny_ids: 'DRY-039, SWT-001',
+      sh_bot_short: 'Короткий опис бота (до 120 знаків): видно в профілі бота. У Telegram потрапляє, коли в таблиці обрано пункт меню PAMIR → «Оновити опис бота». Порожньо — цей мовний варіант пропускається.',
+      sh_bot_desc: 'Повний опис бота (до 512 знаків): видно в чаті з ботом, поки людина ще не натиснула «Почати». У Telegram потрапляє тим самим пунктом меню «Оновити опис бота». Порожньо — пропускається.',
+      sh_greeting: 'Перше повідомлення бота клієнтові, який ще не замовляв, після команди /start. {name} підставляє ім’я клієнта з Telegram. Нові рядки зберігаються.',
+      sh_greeting_back: 'Те саме для клієнта, який уже мав справжнє замовлення. До повідомлення додається кнопка «Повторити звичне». {name} — ім’я клієнта.',
+      sh_welcome_photo: 'Картинка над привітанням бота: посилання https://… або file_id (надішліть фото боту — він відповість кодом). Порожньо — стандартна картинка магазину.',
+      sh_welcome_video_note: 'Відеокружок, який бот надсилає перед привітанням: лише file_id (надішліть кружок боту — він відповість кодом). Порожньо — без кружка.',
+      sh_biz_soon: 'Текст, який бот показує, коли натиснути «Для бізнесу (опт)». Під текстом — кнопки заявки й зв’язку. Оптовикам замість нього одразу надсилається прайс.',
+      sh_remind_days: 'Через скільки днів після виконаного замовлення бот раз нагадає, що його можна повторити, якщо клієнт нічого більше не замовив. 0 — вимкнено; менше 7 теж не працює.',
+      sh_remind_text: 'Текст цього нагадування; під ним кнопки «Повторити замовлення» та «Більше не нагадувати». Працює, лише якщо вище вказано кількість днів.',
+      sh_low_stock: 'Коли на складі лишилося не більше стільки штук, на товарі з’являється «Залишилось N шт». Для вагових товарів поріг власний — 2 кг. Порожньо чи 0 — стандартне значення.',
+      sh_fresh_days: 'Скільки днів після дати з колонки «Свіжа поставка» (у таблиці товарів) на товарі горить бейдж «Свіжа поставка». 0 — бейдж вимкнено.',
+      sh_review_days: 'Через скільки днів після статусу «виконано» бот попросить клієнта оцінити замовлення (один раз на замовлення). 0 — не просити.',
+      sh_cart_remind_hours: 'Через скільки годин бот нагадає про кошик, який лежить без замовлення (одне нагадування на кошик, не частіше разу на 7 днів одній людині). 0 — вимкнено.',
+      sh_mail_every_days: 'Одній людині розсилки приходять не частіше, ніж раз на стільки днів; решту при запуску пропускаємо. 0 — без обмеження.',
+      sh_story_title: 'Заголовок сторінки «Від саду до столу» в магазині.',
+      sh_story_text: 'Текст сторінки «Від саду до столу»; кожен абзац — з нового рядка. Порожньо в обох мовах — сторінки немає.',
+      sh_story_photos: 'Фото для сторінки «Від саду до столу»: посилання https://…, кожне з нового рядка, не більше 8. Порожньо — без фото.',
+      sh_referral_on: 'Програма «Пригости друга»: друг, що прийшов за посиланням, отримує пробник до першого замовлення, а той, хто запросив, — до наступного. Працює, лише якщо нижче вписано пробник.',
+      sh_referral_gift: 'Який пробник дарується (за пробник гроші не беруться, сума замовлення не змінюється). Порожньо — програма вимкнена.',
+      sh_referral_min_order: 'Від якої суми першого замовлення друга дарується пробник, ₴. 0 — без обмеження.',
+      sx_bot_short_ua: 'Горіхи, сухофрукти та спеції. Питання — @ваш_нік',
+      sx_bot_short_ru: 'Орехи, сухофрукты и специи. Вопросы — @ваш_ник',
+      sx_bot_desc_ua: 'Родинна крамниця: горіхи, сухофрукти, спеції. Відкрийте магазин, зберіть кошик — підтвердимо замовлення тут.',
+      sx_bot_desc_ru: 'Семейная лавка: орехи, сухофрукты, специи. Откройте магазин, соберите корзину — подтвердим заказ здесь.',
+      sx_greeting_ua: 'Вітаємо, {name}! Відкрийте магазин і зберіть кошик.',
+      sx_greeting_ru: 'Здравствуйте, {name}! Откройте магазин и соберите корзину.',
+      sx_greeting_back_ua: 'З поверненням, {name}! Звичне замовлення можна повторити в один дотик.',
+      sx_greeting_back_ru: 'С возвращением, {name}! Привычный заказ можно повторить в одно касание.',
+      sx_welcome_photo: 'https://example.com/photo.jpg',
+      sx_welcome_video_note: 'DQACAgIAAxk… (код від бота)',
+      sx_biz_soon_ua: 'Працюємо з кафе й магазинами. Заповніть заявку — відповімо тут.',
+      sx_biz_soon_ru: 'Работаем с кафе и магазинами. Заполните заявку — ответим здесь.',
+      sx_remind_days: '30',
+      sx_remind_text_ua: 'Вітаємо! Попереднє замовлення можна повторити в один дотик.',
+      sx_remind_text_ru: 'Здравствуйте! Прошлый заказ можно повторить в одно касание.',
+      sx_low_stock: '5',
+      sx_fresh_days: '14',
+      sx_review_days: '2',
+      sx_cart_remind_hours: '3',
+      sx_mail_every_days: '7',
+      sx_story_title_ua: 'Від саду до столу',
+      sx_story_title_ru: 'От сада до стола',
+      sx_story_text_ua: 'Перший абзац.\nДругий абзац — з нового рядка.',
+      sx_story_text_ru: 'Первый абзац.\nВторой абзац — с новой строки.',
+      sx_story_photos: 'https://example.com/garden-1.jpg',
+      sx_referral_on: '1',
+      sx_referral_gift_ua: '50 г кураги',
+      sx_referral_gift_ru: '50 г кураги',
+      sx_referral_min_order: '300',
+      sx_ny_order_until_ua: 'Замовлення до 26.12 відправимо до свята', sx_ny_order_until_ru: 'Заказы до 26.12 отправим к празднику'
+    },
+    ru: {
+      nyGiftsTitle: 'Подарки к праздникам', fGiftNote: 'Подпись к подарку', giftNotePh: 'Например: Маме от Елены', giftNoteCount: '{n} / 120',
+      errSendRetry: 'Не удалось отправить — попробуйте ещё раз', retryOrder: 'Повторить отправку',
+      sh_bot_short: 'Короткое описание бота (до 120 знаков): видно в профиле бота. В Telegram попадает, когда в таблице выбран пункт меню PAMIR → «Оновити опис бота». Пусто — этот языковой вариант пропускается.',
+      sh_bot_desc: 'Полное описание бота (до 512 знаков): видно в чате с ботом, пока человек ещё не нажал «Начать». В Telegram попадает тем же пунктом меню «Оновити опис бота». Пусто — пропускается.',
+      sh_greeting: 'Первое сообщение бота клиенту, который ещё не заказывал, после команды /start. {name} подставляет имя клиента из Telegram. Переносы строк сохраняются.',
+      sh_greeting_back: 'То же для клиента, у которого уже был настоящий заказ. К сообщению добавляется кнопка «Повторить привычное». {name} — имя клиента.',
+      sh_welcome_photo: 'Картинка над приветствием бота: ссылка https://… или file_id (отправьте фото боту — он ответит кодом). Пусто — стандартная картинка магазина.',
+      sh_welcome_video_note: 'Видеокружок, который бот отправляет перед приветствием: только file_id (отправьте кружок боту — он ответит кодом). Пусто — без кружка.',
+      sh_biz_soon: 'Текст, который бот показывает при нажатии «Для бизнеса (опт)». Под текстом — кнопки заявки и связи. Оптовикам вместо него сразу отправляется прайс.',
+      sh_remind_days: 'Через сколько дней после выполненного заказа бот один раз напомнит, что его можно повторить, если клиент больше ничего не заказывал. 0 — выключено; меньше 7 тоже не работает.',
+      sh_remind_text: 'Текст этого напоминания; под ним кнопки «Повторить заказ» и «Больше не напоминать». Работает, только если выше указано число дней.',
+      sh_low_stock: 'Когда на складе осталось не больше стольких штук, на товаре появляется «Осталось N шт». Для весовых товаров порог свой — 2 кг. Пусто или 0 — стандартное значение.',
+      sh_fresh_days: 'Сколько дней после даты из колонки «Свіжа поставка» (в таблице товаров) на товаре горит бейдж «Свежая поставка». 0 — бейдж выключен.',
+      sh_review_days: 'Через сколько дней после статуса «виконано» бот попросит клиента оценить заказ (один раз на заказ). 0 — не просить.',
+      sh_cart_remind_hours: 'Через сколько часов бот напомнит о корзине, которая лежит без заказа (одно напоминание на корзину, одному человеку не чаще раза в 7 дней). 0 — выключено.',
+      sh_mail_every_days: 'Одному человеку рассылки приходят не чаще, чем раз в столько дней; остальных при запуске пропускаем. 0 — без ограничения.',
+      sh_story_title: 'Заголовок страницы «От сада до стола» в магазине.',
+      sh_story_text: 'Текст страницы «От сада до стола»; каждый абзац — с новой строки. Пусто на обоих языках — страницы нет.',
+      sh_story_photos: 'Фото для страницы «От сада до стола»: ссылки https://…, каждая с новой строки, не больше 8. Пусто — без фото.',
+      sh_referral_on: 'Программа «Угости друга»: друг, пришедший по ссылке, получает пробник к первому заказу, а пригласивший — к следующему. Работает, только если ниже вписан пробник.',
+      sh_referral_gift: 'Какой пробник дарится (за пробник деньги не берутся, сумма заказа не меняется). Пусто — программа выключена.',
+      sh_referral_min_order: 'От какой суммы первого заказа друга дарится пробник, ₴. 0 — без ограничения.',
+      dupChanged: 'Предыдущий заказ {n} уже принят. В корзине сейчас все товары, в том числе уже заказанные. Уберите лишнее и отправьте остальное отдельным заказом — или напишите нам, и мы добавим к первому.',
+      dupChangedNoNum: 'Предыдущий заказ уже принят. В корзине сейчас все товары, в том числе уже заказанные. Уберите лишнее и отправьте остальное отдельным заказом — или напишите нам, и мы добавим к первому.',
+      sendAsNew: 'Отправить корзину как новый заказ', dupEditCart: 'Изменить корзину', dupWrite: 'Напишите нам',
+      sendAsNewAsk: 'В корзине могут быть уже заказанные товары. Отправить всё как новый заказ?', sendAsNewOk: 'Отправить всё',
+      sh_theme: 'Сезонное оформление магазина. Пусто — обычное; доступны newyear (гирлянда, праздничная подборка, строка о сроках) и navruz.',
+      sh_theme_until: 'Последняя дата, когда действует сезонная тема (включительно); после неё тема выключается сама. Пусто — без ограничения.',
+      sh_ny_snow: 'Падающий снег на новогодней теме. По умолчанию выключен; не мешает нажимать кнопки и не показывается тем, у кого на телефоне отключена анимация.',
+      sh_ny_ids: 'ID товаров через запятую для подборки «Подарки к праздникам» — она стоит первой. Пусто — подборки нет. Работает только при теме newyear.',
+      sh_ny_order_until: 'Строка о сроке рядом с праздничной подборкой, в корзине и при оформлении. Пусто — строки нет. Работает только при теме newyear.',
+      sh_gift_note: 'Поле «Подпись к подарку» (до 120 знаков) при оформлении; текст приходит вам в заказе.',
+      sh_home_rails_max: 'Сколько лент товаров показывать на главной (от 1 до 8); остальные — строкой «Ещё». Праздничная подборка сюда не входит. Пусто — 3.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B3[lang]).forEach(function (k) { I18N[lang][k] = I18N_B3[lang][k]; });
+  });
+
+  /* Выпуск Б1: источники, напоминания о корзине, новые настройки. */
+  var I18N_B4 = {
+    ua: {
+      admSources: 'Джерела (QR)', admSrcTag: 'Мітка', admSrcOpen: 'Відкр. 7 / 14 дн.', admSrcOrd: 'Зам. 7 / 14 дн.',
+      admCartSent: 'Нагадувань про кошик надіслано за 30 днів', admCartMuted: 'Вимкнули нагадування про кошик за 30 днів',
+      sh_src_list: 'Дозволені мітки джерел через кому (QR-коди, вкладиші). Мітки не з цього списку не враховуються. Порожньо — qr1, qr2, insert.',
+      sh_cart_mute_days: 'На скільки днів кнопка «Не нагадувати» ставить нагадування про кошик на паузу. Порожньо — 30.',
+      sx_src_list: 'qr1, qr2, insert', sx_cart_mute_days: '30'
+    },
+    ru: {
+      admSources: 'Источники (QR)', admSrcTag: 'Метка', admSrcOpen: 'Откр. 7 / 14 дн.', admSrcOrd: 'Зак. 7 / 14 дн.',
+      admCartSent: 'Напоминаний о корзине отправлено за 30 дней', admCartMuted: 'Отключили напоминания о корзине за 30 дней',
+      sh_src_list: 'Разрешённые метки источников через запятую (QR-коды, вкладыши). Метки не из этого списка не учитываются. Пусто — qr1, qr2, insert.',
+      sh_cart_mute_days: 'На сколько дней кнопка «Не напоминать» ставит напоминания о корзине на паузу. Пусто — 30.'
+    }
+  };
+  ['ua', 'ru'].forEach(function (lang) {
+    Object.keys(I18N_B4[lang]).forEach(function (k) { I18N[lang][k] = I18N_B4[lang][k]; });
+  });
+
+  // Шторка «Написати»: счётчик знаков и нажатия внутри шторки.
+  el.sheet.addEventListener('input', function (e) { if (e.target.id === 'msgText') msgCount(); });
+  el.sheet.addEventListener('click', function (e) { if (sheetExtraClick(e)) e.stopPropagation(); }, true);
+  // Группы настроек запоминают, открыты они или свёрнуты, пока панель на экране.
+  el.page.addEventListener('toggle', function (e) {
+    var sg = e.target && e.target.getAttribute && e.target.getAttribute('data-sg');
+    if (sg) adm.setOpen[sg] = !!e.target.open;
+  }, true);
 
   // Любое нажатие на кнопку — лёгкая вибрация; занятая кнопка нажатий не принимает.
   document.addEventListener('click', function (e) {
