@@ -4930,7 +4930,7 @@ function handleCallback8_(cq, token, props, answer) {
 /*
  * Без Script Property NP_API_KEY модуль выключен: город и отделение клиент вводит руками.
  * С ключом витрина получает подсказки: ?action=np.city&q=хар → города, ?action=np.wh&city=<ref>&q=12 → отделения.
- * Ответы Новой почты кэшируются на 6 часов. С настоящим ключом модуль ещё не проверялся.
+ * Ответы Новой почты кэшируются на 24 часа в два слоя (CacheService 6 ч + скрытый лист «Кеш НП»), см. Stage9b3.gs; при «To many requests» — пауза 10 минут.
  */
 
 var NP_API_URL = 'https://api.novaposhta.ua/v2.0/json/';
@@ -4961,6 +4961,19 @@ function npCall_(method, properties, opts) {
   var noCache = !!(opts && opts.noCache);
   var cached = noCache ? null : cache.get(cacheKey);
   if (cached) return JSON.parse(cached);
+  // Выпуск 9Б3: пауза после «To many requests» (Stage9b3.gs). Ответы из кэша выше отдаются и во время паузы; сети нет вообще, ни публичной, ни админской.
+  var pausedFor = typeof npPauseLeftSec_ === 'function' ? npPauseLeftSec_() : 0;
+  if (pausedFor > 0) {
+    if (eo) { eo.text = 'paused'; eo.api = false; eo.nocall = true; eo.paused = true; eo.retryAfter = pausedFor; }
+    return null;
+  }
+  function limited() { // НП ответила лимитом: пауза 10 минут, один раз в сутки тревога админам; npReport_ («Підказки НП не працюють») не шлём
+    if (typeof npPauseSet_ === 'function') npPauseSet_();
+    console.warn('np: ліміт запитів, пауза 10 хв');
+    if (typeof npLimitAlert_ === 'function') npLimitAlert_();
+    if (eo) { eo.text = 'paused'; eo.api = false; eo.nocall = false; eo.paused = true; eo.retryAfter = typeof npPauseLeftSec_ === 'function' ? npPauseLeftSec_() : 600; }
+    return null;
+  }
   // Счётчик за час: «число|начало окна». Окно не продлевается каждым запросом.
   var ckCalls = admin ? 'np_calls_adm' : 'np_calls', maxCalls = admin ? NP_MAX_CALLS_PER_HOUR : NP_MAX_PUBLIC_CALLS_PER_HOUR;
   var now = Date.now(), parts = String(cache.get(ckCalls) || '').split('|');
@@ -4974,6 +4987,7 @@ function npCall_(method, properties, opts) {
     var code = typeof res.getResponseCode === 'function' ? res.getResponseCode() : 200;
     var data;
     try { data = JSON.parse(res.getContentText()); } catch (e1) { data = null; }
+    if (typeof npLimitHit_ === 'function' && npLimitHit_(code, data)) return limited();
     if (!data) return fail(code !== 200 ? 'відповідь API ' + code : 'некоректна відповідь API', false);
     if (!data.success || !Array.isArray(data.data)) {
       var why = [].concat(data.errors || [], data.errorCodes || []).join('; ');
@@ -5055,61 +5069,104 @@ function npCityUa_(q) {
   return q;
 }
 
+/** Строка запроса для ключа кэша: без регистра и лишних пробелов (і/и и прочие буквы не трогаем). */
+function npNormQ_(q) { return String(q).toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+/**
+ * Подсказки городов. Кэш по нормализованной строке: 24 часа (быстрый слой + лист «Кеш НП»), «ничего не найдено» — 1 час, ошибка не кэшируется.
+ * Одинаковый запрос одновременно — один вызов НП. Пауза из-за лимита: ответ {ok:false, retryAfter:сек}, сети нет.
+ */
 function npCities_(q) {
   if (!npKey_()) return { ok: false, error: 'off' };
   q = clean_(q, 200);
   if (q.length < 2 || q.length > 40) return { ok: true, list: [] };
-  var data = npCall_('searchSettlements', { CityName: npCityUa_(q), Limit: '30' });
-  if (!data) return { ok: false };
-  var towns = [], rest = [];
-  ((data[0] && data[0].Addresses) || []).forEach(function (a) {
-    if (!a || !a.DeliveryCity || !a.Present || !(Number(a.Warehouses) > 0)) return; // только пункты, куда есть кому доставить
-    var item = { n: String(a.Present).slice(0, 120), s: String(a.MainDescription || a.Present).slice(0, 60), ref: String(a.DeliveryCity) };
-    (/^м\./.test(item.n) || String(a.SettlementTypeCode || '') === 'м.' ? towns : rest).push(item);
-  });
-  return { ok: true, list: towns.concat(rest).slice(0, 10) };
+  var name = npCityUa_(q), ck = 'npc2_' + npNormQ_(name);
+  function fromCache() {
+    var t = npCacheGet_(ck, true);
+    if (t === null) return null;
+    try { var l = JSON.parse(t); return Array.isArray(l) ? l : null; } catch (e) { return null; }
+  }
+  var hit = fromCache();
+  if (hit) return { ok: true, list: hit };
+  var lead = npLead_(ck, 6, function () { return npCacheGet_(ck, true); });
+  if (lead.value !== undefined) { hit = fromCache(); if (hit) return { ok: true, list: hit }; }
+  if (!lead.lead) return { ok: false };
+  try {
+    var eo = {};
+    var data = npCall_('searchSettlements', { CityName: name, Limit: '30' }, { noCache: true, errOut: eo });
+    if (!data) return npRetry_({ ok: false }, eo);
+    var towns = [], rest = [];
+    ((data[0] && data[0].Addresses) || []).forEach(function (a) {
+      if (!a || !a.DeliveryCity || !a.Present || !(Number(a.Warehouses) > 0)) return; // только пункты, куда есть кому доставить
+      var item = { n: String(a.Present).slice(0, 120), s: String(a.MainDescription || a.Present).slice(0, 60), ref: String(a.DeliveryCity) };
+      (/^м\./.test(item.n) || String(a.SettlementTypeCode || '') === 'м.' ? towns : rest).push(item);
+    });
+    var list = towns.concat(rest).slice(0, 10);
+    npCachePut_(ck, JSON.stringify(list), list.length ? NP_TTL_LONG : NP_TTL_EMPTY);
+    return { ok: true, list: list };
+  } finally {
+    lead.done();
+  }
 }
 
 var NP_WH_PAGE = 500, NP_WH_MAX_PAGES = 12, NP_WH_MAX_MS = 20000;
 
-/** Все отделения и почтоматы города: [[номер, 'адрес', 'w'|'p'], …] по возрастанию номера. Кэш — по городу. */
+/**
+ * Все отделения и почтоматы города: [[номер, 'адрес', 'w'|'p'], …] по возрастанию номера. Общий список города (npWhLoad_, Stage9b3.gs):
+ * кэш 24 часа в двух слоях, один набор страниц на всех покупателей, остановка на первой ошибке и на паузе из-за лимита.
+ */
 function npWarehousesAll_(cityRef) {
   if (!npKey_()) return { ok: false, error: 'off' };
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cityRef)) return { ok: false };
-  var ckey = 'npwh_' + cityRef.toLowerCase();
-  var cached = cacheGetLarge_(ckey);
-  if (cached) { try { return { ok: true, list: JSON.parse(cached) }; } catch (e) { /* битый кэш — грузим заново */ } }
-  var started = Date.now(), all = [], done = false;
-  for (var page = 1; page <= NP_WH_MAX_PAGES && Date.now() - started < NP_WH_MAX_MS; page++) {
-    var data = npCall_('getWarehouses', { CityRef: cityRef, Limit: String(NP_WH_PAGE), Page: String(page) }, { noCache: true });
-    if (!data) return { ok: false };
-    data.forEach(function (w) {
-      var num = parseInt(w && w.Number, 10);
-      if (!(num > 0)) return;
-      var locker = String(w.CategoryOfWarehouse || '') === 'Postomat' || /по[чш]тома[тн]/i.test(String(w.Description || '')); // тип — до любой обрезки
-      all.push([num, String(w.ShortAddress || w.Description || '').slice(0, 90), locker ? 'p' : 'w']);
-    });
-    if (data.length < NP_WH_PAGE) { done = true; break; }
-  }
-  if (!done) return { ok: false }; // не успели дочитать — неполный список не отдаём и не кэшируем
-  all.sort(function (a, b) { return a[0] - b[0] || (a[2] < b[2] ? -1 : 1); });
-  cachePutLarge_(ckey, JSON.stringify(all), 86400); // 24 ч; CacheService сам ограничит 6 часами
-  return { ok: true, list: all };
+  var eo = {};
+  var rich = npWhLoad_(cityRef, false, eo);
+  if (!rich) return npRetry_({ ok: false }, eo);
+  return { ok: true, list: rich.l.map(function (x) { return [x[0], x[1], x[2]]; }) };
 }
 
+/**
+ * Старый путь подсказок отделения (на каждый ввод). Если список города уже в кэше — отвечает из него без сети; иначе один запрос
+ * по (город, строка), кэш 24 часа, «пусто» — 1 час, ошибка не кэшируется.
+ */
 function npWarehouses_(cityRef, q, type) {
   if (!npKey_()) return { ok: false, error: 'off' };
   if (!/^[0-9a-f-]{36}$/i.test(cityRef)) return { ok: false, error: 'bad_form' };
-  var data = npCall_('getWarehouses', { CityRef: cityRef, FindByString: clean_(q, 40), Limit: '30' });
-  if (!data) return { ok: false, error: 'np_error' };
-  var list = [];
-  data.forEach(function (w) {
-    if (!w || !w.Description) return;
-    var locker = String(w.CategoryOfWarehouse || '') === 'Postomat';
-    if ((type === 'locker') !== locker) return;
-    if (list.length < 12) list.push({ n: String(w.Description).slice(0, 140), num: String(w.Number || '') });
-  });
-  return { ok: true, list: list };
+  q = clean_(q, 40);
+  var rich = npWhPeek_(cityRef);
+  if (rich) return { ok: true, list: npWhLocalSearch_(rich, q, type) };
+  var ck = 'npwq_' + cityRef.toLowerCase() + '_' + npNormQ_(q);
+  function fromCache() {
+    var t = npCacheGet_(ck, true);
+    if (t === null) return null;
+    try { var l = JSON.parse(t); return Array.isArray(l) ? l : null; } catch (e) { return null; }
+  }
+  function view(raw) {
+    var list = [];
+    raw.forEach(function (w) {
+      if ((type === 'locker') !== (w[2] === 1)) return;
+      if (list.length < 12) list.push({ n: String(w[0]), num: String(w[1] || '') });
+    });
+    return { ok: true, list: list };
+  }
+  var hit = fromCache();
+  if (hit) return view(hit);
+  var lead = npLead_(ck, 6, function () { return npCacheGet_(ck, true); });
+  if (lead.value !== undefined) { hit = fromCache(); if (hit) return view(hit); }
+  if (!lead.lead) return { ok: false, error: 'np_error' };
+  try {
+    var eo = {};
+    var data = npCall_('getWarehouses', { CityRef: cityRef, FindByString: q, Limit: '30' }, { noCache: true, errOut: eo });
+    if (!data) return npRetry_({ ok: false, error: 'np_error' }, eo);
+    var raw = [];
+    data.forEach(function (w) {
+      if (!w || !w.Description) return;
+      raw.push([String(w.Description).slice(0, 140), String(w.Number || ''), String(w.CategoryOfWarehouse || '') === 'Postomat' ? 1 : 0]);
+    });
+    npCachePut_(ck, JSON.stringify(raw), raw.length ? NP_TTL_LONG : NP_TTL_EMPTY);
+    return view(raw);
+  } finally {
+    lead.done();
+  }
 }
 
 /* ------------------------------ Разовая настройка этапа 8 ------------------------------ */
