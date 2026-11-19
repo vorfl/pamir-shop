@@ -2194,13 +2194,29 @@ const smallTargets = page => page.evaluate(() => {
     ok(m.rails === 3 && n0 > 3 && m.chips.length === n0 - 3, 'лент на главной ровно 3 (по умолчанию, без railsMax), остальные непустые — в строке «Ще»: ' + m.titles.join(', ') + ' / ' + m.chips.join(', '), m);
     ok(m.titles[0] === 'Популярне' && m.titles[1] === 'Набори', 'приоритет лент: «Популярне», затем «Набори»', m.titles);
     ok(await count(pg, '.morerails .morerails__label') === 1 && /^Ще:/.test(await text(pg, '.morerails')) && await count(pg, '.main > .rail:not(.recs) .mini') > 0, 'строка чипов начинается с «Ще:»; пустых лент нет', await text(pg, '.morerails'));
-    ok(await pg.evaluate(() => { const o = [ '.feature', '.father', '.plus', '.main > .rail:not(.recs)', '.recs', '#gridHead' ].map(s => document.querySelector(s));
-      return o.every(Boolean) && o.every((n, i) => i === 0 || (o[i - 1].compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) > 0); }), 'порядок: «Наша курага» → специи отца → «плюсы» → ленты → рецепты → «Усі товари»');
+    ok(await pg.evaluate(() => { const o = [ '.feature', '.main > .rail:not(.recs)', '.father', '.plus', '.main > .rail:not(.recs) ~ .rail:not(.recs)', '.recs', '#gridHead' ].map(s => document.querySelector(s));
+      return o.every(Boolean) && o.every((n, i) => i === 0 || (o[i - 1].compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING) > 0); }), 'порядок: «Наша курага» → первая лента → специи отца → «плюсы» → остальные ленты → рецепты → «Усі товари»');
     ok(await count(pg, '.plus__item') === 4 && await count(pg, '.perks, .perk, .bizline') === 0, 'в строке четыре плашки: подарок, подарок постоянным, подбор, опт; старых плашек нет', await pg.locator('.plus__item').allInnerTexts());
     const look = await pg.evaluate(() => { const its = [].slice.call(document.querySelectorAll('.plus__item')), cs = its.map(i => getComputedStyle(i));
       return { same: cs.every(c => c.backgroundColor === cs[0].backgroundColor && c.borderTopColor === cs[0].borderTopColor && c.color === cs[0].color),
         accent: its.every(i => getComputedStyle(i.querySelector('.ico')).color !== getComputedStyle(i).color), min: Math.min.apply(null, its.map(i => i.getBoundingClientRect().height)) }; });
     ok(look.same && look.accent && look.min >= 44, 'плашки одного стиля: одна поверхность и линия, акцентный цвет только у иконки, высота ≥ 44 px', look);
+    // б16: на 360 × 640 без прокрутки карточки первой ленты (фото и название целиком) выше нижней панели с запасом ≥ 8 px; порядок блоков; все 4 варианта
+    for (const [theme, lc] of [['light', 'uk'], ['dark', 'uk'], ['light', 'ru'], ['dark', 'ru']]) {
+      const V = await open(browser, st.url, { uid: 501, w: 360, h: 640, theme, lc, before: withMax(undefined) });
+      await V.page.waitForSelector('#grid .card');
+      const g = await V.page.evaluate(() => {
+        const first = document.querySelector('.main > .rail:not(.recs)'), mini = first.querySelector('.mini'), tab = document.querySelector('.tabbar').getBoundingClientRect().top;
+        const kids = [].slice.call(document.querySelectorAll('.main > *')).map(n => n.classList.contains('feature') ? 'feature' : n.classList.contains('father') ? 'father' : n.classList.contains('plus') ? 'plus' : n.classList.contains('rail') && !n.classList.contains('recs') ? 'rail' : '');
+        const r = n => n.getBoundingClientRect().bottom;
+        return { scrollY: window.scrollY, railTop: Math.round(first.getBoundingClientRect().top), imgBottom: Math.round(r(mini.querySelector('.mini__img'))), nameBottom: Math.round(r(mini.querySelector('.mini__name'))), tab: Math.round(tab),
+          order: kids.filter(Boolean).slice(0, 5).join('>') };
+      });
+      const tag = theme + '/' + lc + ': ';
+      ok(g.scrollY === 0 && g.imgBottom <= g.tab - 8 && g.nameBottom <= g.tab - 8, tag + 'без прокрутки у первой карточки первой ленты низ фото ' + g.imgBottom + ' и низ названия ' + g.nameBottom + ' ≤ верх панели ' + g.tab + ' − 8', g);
+      ok(g.order === 'feature>rail>father>plus>rail', tag + 'порядок блоков: «Наша курага» → лента → «Спеції від батька» → плюсы → ленты', g.order);
+      await V.ctx.close();
+    }
     ok(await noOverflow(pg) && (await smallTargets(pg)).length === 0, 'главная: без горизонтальной прокрутки, кнопки ≥ 44 px', await smallTargets(pg));
     ok(m.recsH > 0 && m.recsH <= m.railH, 'блок «Рецепти» не выше одной ленты карточек: ' + m.recsH + ' ≤ ' + m.railH, [m.recsH, m.railH]);
     ok(await count(pg, '.recs .rcard') === 2 && await count(pg, '.recs .rcard__img .ico') === 2 && await count(pg, '.recs__item') === 0, 'рецепты — горизонтальная лента карточек (без фото — иконка)');
@@ -2337,7 +2353,7 @@ const smallTargets = page => page.evaluate(() => {
     const before = async page => {
       await page.route(/\/img\/products\//, r => {
         const u = r.request().url(); reqs.push(u);
-        if (/\/s\/DRY-001\.webp\?v=25$/.test(u) || /DRY-002\.webp\?v=25$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
+        if (/\/s\/DRY-001\.webp\?v=26$/.test(u) || /DRY-002\.webp\?v=26$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
         r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg });
       });
       await page.route('https://drive.google.com/**', r => { reqs.push(r.request().url()); r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg }); });
@@ -2347,21 +2363,21 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForTimeout(700);
     const src = id => page.evaluate(i => { const im = document.querySelector('#grid .card[data-id="' + i + '"] .card__img img'); return im ? im.getAttribute('src') : null; }, id);
     const has = re => reqs.some(u => re.test(u));
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=25$/) && !has(/\/img\/products\/DRY-039\.webp\?v=25$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
-    ok(/\/img\/products\/DRY-001\.webp\?v=25$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=25$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
-    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=25$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=25$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=26$/) && !has(/\/img\/products\/DRY-039\.webp\?v=26$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
+    ok(/\/img\/products\/DRY-001\.webp\?v=26$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=26$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
+    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=26$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=26$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
     const catImg = st.gas.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-003').img;
     ok(/drive\.google\.com/.test(catImg) && await src('DRY-003') === catImg && !/\/s\//.test(await src('DRY-003')), 'адрес Google Drive не меняется', [catImg, await src('DRY-003')]);
     const miniSrc = await page.evaluate(() => { const im = document.querySelector('.mini[data-id="DRY-039"] img'); return im ? im.getAttribute('src') : ''; });
-    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=25$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
+    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=26$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
     await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
     await page.waitForSelector('.sheet__img img');
     await page.waitForTimeout(300);
-    ok(/\/img\/products\/DRY-039\.webp\?v=25$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=25$/), 'шторка товара берёт большое фото');
+    ok(/\/img\/products\/DRY-039\.webp\?v=26$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=26$/), 'шторка товара берёт большое фото');
     await page.click('[data-action="add"]');
     await page.click('#toastBtn');
     await page.waitForSelector('.line__img img');
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await ctx.close(); st.server.close();
     // файлы: у каждого большого фото есть копия не тяжелее 30 КБ
@@ -2401,7 +2417,7 @@ const smallTargets = page => page.evaluate(() => {
       await page.waitForSelector('#grid .card');
       const tag = ' (' + theme + ')';
       const cardSrc = await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-039"] .card__img img').getAttribute('src'));
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
       await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
       await page.waitForSelector('.sheet__strip');
       await page.waitForTimeout(400);
@@ -2411,7 +2427,7 @@ const smallTargets = page => page.evaluate(() => {
         return { first: sl[0].getAttribute('src'), second: sl[1].getAttribute('src'), lazy: sl[1].getAttribute('loading'), cur: d.map(x => x.classList.contains('is-on')), tag: d.map(x => x.tagName), hidden: document.querySelector('.sheet__dots').getAttribute('aria-hidden'),
           gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), dist: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().left), snap: getComputedStyle(document.querySelector('.sheet__strip')).scrollSnapType };
       });
-      ok(/\/img\/products\/DRY-039\.webp\?v=25$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=25$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
+      ok(/\/img\/products\/DRY-039\.webp\?v=26$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=26$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
       ok(info.cur[0] === true && info.cur[1] === false && /x mandatory/.test(info.snap), 'активна первая точка; у ленты scroll-snap' + tag, info);
       const dots = await page.evaluate(() => { const b = document.querySelector('.sheet__dots'), r = b.getBoundingClientRect(), d = [].slice.call(b.querySelectorAll('.sheet__dot')); return { tag: b.tagName, label: b.getAttribute('aria-label'), w: Math.round(r.width), h: Math.round(r.height), n: d.length, gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), hid: d.every(x => x.getAttribute('aria-hidden') === 'true') }; });
       ok(dots.tag === 'BUTTON' && dots.label === 'Наступне фото' && dots.w >= 44 && dots.h >= 44 && dots.n === 2 && dots.gap >= 8 && dots.gap <= 10 && dots.hid, 'полоска точек — одна кнопка ≥ 44×44 с подписью «Наступне фото», точки внутри на расстоянии 8–10 px' + tag, dots);
@@ -2442,7 +2458,7 @@ const smallTargets = page => page.evaluate(() => {
       // корзина — только первое фото (маленькая копия)
       await page.click('[data-action="add"]'); await page.click('#toastBtn');
       await page.waitForSelector('.line__img img');
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=25$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=26$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
       ok(!reqs.some(u => /\/s\/p\//.test(u)), 'маленькой копии второго фото не запрашивали' + tag, reqs.filter(u => /\/p\//.test(u)));
       await ctx.close();
 
@@ -3313,7 +3329,7 @@ const smallTargets = page => page.evaluate(() => {
     const e1 = items();
     ok(e1.length === 1 && /boom1/.test(e1[0].m) && !/123 45 67|\+380 50/.test(e1[0].m) && e1[0].m.length <= 200, 'ошибка скрипта уходит записью err; телефон из текста вычищен', e1);
     const body1 = JSON.stringify(errReqs[0]);
-    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '25' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (23); без initData и данных покупателя', body1);
+    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '26' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (23); без initData и данных покупателя', body1);
     ok(await c.page.evaluate(() => /^[a-z0-9]{8,32}$/.test(localStorage.getItem('pamir_did'))), 'did — случайная строка в хранилище устройства');
     // одинаковые подряд не дублируются
     await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');

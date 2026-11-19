@@ -1357,17 +1357,22 @@
     items.sort(function (x, y) { return (x.pri - y.pri) || (x.seq - y.seq); });
     return items;
   }
+  /**
+   * Главная после «Нашей кураги»: {first} — первая непустая лента (она встаёт сразу под «Нашей курагой»,
+   * чтобы на 360 × 640 карточки были на первом экране), {rest} — остальные ленты, чипы «Ще» и рецепты.
+   */
   function homeRails() {
     var all = railItems(), max = railsMax();
     var items = all.filter(function (i) { return i.key !== 'gift'; });
-    var html = all.filter(function (i) { return i.key === 'gift'; }).concat(items.slice(0, max)).map(function (i) { return i.html; }).join('');
+    var shown = all.filter(function (i) { return i.key === 'gift'; }).concat(items.slice(0, max));
+    var html = shown.slice(1).map(function (i) { return i.html; }).join('');
     var rest = items.slice(max);
     if (rest.length) { // лишние непустые ленты — строкой чипов; чип открывает отдельный экран со списком
       html += '<div class="morerails"><span class="morerails__label">' + esc(t('plusMore')) + '</span>' + rest.map(function (i) {
         return '<button type="button" class="chip chip--sm" data-w1="rail" data-k="' + esc(i.key) + '">' + esc(i.title) + '</button>';
       }).join('') + '</div>';
     }
-    return html + recipesHomeHtml();
+    return { first: shown.length ? shown[0].html : '', rest: html + recipesHomeHtml() };
   }
   function railPageHtml() {
     var it = null;
@@ -1406,7 +1411,8 @@
         railHtml(t('secPop'), '', popular(10).list);
       return;
     }
-    var html = home ? featureHtml() + fatherHtml() + plusHtml() + homeRails() : '';
+    var hr = home ? homeRails() : null;
+    var html = home ? featureHtml() + hr.first + fatherHtml() + plusHtml() + hr.rest : '';
     // Список листается страницами по PAGE_SIZE товаров; номер страницы живёт в flt.page.
     flt.page = clampPage(flt.page, list.length, PAGE_SIZE);
     var from = (flt.page - 1) * PAGE_SIZE;
