@@ -449,6 +449,19 @@ node tests/e2e.js
 
 Снимки экранов тесты складывают в `%TEMP%\pamir-shots`. «Старый бэкенд» в тестах — `Code.gs` из ветки `main` (другую ветку задаёт `OLD_BACKEND_REF`).
 
+## Этап 9, волна Б2 (ветка `stage9b2`)
+
+Отчёт, выпуск по шагам, проверки на телефоне, вопросы и «заполнить самому» — в `docs/STAGE9_REPORT_B2.md`; фото по шагам — `docs/PHOTOS_HOWTO.md`.
+
+- **Новый файл бэкенда** `apps-script/Stage9b2.gs`: пункты меню «Етап 9Б2: записати другі фото» и «Етап 9Б2: налаштувати» (список шагов `S9B2_STEPS`), сообщения после заказа (`followupJob_`), сводка (`digestJob_`), синонимы, Нова пошта (стоимость, накладная, слежение). Без него остальное работает по-старому.
+- **Новые необязательные колонки:** «Товари» → «Фото 2» (поле `i2`), «Склад набору» (`ks`, `kp`); «Замовлення» → «Якщо немає»; «Клієнти» → «Останнє повідомлення», «Очікуємо відповідь». Необязательный лист «Синоніми» → `shop.syn`.
+- **Новые необязательные настройки:** `hint_tag`, `hint_id`, `hint_text_ua/ru` → `shop.hint`; `followup1_days`, `followup2_days` (0 — выключено), `followup2_text_ua/ru`; `digest_hour`; `np_track_hours`.
+- **Заказ:** необязательные поля `ifOut` (`call` / `replace` / `remove`, при `shop.ifo`) и `cityRef` (код города НП). Набор недоступен, если недоступен хоть один товар состава.
+- **Новые запросы:** `GET ?action=np.price&city=&w=&sum=` (при `shop.npp`); `orders.my` с `num` → поле `one` (только свой заказ); панель — `admin.ttn.preview`, `admin.ttn.create` (право `st`, флаг `npTtn` в `admin.orders`). Ссылка повтора заказа: `?startapp=re-<цифры номера>`.
+- **Script Properties:** `NP_SENDER_CITY`, `NP_SENDER_REF`, `NP_SENDER_CONTACT`, `NP_SENDER_ADDRESS`, `NP_SENDER_PHONE` (без них и без `NP_API_KEY` всё как раньше); служебные `DIGEST_LAST`, `NP_TRACK_LAST`.
+- **Фото:** вторые фото в `webapp/img/products/p/`; `tools/photos.js --src <папка> [--only card|page] [--write] [--force]` конвертирует готовые PNG/JPG.
+- **Тесты:** «старый бэкенд» в части проверок e2e — коммит выпуска А (`OLD_REF_A`); `tests/gas_mock.js` умеет «тесную» таблицу (`tighten()`).
+
 ## Этап 9, волна Б1 (ветка `stage9b1`)
 
 Отчёт, выпуск по шагам, проверки на телефоне и список «заполнить самому» — в `docs/STAGE9_REPORT_B1.md`; прогресс и решения — в `docs/STAGE9_STATUS.md`; задание — `docs/STAGE9B_PROMPT.md`; Worker по шагам — `worker/README.md`.
