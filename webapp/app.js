@@ -1659,25 +1659,15 @@
     return '<img src="' + esc(verUrl(u)) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
   }
   function sheetDotsHtml(cur) {
-    var h = '<div class="sheet__dots" role="group" aria-label="' + esc(t('photos')) + '">';
-    for (var i = 0; i < 2; i++) {
-      h += '<button type="button" class="sheet__dot" data-slide="' + i + '" aria-label="' + esc(tf('photoN', { n: i + 1, m: 2 })) + '"' + (i === cur ? ' aria-current="true"' : '') + '></button>';
-    }
+    // Точки — только индикатор (не кнопки): листают свайпом, поэтому зона нажатия не нужна.
+    var h = '<div class="sheet__dots" aria-hidden="true">';
+    for (var i = 0; i < 2; i++) h += '<span class="sheet__dot' + (i === cur ? ' is-on' : '') + '"></span>';
     return h + '</div>';
-  }
-  function sheetGoSlide(i) {
-    var strip = el.sheet.querySelector('.sheet__strip');
-    if (!strip) return;
-    var calm = false;
-    try { calm = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { /* нет matchMedia */ }
-    var left = strip.clientWidth * i;
-    if (strip.scrollTo) strip.scrollTo({ left: left, behavior: calm ? 'auto' : 'smooth' }); else strip.scrollLeft = left;
-    sheetMarkDot(i);
   }
   function sheetMarkDot(i) {
     if (state.sheet) state.sheet.slide = i;
     [].forEach.call(el.sheet.querySelectorAll('.sheet__dot'), function (d, k) {
-      if (k === i) d.setAttribute('aria-current', 'true'); else d.removeAttribute('aria-current');
+      d.classList.toggle('is-on', k === i);
     });
   }
   /** Второе фото не загрузилось — убираем слайд и точки, остаётся как с одним фото. */
@@ -3993,8 +3983,6 @@
 
     el.sheet.addEventListener('click', function (e) {
       if (e.target.closest('.sheet__close')) { closeSheet(); return; }
-      var dot = e.target.closest('.sheet__dot');
-      if (dot) { sheetGoSlide(Number(dot.getAttribute('data-slide')) || 0); return; }
       var act = e.target.closest('[data-action]');
       var kind = act ? act.getAttribute('data-action') : '';
       if (kind === 'add') { addFromSheet(); return; }
@@ -6101,6 +6089,7 @@
     clearTimeout(toastTimer); el.toast.hidden = true; toastAction = null; // старое сообщение не должно закрывать кнопки подтверждения
     renderSheet();
     showSheet(false);
+    if (o.lock) { var okb = el.sheet.querySelector('[data-action="cf-ok"]'); if (okb) okb.disabled = true; } // кнопка ждёт отметки в шторке
   }
   function confirmSheetHtml(o) {
     return '<button type="button" class="sheet__close" aria-label="' + esc(t('close')) + '">' + icon('x') + '</button>' +
@@ -6113,6 +6102,11 @@
       (o.ok ? '<button type="button" class="btn btn--wrap ' + (o.danger ? 'btn--danger' : 'btn--primary') + '" data-action="cf-ok">' + esc(o.ok) + '</button>' : '') +
       '<button type="button" class="btn" data-action="cf-cancel">' + esc(t('cfCancel')) + '</button></div>';
   }
+  el.sheet.addEventListener('change', function (e) {
+    if (e.target.id !== 'ttnCityOk') return;
+    var okb = el.sheet.querySelector('[data-action="cf-ok"]');
+    if (okb) okb.disabled = !e.target.checked;
+  });
   el.sheet.addEventListener('click', function (e) {
     if (!state.sheet || state.sheet.kind !== 'confirm') return;
     var act = e.target.closest('[data-action]');
@@ -6716,8 +6710,8 @@
     ua: {
       nyGiftsTitle: 'Подарунки до свят', fGiftNote: 'Підпис до подарунка', giftNotePh: 'Наприклад: Мамі від Олени', giftNoteCount: '{n} / 120',
       errSendRetry: 'Не вдалося надіслати — спробуйте ще раз', retryOrder: 'Спробувати ще раз',
-      dupChanged: 'Попереднє замовлення {n} уже прийняте. У кошику зараз усі товари, зокрема вже замовлені. Приберіть зайве й надішліть решту окремим замовленням — або напишіть нам, і ми додамо до першого.',
-      dupChangedNoNum: 'Попереднє замовлення вже прийняте. У кошику зараз усі товари, зокрема вже замовлені. Приберіть зайве й надішліть решту окремим замовленням — або напишіть нам, і ми додамо до першого.',
+      dupChanged: 'Попереднє замовлення {n} уже прийняте. Зміни, зроблені після цього (у кошику чи в параметрах замовлення, наприклад «Якщо товару немає» або місто), до нього не потрапили. Щоб замовити ще — приберіть зайве з кошика й надішліть решту окремим замовленням. Щоб змінити те замовлення — напишіть нам.',
+      dupChangedNoNum: 'Попереднє замовлення вже прийняте. Зміни, зроблені після цього (у кошику чи в параметрах замовлення, наприклад «Якщо товару немає» або місто), до нього не потрапили. Щоб замовити ще — приберіть зайве з кошика й надішліть решту окремим замовленням. Щоб змінити те замовлення — напишіть нам.',
       sendAsNew: 'Надіслати кошик як нове замовлення', dupEditCart: 'Змінити кошик', dupWrite: 'Напишіть нам',
       sendAsNewAsk: 'У кошику можуть бути вже замовлені товари. Надіслати все як нове замовлення?', sendAsNewOk: 'Надіслати все',
       sh_theme: 'Сезонне оформлення магазину. Порожньо — звичайне; доступні newyear (гірлянда, святкова добірка, рядок про строки) і navruz.',
@@ -6802,8 +6796,8 @@
       sh_referral_on: 'Программа «Угости друга»: друг, пришедший по ссылке, получает пробник к первому заказу, а пригласивший — к следующему. Работает, только если ниже вписан пробник.',
       sh_referral_gift: 'Какой пробник дарится (за пробник деньги не берутся, сумма заказа не меняется). Пусто — программа выключена.',
       sh_referral_min_order: 'От какой суммы первого заказа друга дарится пробник, ₴. 0 — без ограничения.',
-      dupChanged: 'Предыдущий заказ {n} уже принят. В корзине сейчас все товары, в том числе уже заказанные. Уберите лишнее и отправьте остальное отдельным заказом — или напишите нам, и мы добавим к первому.',
-      dupChangedNoNum: 'Предыдущий заказ уже принят. В корзине сейчас все товары, в том числе уже заказанные. Уберите лишнее и отправьте остальное отдельным заказом — или напишите нам, и мы добавим к первому.',
+      dupChanged: 'Предыдущий заказ {n} уже принят. Изменения, сделанные после этого (в корзине или в параметрах заказа, например «Если товара нет» или город), в него не попали. Чтобы заказать ещё — уберите лишнее из корзины и отправьте остальное отдельным заказом. Чтобы изменить тот заказ — напишите нам.',
+      dupChangedNoNum: 'Предыдущий заказ уже принят. Изменения, сделанные после этого (в корзине или в параметрах заказа, например «Если товара нет» или город), в него не попали. Чтобы заказать ещё — уберите лишнее из корзины и отправьте остальное отдельным заказом. Чтобы изменить тот заказ — напишите нам.',
       sendAsNew: 'Отправить корзину как новый заказ', dupEditCart: 'Изменить корзину', dupWrite: 'Напишите нам',
       sendAsNewAsk: 'В корзине могут быть уже заказанные товары. Отправить всё как новый заказ?', sendAsNewOk: 'Отправить всё',
       sh_theme: 'Сезонное оформление магазина. Пусто — обычное; доступны newyear (гирлянда, праздничная подборка, строка о сроках) и navruz.',
@@ -6893,7 +6887,10 @@
       ttnName: 'Прізвище та ім’я отримувача', ttnNameHint: 'У замовленні вказано не повне ім’я. Нова пошта вимагає прізвище та ім’я.',
       ttnDesc: 'Опис вантажу', ttnCreate: 'Створити накладну',
       ttnBadW: 'Вкажіть вагу від {a} до {b} г', ttnBadName: 'Вкажіть прізвище та ім’я (два-три слова)',
-      ttnMade: 'Накладну створено: {n}.', ttnTold: 'Клієнту надіслано номер.'
+      ttnMade: 'Накладну створено: {n}.', ttnTold: 'Клієнту надіслано номер.',
+      ttnCityDiff: 'Місто в замовленні («{a}») не збігається з містом Нової пошти («{b}»). Перевірте перед створенням.', ttnCityOk: 'Місто правильне',
+      ttnSaveFailed: 'Накладну створено: {n}. Номер не записався в таблицю — впишіть його вручну.', ttnSaveFailedNoNum: 'Накладну, можливо, створено, але номер не записався в таблицю. Перевірте кабінет Нової пошти й впишіть номер вручну.',
+      ttnBusy: 'Перевірте кабінет Нової пошти: накладну могло бути створено. Не створюйте її повторно зараз.', ttnUnknown: 'Відповідь Нової пошти не отримано. Перевірте кабінет Нової пошти й не створюйте накладну повторно зараз.', ttnMadeTitle: 'Накладну створено'
     },
     ru: {
       npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'Доставку оплачивает получатель перевозчику. В сумму заказа не входит.',
@@ -6905,7 +6902,10 @@
       ttnName: 'Фамилия и имя получателя', ttnNameHint: 'В заказе указано неполное имя. Новая почта требует фамилию и имя.',
       ttnDesc: 'Описание груза', ttnCreate: 'Создать накладную',
       ttnBadW: 'Укажите вес от {a} до {b} г', ttnBadName: 'Укажите фамилию и имя (два-три слова)',
-      ttnMade: 'Накладная создана: {n}.', ttnTold: 'Клиенту отправлен номер.'
+      ttnMade: 'Накладная создана: {n}.', ttnTold: 'Клиенту отправлен номер.',
+      ttnCityDiff: 'Город в заказе («{a}») не совпадает с городом Новой почты («{b}»). Проверьте перед созданием.', ttnCityOk: 'Город правильный',
+      ttnSaveFailed: 'Накладная создана: {n}. Номер не записался в таблицу — впишите его вручную.', ttnSaveFailedNoNum: 'Накладная, возможно, создана, но номер не записался в таблицу. Проверьте кабинет Новой почты и впишите номер вручную.',
+      ttnBusy: 'Проверьте кабинет Новой почты: накладная могла быть создана. Не создавайте её повторно сейчас.', ttnUnknown: 'Ответ Новой почты не получен. Проверьте кабинет Новой почты и не создавайте накладную повторно сейчас.', ttnMadeTitle: 'Накладная создана'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
@@ -6935,11 +6935,21 @@
   function ttnRow(label, value) {
     return '<p class="ttnc__row"><span>' + esc(label) + '</span><b>' + esc(value) + '</b></p>';
   }
+  /** Накладная создана, но номер не записан в таблицу: шторка с крупным номером (текстом, не HTML). */
+  function showTtnSaved(num, tn) {
+    var html = (tn ? '<p class="ttnc__big" id="ttnSavedNum"></p>' : '') + '<p class="note note--out">' + esc(tn ? tf('ttnSaveFailed', { n: tn }) : t('ttnSaveFailedNoNum')) + '</p>';
+    askConfirm({ title: t('ttnMadeTitle') + ' ' + num, html: html });
+    var big = document.getElementById('ttnSavedNum');
+    if (big) big.textContent = tn;
+  }
   function ttnConfirm(d) {
     var minG = Number(d.minG) || 100, maxG = Number(d.maxG) || 30000;
     var wg = Number(d.weightG) > 0 ? Math.round(Number(d.weightG)) : '';
     var cod = Math.round(Number(d.cod) || 0);
+    var diff = Number(d.cityDiff) === 1;
     var html = '<div class="ttnc">' +
+      (diff ? '<div class="ttnc__warn" role="alert"><p>' + esc(tf('ttnCityDiff', { a: d.city || '', b: d.npCity || '' })) + '</p>' +
+        '<label class="check"><input type="checkbox" id="ttnCityOk"><span>' + esc(t('ttnCityOk')) + '</span></label></div>' : '') +
       (d.nameOk ? ttnRow(t('ttnRecv'), d.name) : '') + ttnRow(t('ttnPhone'), d.phone) + ttnRow(t('ttnCity'), d.city) +
       ttnRow(t(d.type === 'locker' ? 'ttnBranchP' : 'ttnBranchW'), d.npWarehouse || d.branch) +
       ttnRow(t('ttnCod'), cod > 0 ? money(cod) : t('ttnNoCod')) +
@@ -6948,12 +6958,17 @@
       '<p class="ttnc__hint">' + esc(wg === '' ? t('ttnWeightAsk') + ' ' : '') + esc(tf('ttnWeightHint', { a: minG, b: maxG })) + '</p></div>' +
       '<div class="field"><label class="label" for="ttnD">' + esc(t('ttnDesc')) + '</label><input class="input" id="ttnD" type="text" autocomplete="off" maxlength="100" value="' + esc(d.desc || '') + '"></div></div>';
     askConfirm({
-      title: t('ttnMkTitle') + ' ' + d.num, html: html, ok: t('ttnCreate'),
+      title: t('ttnMkTitle') + ' ' + d.num, html: html, ok: t('ttnCreate'), lock: diff,
       run: function (done) {
         var val = function (id) { var n = document.getElementById(id); return n ? String(n.value || '').trim() : ''; };
         var w = Math.round(Number(val('ttnW').replace(/\s+/g, '')));
         if (!(w >= minG && w <= maxG)) { done(tf('ttnBadW', { a: minG, b: maxG })); return; }
         var body = { num: d.num, weight: w, confirm: true, cod: cod };
+        if (diff) {
+          var cb = document.getElementById('ttnCityOk');
+          if (!cb || !cb.checked) { done(t('ttnCityOk')); return; }
+          body.cityOk = true;
+        }
         if (!d.nameOk) {
           var nm = val('ttnN').replace(/\s+/g, ' '), words = nm ? nm.split(' ') : [];
           if (words.length < 2 || words.length > 3) { done(t('ttnBadName')); return; }
@@ -6969,9 +6984,18 @@
             toast(tf('ttnMade', { n: res.ttn }) + ' ' + (res.told === false ? t('admNotTold') : t('ttnTold')));
             return;
           }
-          var msg = res && res.error === 'no_perm' ? t('admNoPerm') : ttnMsg(res);
-          if (res && res.error === 'np_api' && res.np) msg += ': ' + String(res.np).slice(0, 300);
-          if (res && res.ttn) msg += ' ' + String(res.ttn);
+          var code = res && res.error, tn = res && res.ttn ? String(res.ttn).slice(0, 40) : '';
+          if (code === 'save_failed' || tn) {
+            // Накладная у Нової пошти создана, а в таблицу номер не попал: показываем номер крупно, не теряем.
+            if (tn) (adm.orders || []).forEach(function (o) { if (o.num === d.num) o.ttn = tn; });
+            haptic('error');
+            done();
+            showTtnSaved(d.num, tn);
+            renderAdminList();
+            return;
+          }
+          var msg = code === 'no_perm' ? t('admNoPerm') : code === 'busy' ? t('ttnBusy') : code === 'np_unknown' ? t('ttnUnknown') : ttnMsg(res);
+          if (code === 'np_api' && res.np) msg += ': ' + String(res.np).slice(0, 300);
           done(msg);
         }).catch(function () { done(t('admFail')); });
       }

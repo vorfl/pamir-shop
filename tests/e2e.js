@@ -660,6 +660,8 @@ const smallTargets = page => page.evaluate(() => {
     ok(await page.evaluate(() => { const b = document.querySelector('.ord__acts .is-busy'); return !!b && b.disabled && [].every.call(document.querySelectorAll('.ord__acts button'), x => x.disabled); }), 'кнопка статуса сразу показывает индикатор, соседние кнопки заблокированы');
     await page.locator('.ord__acts').screenshot({ path: OUT + '/50-busy-status.png' });
     await page.waitForFunction(() => !document.querySelector('.ord__acts .is-busy'));
+    for (let i = 0; i < 40 && n('admin.status') < 1; i++) await page.waitForTimeout(50); // запись в журнал сервера стенда может отстать от ответа
+    await page.waitForTimeout(300); // и даём время лишнему запросу, если он есть
     ok(n('admin.status') === 1, 'двойное нажатие на статус заказа — один запрос', n('admin.status'));
 
     // переключатель наличия: меняется сразу, второй запрос не уходит
@@ -2399,30 +2401,28 @@ const smallTargets = page => page.evaluate(() => {
       ok(await count(page, '.sheet__slide') === 2 && await count(page, '.sheet__slide img') === 2 && await count(page, '.sheet__dot') === 2, 'товар с i2: два слайда и две точки' + tag);
       const info = await page.evaluate(() => {
         const sl = [].slice.call(document.querySelectorAll('.sheet__slide img')), d = [].slice.call(document.querySelectorAll('.sheet__dot'));
-        return { first: sl[0].getAttribute('src'), second: sl[1].getAttribute('src'), lazy: sl[1].getAttribute('loading'), cur: d.map(x => x.getAttribute('aria-current')), lbl: d.map(x => x.getAttribute('aria-label')),
-          size: d.map(x => [Math.round(x.getBoundingClientRect().width), Math.round(x.getBoundingClientRect().height)]), snap: getComputedStyle(document.querySelector('.sheet__strip')).scrollSnapType };
+        return { first: sl[0].getAttribute('src'), second: sl[1].getAttribute('src'), lazy: sl[1].getAttribute('loading'), cur: d.map(x => x.classList.contains('is-on')), tag: d.map(x => x.tagName), hidden: document.querySelector('.sheet__dots').getAttribute('aria-hidden'),
+          gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), dist: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().left), snap: getComputedStyle(document.querySelector('.sheet__strip')).scrollSnapType };
       });
       ok(/\/img\/products\/DRY-039\.webp\?v=25$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=25$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
-      ok(info.cur[0] === 'true' && info.cur[1] === null && /x mandatory/.test(info.snap), 'активна первая точка; у ленты scroll-snap' + tag, info);
-      ok(info.lbl.join('|') === 'Фото 1 з 2|Фото 2 з 2' && info.size.every(z => z[0] >= 44 && z[1] >= 44), 'точки: подписи UA «Фото 1 з 2», зона нажатия ≥ 44 px' + tag, info);
+      ok(info.cur[0] === true && info.cur[1] === false && /x mandatory/.test(info.snap), 'активна первая точка; у ленты scroll-snap' + tag, info);
+      ok(info.tag.join() === 'SPAN,SPAN' && info.hidden === 'true' && info.gap >= 8 && info.gap <= 12 && info.dist <= 20 && await count(page, '.sheet__dots button') === 0, 'точки — индикатор, не кнопки (span, aria-hidden), расстояние между ними 8–12 px' + tag, info);
       ok(await noOverflow(page) && (await smallTargets(page)).length === 0, 'шторка с лентой: без горизонтальной прокрутки, кнопки ≥ 44 px' + tag, await smallTargets(page));
       await page.screenshot({ path: OUT + '/120-b15-sheet-two-' + theme + '-1.png' });
       // прокрутка ленты меняет активную точку
       await page.evaluate(() => { const s = document.querySelector('.sheet__strip'); s.style.scrollBehavior = 'auto'; s.scrollLeft = s.clientWidth; });
-      await page.waitForFunction(() => document.querySelectorAll('.sheet__dot')[1].getAttribute('aria-current') === 'true');
-      ok(await page.evaluate(() => document.querySelectorAll('.sheet__dot')[0].getAttribute('aria-current') === null), 'прокрутка ленты ко второму фото переключает активную точку' + tag);
+      await page.waitForFunction(() => document.querySelectorAll('.sheet__dot')[1].classList.contains('is-on'));
+      ok(await page.evaluate(() => !document.querySelectorAll('.sheet__dot')[0].classList.contains('is-on')), 'прокрутка ленты ко второму фото переключает активную точку' + tag);
       await page.screenshot({ path: OUT + '/121-b15-sheet-two-' + theme + '-2.png' });
       // шторка перерисовывается (количество) — остаёмся на втором фото
       await page.click('[data-step="1"]');
       await page.waitForTimeout(200);
-      ok(await page.evaluate(() => { const s = document.querySelector('.sheet__strip'); return Math.round(s.scrollLeft / s.clientWidth) === 1 && document.querySelectorAll('.sheet__dot')[1].getAttribute('aria-current') === 'true'; }), 'после перерисовки шторки (кнопка «+») остаётся второе фото' + tag);
-      // нажатие на точку листает
-      await page.locator('.sheet__dot').first().click();
-      await page.waitForFunction(() => document.querySelector('.sheet__strip').scrollLeft < 2);
-      ok(await page.evaluate(() => document.querySelectorAll('.sheet__dot')[0].getAttribute('aria-current') === 'true'), 'нажатие на первую точку возвращает к первому фото' + tag);
-      await page.locator('.sheet__dot').nth(1).click();
-      await page.waitForFunction(() => { const s = document.querySelector('.sheet__strip'); return Math.abs(s.scrollLeft - s.clientWidth) < 2; });
-      ok(await page.evaluate(() => document.querySelectorAll('.sheet__dot')[1].getAttribute('aria-current') === 'true'), 'нажатие на вторую точку листает ко второму фото' + tag);
+      ok(await page.evaluate(() => { const s = document.querySelector('.sheet__strip'); return Math.round(s.scrollLeft / s.clientWidth) === 1 && document.querySelectorAll('.sheet__dot')[1].classList.contains('is-on'); }), 'после перерисовки шторки (кнопка «+») остаётся второе фото' + tag);
+      // возврат свайпом к первому фото: активная точка следует за лентой
+      await page.evaluate(() => { const s = document.querySelector('.sheet__strip'); s.style.scrollBehavior = 'auto'; s.scrollLeft = 0; });
+      await page.waitForFunction(() => document.querySelectorAll('.sheet__dot')[0].classList.contains('is-on'));
+      ok(await page.evaluate(() => !document.querySelectorAll('.sheet__dot')[1].classList.contains('is-on')), 'прокрутка обратно к первому фото возвращает активную точку' + tag);
+      await page.evaluate(() => { const s = document.querySelector('.sheet__strip'); s.scrollLeft = s.clientWidth; });
       // корзина — только первое фото (маленькая копия)
       await page.click('[data-action="add"]'); await page.click('#toastBtn');
       await page.waitForSelector('.line__img img');
@@ -3409,7 +3409,7 @@ const smallTargets = page => page.evaluate(() => {
       const real = await count(x.A.page, '[data-action="send-new"]') === 1;
       ok(real, (ru ? 'RU' : 'UA') + ': сквозной тест, настоящий бэкенд: повтор с другим составом даёт сообщение dup_changed', box);
       if (real) {
-        ok(ru ? /Предыдущий заказ .*уже принят\. В корзине сейчас все товары, в том числе уже заказанные\. Уберите лишнее и отправьте остальное отдельным заказом — или напишите нам, и мы добавим к первому\./.test(box) : /Попереднє замовлення .*уже прийняте\. У кошику зараз усі товари, зокрема вже замовлені\. Приберіть зайве й надішліть решту окремим замовленням — або напишіть нам, і ми додамо до першого\./.test(box), (ru ? 'RU' : 'UA') + ': текст сообщения', box);
+        ok(ru ? /Предыдущий заказ .*уже принят\. Изменения, сделанные после этого \(в корзине или в параметрах заказа, например «Если товара нет» или город\), в него не попали\. Чтобы заказать ещё — уберите лишнее из корзины и отправьте остальное отдельным заказом\. Чтобы изменить тот заказ — напишите нам\./.test(box) : /Попереднє замовлення .*уже прийняте\. Зміни, зроблені після цього \(у кошику чи в параметрах замовлення, наприклад «Якщо товару немає» або місто\), до нього не потрапили\. Щоб замовити ще — приберіть зайве з кошика й надішліть решту окремим замовленням\. Щоб змінити те замовлення — напишіть нам\./.test(box), (ru ? 'RU' : 'UA') + ': текст сообщения', box);
         ok(x.sv.gas.sheets['Замовлення'].rows.length === base && await cartIds(x.A.page) === 'NUT-007,SWT-004' && await ridOf(x.A.page) === '', 'в таблице один заказ с первым составом, корзина с обоими товарами на месте, ключ сброшен');
         ok(await count(x.A.page, '#formErr [data-go="orders"]') === 1 && (await x.A.page.locator('#formErr .btn').allInnerTexts()).join('|') === (ru ? 'Мои заказы|Изменить корзину|Отправить корзину как новый заказ' : 'Мої замовлення|Змінити кошик|Надіслати кошик як нове замовлення') + (x.sv.gas.get({ action: 'catalog' }).shop.contact ? (ru ? '|Напишите нам' : '|Напишіть нам') : '') && await x.A.page.locator('#formErr [data-go="cart"]').evaluate(b => b.classList.contains('btn--primary')) && await count(x.A.page, '#formErr [data-action="send-new"].btn--primary') === 0, (ru ? 'RU' : 'UA') + ': кнопки «Мої замовлення», «Змінити кошик» (основная), «Надіслати кошик як нове замовлення» (второстепенная), «Напишіть нам» только если задан контакт магазина');
         ok(await noOverflow(x.A.page) && (await smallTargets(x.A.page)).length === 0, 'сообщение и кнопки: ≥ 44 px, 360 px без горизонтальной прокрутки', await smallTargets(x.A.page));
@@ -3431,6 +3431,21 @@ const smallTargets = page => page.evaluate(() => {
         ok(x.sv.gas.sheets['Замовлення'].rows.length === base + 1 && x.state.sent[x.state.sent.length - 1].rid !== x.rid1 && x.state.sent[x.state.sent.length - 1].items.length === 2, '«Надіслати як нове»: второй заказ с полной корзиной (всего два), ключ новый', [x.sv.gas.sheets['Замовлення'].rows.length - base, last]);
         ok(await ridOf(x.A.page) === '' && await cartIds(x.A.page) === '', 'после успеха ключ и корзина очищены');
       }
+      await x.A.ctx.close(); x.sv.server.close();
+    }
+    // ответ потерян → покупатель поменял «Якщо товару немає» → повтор: dup_changed, один заказ, понятный текст
+    {
+      const x = await run(8870, 'uk', 'light');
+      const base = x.sv.gas.sheets['Замовлення'].rows.length;
+      await x.A.page.locator('#ifoBox [data-opt="ifOut-remove"]').click();
+      x.state.mode = 'pass';
+      await x.A.page.evaluate(() => window.__tg.main.cb()); // кнопка Telegram «Підтвердити»: форма уже изменена
+      await x.A.page.waitForSelector('#formErr:not([hidden]) [data-action="send-new"]', { timeout: 8000 });
+      const box = (await text(x.A.page, '#formErr')).replace(/ /g, ' ');
+      ok(x.state.sent[x.state.sent.length - 1].ifOut === 'remove' && x.state.sent[x.state.sent.length - 1].rid === x.rid1, 'ifOut изменён: повтор ушёл с прежним rid и новым ifOut', x.state.sent.map(s => [s.rid, s.ifOut]));
+      ok(/Попереднє замовлення .*уже прийняте\./.test(box) && /«Якщо товару немає»/.test(box) && /Щоб змінити те замовлення — напишіть нам/.test(box), 'ifOut изменён: покупатель видит, что прежний заказ принят, а изменение «Якщо товару немає» в него не попало', box);
+      ok(x.sv.gas.sheets['Замовлення'].rows.length === base && await ridOf(x.A.page) === '' && await cartIds(x.A.page) === 'NUT-007', 'ifOut изменён: в таблице по-прежнему один заказ, корзина цела, ключ сброшен', x.sv.gas.sheets['Замовлення'].rows.length - base);
+      ok(await x.A.page.locator('#formErr [data-go="cart"]').isEnabled() && await noOverflow(x.A.page) && (await smallTargets(x.A.page)).length === 0, 'ifOut изменён: кнопки доступны, ≥ 44 px, без горизонтальной прокрутки');
       await x.A.ctx.close(); x.sv.server.close();
     }
     // подставной ответ сервера (и без номера): витрина сама ведёт себя верно, даже если бэкенд ещё не обновлён
@@ -4227,6 +4242,71 @@ const smallTargets = page => page.evaluate(() => {
         ok(true, 'ТТН RU: ошибка create на русском');
         await R.A.page.screenshot({ path: OUT + '/b4-ttn-sheet-ru.png' });
         await R.A.ctx.close();
+      }
+      {
+        // город в заказе не совпал с городом НП: предупреждение, чекбокс, cityOk только булево true
+        const NPX = '<img src=x onerror="window.__xss=1">';
+        for (const theme of ['light', 'dark']) {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, preview: PREV({ cityDiff: 1, city: 'Харьков', npCity: NPX, npWarehouse: NPX }), create: { ok: true, ttn: '20450000555555', told: true } }, { theme });
+          await openOrd(A.page, 'P-0008');
+          await A.page.click('[data-w1="ttn-make"]');
+          await A.page.waitForSelector('#ttnCityOk');
+          const sh = NB(await text(A.page, '#sheet'));
+          ok(sh.indexOf('Місто в замовленні («Харьков») не збігається з містом Нової пошти («' + NPX + '»). Перевірте перед створенням') >= 0 && /Місто правильне/.test(sh) && await count(A.page, '#sheet img') === 0 && await A.page.evaluate(() => window.__xss === undefined), 'ТТН cityDiff (' + theme + '): предупреждение с обоими городами, строки НП как текст (HTML не исполняется)', sh);
+          ok(await A.page.locator('#sheet [data-action="cf-ok"]').isDisabled() && await A.page.evaluate(() => document.getElementById('ttnCityOk').closest('.check').getBoundingClientRect().height >= 44), 'ТТН cityDiff (' + theme + '): «Створити накладну» неактивна, пока не отмечено «Місто правильне» (зона ≥ 44 px)');
+          ok(await noOverflow(A.page) && (await smallTargets(A.page)).length === 0, 'ТТН cityDiff (' + theme + '): без горизонтальной прокрутки, элементы ≥ 44 px', await smallTargets(A.page));
+          await A.page.screenshot({ path: OUT + '/b2f-ttn-citydiff-' + theme + '.png' });
+          await A.page.locator('#ttnCityOk').check();
+          ok(!(await A.page.locator('#sheet [data-action="cf-ok"]').isDisabled()), 'ТТН cityDiff (' + theme + '): после отметки кнопка активна');
+          await A.page.locator('#ttnCityOk').uncheck();
+          ok(await A.page.locator('#sheet [data-action="cf-ok"]').isDisabled(), 'ТТН cityDiff (' + theme + '): снятие отметки снова блокирует кнопку');
+          await A.page.locator('#ttnCityOk').check();
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.waitForFunction(() => /20450000555555/.test(document.querySelector('.ord__body').innerText));
+          ok(calls.create.length === 1 && calls.create[0].cityOk === true, 'ТТН cityDiff (' + theme + '): в create уходит cityOk: true (булево)', calls.create[0]);
+          await A.ctx.close();
+        }
+        {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, preview: PREV({ npCity: 'Харків', npWarehouse: NPX }), create: { ok: true, ttn: '20450000444444', told: true } });
+          await openOrd(A.page, 'P-0008');
+          await A.page.click('[data-w1="ttn-make"]');
+          await A.page.waitForSelector('#ttnW');
+          ok(await count(A.page, '#ttnCityOk') === 0 && await count(A.page, '#sheet .ttnc__warn') === 0 && !(await A.page.locator('#sheet [data-action="cf-ok"]').isDisabled()) && await count(A.page, '#sheet img') === 0 && await A.page.evaluate(() => window.__xss === undefined), 'ТТН без cityDiff: предупреждения и чекбокса нет, кнопка активна; npWarehouse с HTML — текст');
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.waitForFunction(() => /20450000444444/.test(document.querySelector('.ord__body').innerText));
+          ok(calls.create.length === 1 && !('cityOk' in calls.create[0]), 'ТТН без cityDiff: cityOk в create не отправляется', calls.create[0]);
+          await A.ctx.close();
+        }
+        // ошибки create: city_diff, np_unknown, busy
+        const errCases = [
+          ['city_diff', { ok: false, error: 'city_diff', msg: { ua: 'Місто не збігається. Підтвердіть місто', ru: 'Город не совпадает' } }, /Місто не збігається\. Підтвердіть місто/],
+          ['np_unknown', { ok: false, error: 'np_unknown', msg: { ua: 'x', ru: 'x' } }, /Перевірте кабінет Нової пошти й не створюйте накладну повторно зараз/],
+          ['busy', { ok: false, error: 'busy', msg: { ua: 'x', ru: 'x' } }, /Перевірте кабінет Нової пошти: накладну могло бути створено\. Не створюйте її повторно зараз/]
+        ];
+        for (const [name, cr, re] of errCases) {
+          const { A, calls } = await openAdmin(stA, { npTtn: true, preview: PREV(), create: cr });
+          await openOrd(A.page, 'P-0008');
+          await A.page.click('[data-w1="ttn-make"]'); await A.page.waitForSelector('#ttnW');
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.waitForFunction(() => !document.getElementById('cfErr').hidden);
+          const er = await text(A.page, '#cfErr');
+          ok(re.test(er) && calls.create.length === 1 && !(await A.page.locator('#sheet [data-action="cf-ok"]').isDisabled()), 'ТТН create ' + name + ': понятный текст в шторке', er);
+          await A.ctx.close();
+        }
+        for (const [lc, withNum] of [['uk', true], ['ru', true], ['uk', false]]) {
+          const { A } = await openAdmin(stA, { npTtn: true, preview: PREV(), create: withNum ? { ok: false, error: 'save_failed', ttn: NPX, msg: { ua: 'x', ru: 'x' } } : { ok: false, error: 'save_failed' } }, { lc });
+          await openOrd(A.page, 'P-0008');
+          await A.page.click('[data-w1="ttn-make"]'); await A.page.waitForSelector('#ttnW');
+          await A.page.click('#sheet [data-action="cf-ok"]');
+          await A.page.waitForSelector('#sheet .note--out');
+          const sh = NB(await text(A.page, '#sheet'));
+          const big = withNum ? await A.page.evaluate(() => { const b = document.querySelector('.ttnc__big'); return b ? [b.textContent, parseFloat(getComputedStyle(b).fontSize), b.querySelector('img') === null] : null; }) : null;
+          const reTxt = lc === 'ru' ? /Номер не записался в таблицу — впишите его вручную/ : withNum ? /Номер не записався в таблицю — впишіть його вручну/ : /номер не записався в таблицю/;
+          ok(reTxt.test(sh) && (!withNum || (big && big[0] === NPX && big[1] >= 24 && big[2])) && await A.page.evaluate(() => window.__xss === undefined) && await count(A.page, '#sheet img') === 0, 'ТТН save_failed (' + lc + (withNum ? ', с номером' : ', без номера') + '): номер крупно как текст и просьба вписать вручную', [sh, big]);
+          if (withNum && lc === 'uk') await A.page.screenshot({ path: OUT + '/b2f-ttn-save-failed.png' });
+          ok(await count(A.page, '#sheet [data-action="cf-ok"]') === 0 && await A.page.locator('#sheet [data-action="cf-cancel"]').isVisible(), 'ТТН save_failed: повторно «Створити» не предлагается, шторку закрывает админ');
+          await A.ctx.close();
+        }
       }
       stA.server.close();
     }
