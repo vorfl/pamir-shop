@@ -43,6 +43,7 @@ var PRODUCT_COLS = {
   pUnit:   ['ціна за упаковку'],
   stock:   ['наявність'],
   photo:   ['фото'],
+  photo2:  ['=фото 2'], // Волна Б2: второе фото (страница товара), необязательная колонка, только точный заголовок
   descUa:  ['опис (ua)'],
   descRu:  ['описание (ru)'],
   whPrice: ['опт: ціна', 'опт ціна'],
@@ -71,7 +72,9 @@ var PRODUCT_COLS = {
   tags:    ['теги', 'тэги'],
   // Этап 9: необязательные колонки, только точный заголовок (по префиксу не ищутся).
   packG:   ['=вага упаковки, г'],
-  order:   ['=порядок']
+  order:   ['=порядок'],
+  // Волна Б2: «Склад набору» — ID товаров через запятую; строка с ним — набор. Необязательная колонка, только точный заголовок.
+  setItems: ['=склад набору']
 };
 
 /** Бейдж товара: в таблице пишется словом, витрина получает код. */
@@ -112,6 +115,7 @@ function doGet(e) {
     if (action === 'reviews') return jsonText_(JSON.stringify(reviewsFor_(String(e.parameter.id || ''))));
     if (action === 'np.city') return jsonText_(JSON.stringify(npCities_(String(e.parameter.q || ''))));
     if (action === 'np.whall') return jsonText_(JSON.stringify(npWarehousesAll_(String(e.parameter.city || ''))));
+    if (action === 'np.price') return jsonText_(JSON.stringify(typeof npPrice_ === 'function' ? npPrice_(String(e.parameter.city || ''), e.parameter.w, e.parameter.sum) : { ok: false, error: 'off' })); // Stage9b2.gs
     if (action === 'np.wh') return jsonText_(JSON.stringify(npWarehouses_(String(e.parameter.city || ''), String(e.parameter.q || ''), String(e.parameter.t || ''))));
     return jsonText_(JSON.stringify({ ok: true, service: 'PAMIR' }));
   } catch (err) {
@@ -172,6 +176,19 @@ function buildCatalog_() {
   categories = categories.filter(function (c) { return used[c.code]; });
 
   var shopInfo = readShop_();
+  try {
+    var hintInfo = shopHint_(readSettings_(), products); // подсказка в корзине: нужен список товаров, поэтому здесь, а не в readShop_
+    if (hintInfo) shopInfo.hint = hintInfo;
+  } catch (err) {
+    console.warn('hint: ' + safeErr_(err, true));
+  }
+  shopInfo.ifo = 1; // бэкенд принимает ifOut («Якщо товару немає»): новая витрина показывает выбор только при этом флаге
+  try {
+    var synMap = typeof readSynonyms_ === 'function' ? readSynonyms_(ss) : null; // лист «Синоніми» (необязательный): нет листа или пар — поля нет
+    if (synMap) shopInfo.syn = synMap;
+  } catch (err) {
+    console.warn('syn: ' + safeErr_(err, true));
+  }
   if (shopInfo.feature) {
     var visibleIds = {};
     products.forEach(function (p) { visibleIds[p.id.toUpperCase()] = true; });
@@ -287,9 +304,30 @@ function readProducts_(ss, categories) {
   ['id', 'nameUa', 'type', 'stock'].forEach(function (k) {
     if (col[k] < 0) throw new Error('В листе «Товари» не найдена колонка: ' + PRODUCT_COLS[k][0]);
   });
+  // «Фото 2» не должна подменять «Фото (посилання)» при поиске по началу заголовка.
+  if (col.photo2 >= 0 && col.photo === col.photo2) {
+    col.photo = -1;
+    values[0].forEach(function (h, i) {
+      if (col.photo < 0 && i !== col.photo2 && String(h || '').replace(/\s+/g, ' ').trim().toLowerCase().indexOf('фото') === 0) col.photo = i;
+    });
+  }
+
+  // «Склад набору» не должен читаться как «Склад» (состав специй) при поиске по началу заголовка.
+  if (col.setItems >= 0) {
+    ['compUa', 'compRu'].forEach(function (k) {
+      if (col[k] !== col.setItems) return;
+      var want = k === 'compUa' ? ['склад (ua)', 'склад'] : ['состав (ru)', 'состав'];
+      col[k] = -1;
+      values[0].forEach(function (h, i) {
+        var hn = String(h || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (col[k] < 0 && i !== col.setItems && want.some(function (w) { return hn === w; })) col[k] = i;
+      });
+    });
+  }
 
   var catByName = {};
   var catByCode = {};
+  var setRaw = {}; // id набора → текст «Склад набору»
   categories.forEach(function (c) {
     catByName[c.ua.toLowerCase()] = c.code;
     catByName[c.ru.toLowerCase()] = c.code;
@@ -408,14 +446,84 @@ function readProducts_(ss, categories) {
     if (howRu && howRu !== howUa) p.er = howRu.slice(0, 400);
     var tags = tagList_(cell_(row, col.tags));
     if (tags.length) p.tg = tags;
+    // «Фото 2» (необязательная колонка): только http(s)-ссылка; иначе поля нет.
+    var img2 = col.photo2 >= 0 ? cell_(row, col.photo2) : '';
+    if (/^https?:\/\/\S+$/i.test(img2)) p.i2 = img2;
     // «Вага упаковки, г» (необязательная колонка): целое 1–5000; пусто или мусор — поля нет.
     var pw = col.packG >= 0 ? packGrams_(row[col.packG]) : 0;
     if (pw) p.pw = pw;
     if (col.order >= 0) sortKeys.push(orderKey_(row[col.order]));
+    var setText = col.setItems >= 0 ? cell_(row, col.setItems) : '';
+    if (setText) setRaw[id] = setText;
     products.push(p);
   }
+  applySets_(products, setRaw);
   if (col.order >= 0) products = applyOrder_(products, sortKeys);
   return products;
+}
+
+/** Цена одной единицы товара для суммы «окремо» и подсказки: упаковка/штука, либо вагова с единственной фасовкой. Иначе 0 (неоднозначно). */
+function unitPrice_(p) {
+  if (!p || !p.a) return 0;
+  if (p.t === 'w') return p.v && p.v.length === 1 && p.v[0][1] > 0 ? p.v[0][1] : 0;
+  return p.p > 0 ? p.p : 0;
+}
+
+/**
+ * Наборы («Склад набору»). Набор недоступен (a = 0, поэтому и заказ с ним отклоняется как «немає»), если состав пуст,
+ * в нём есть товар, которого нет в таблице / скрыт / «немає», сам набор или другой набор.
+ * ks — ID состава; kp — сумма текущих цен состава, только если она надёжна и строго больше цены набора.
+ */
+function applySets_(products, setRaw) {
+  var ids = Object.keys(setRaw);
+  if (!ids.length) return;
+  var byUp = {}, isSet = {};
+  products.forEach(function (p) { byUp[p.id.toUpperCase()] = p; });
+  ids.forEach(function (id) { isSet[id.toUpperCase()] = true; });
+  products.forEach(function (p) {
+    if (setRaw[p.id] === undefined) return;
+    var list = idList_(setRaw[p.id], 20);
+    var me = p.id.toUpperCase();
+    var ok = list.length > 0, sum = 0, sumOk = true;
+    var ks = [];
+    list.forEach(function (u) {
+      var c = byUp[u];
+      ks.push(c ? c.id : u);
+      if (!c || !c.a || u === me || isSet[u]) { ok = false; return; }
+      var up = unitPrice_(c);
+      if (up > 0) sum += up; else sumOk = false;
+    });
+    if (ks.length) p.ks = ks;
+    if (!ok) { p.a = 0; return; }
+    var own = unitPrice_(p);
+    if (sumOk && own > 0 && sum > own) p.kp = sum;
+  });
+}
+
+/** Состав набора под строкой заказа: «\n   · название» на каждый товар (по таблице). Не набор — пустая строка. */
+function setLines_(p, byId) {
+  if (!p || !p.ks || !p.ks.length) return '';
+  var out = '';
+  p.ks.forEach(function (cid) {
+    var c = byId[cid];
+    if (c) out += '\n   · ' + String(c.ua).replace(/\s+/g, ' ').replace(/;\s/g, ', ').trim();
+  });
+  return out;
+}
+
+/** Подсказка в корзине: настройки hint_*; товар hint_id должен быть на витрине и в наличии, цена однозначна. */
+function shopHint_(st, products) {
+  var tag = tagList_(st.hint_tag)[0] || '';
+  var id = String(st.hint_id || '').trim().toUpperCase();
+  var ua = String(st.hint_text_ua || '').trim(), ru = String(st.hint_text_ru || '').trim();
+  if (!tag || !id || !ua || !ru) return null;
+  var p = null;
+  products.forEach(function (x) { if (!p && x.id.toUpperCase() === id) p = x; });
+  var price = unitPrice_(p);
+  if (!p || !p.a || !(price > 0)) return null;
+  var money = String(price).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' ₴'; // «1 250 ₴» с неразрывными пробелами, как на витрине
+  function fill(t) { return t.replace(/\{(ціна|цена|цiна)\}/gi, money).slice(0, 200); }
+  return { tag: tag, id: p.id, ua: fill(ua), ru: fill(ru) };
 }
 
 /** «Вага упаковки, г»: целое число 1…5000, иначе 0. */
@@ -703,6 +811,7 @@ function onOpen() {
   if (typeof launchMenu_ === 'function') menu.addSeparator().addSubMenu(launchMenu_(ui));
   if (typeof stage9Menu_ === 'function') stage9Menu_(menu); // Stage9.gs: «Етап 9: застосувати дані запуску»
   if (typeof stage9bMenu_ === 'function') stage9bMenu_(menu); // Stage9b.gs: «Етап 9Б: створити колонки»
+  if (typeof stage9b2Menu_ === 'function') stage9b2Menu_(menu); // Stage9b2.gs: «Етап 9Б2: записати другі фото»
   menu.addToUi();
 }
 
@@ -809,8 +918,22 @@ var ORDER_COLS = {
   name: ['ім\'я', 'ім’я'], phone: ['телефон'], delivery: ['доставка'], city: ['місто'], branch: ['відділення'],
   pay: ['оплата'], comment: ['коментар'], items: ['товари'], total: ['сума'], lang: ['мова'],
   source: ['=джерело'], svc: ['службове'], ttn: ['ттн'], paid: ['оплата: статус'],
-  srcClient: ['=джерело клієнта'] // необязательная (выпуск 9Б); «=» — только точное совпадение, чтобы две «Джерело…» не путались
+  srcClient: ['=джерело клієнта'], // необязательная (выпуск 9Б); «=» — только точное совпадение, чтобы две «Джерело…» не путались
+  ifOut: ['=якщо немає'] // необязательная (волна Б2): выбор клиента «Якщо товару немає»
 };
+/** «Якщо товару немає»: код с витрины → текст для таблицы и для админа. Сумму не меняет. */
+var IFOUT_UA = { call: 'Зателефонувати', replace: 'Замінити схожим', remove: 'Прибрати із замовлення' };
+/** Только свои ключи: '__proto__', 'constructor' и т. п. — не коды. */
+function isIfOut_(c) { return typeof c === 'string' && Object.prototype.hasOwnProperty.call(IFOUT_UA, c); }
+function ifOutCode_(v) {
+  var s = String(v === null || v === undefined ? '' : v).trim();
+  var out = '';
+  Object.keys(IFOUT_UA).forEach(function (k) { if (IFOUT_UA[k] === s) out = k; });
+  return out;
+}
+function svcIfOut_(svc) {
+  try { var c = String(JSON.parse(svc || '{}').io || ''); return isIfOut_(c) ? c : ''; } catch (err) { return ''; }
+}
 var STATUS_NEW = 'новий';
 var STATUS_BY_CODE = { c: 'підтверджено', n: 'немає в наявності', s: 'відправлено', d: 'виконано' };
 var PAY_UA = { cash: 'при отриманні', card: 'переказ на картку', cod: 'накладений платіж' };
@@ -906,7 +1029,8 @@ function handleOrder_(body) {
     branch: clean_(body.branch, 30),
     pay: PAY_UA[body.pay] ? String(body.pay) : 'cash',
     comment: clean_(body.comment, 300),
-    lang: body.lang === 'ru' ? 'ru' : 'ua'
+    lang: body.lang === 'ru' ? 'ru' : 'ua',
+    ifOut: isIfOut_(body.ifOut) ? body.ifOut : '' // «Якщо немає»: другое значение — игнор
   };
   o.npType = o.delivery === 'np' && NP_TYPE_UA[body.npType] ? String(body.npType) : (o.delivery === 'np' ? 'branch' : '');
   if (o.npType === 'courier') o.branch = clean_(body.branch, 120);
@@ -973,7 +1097,7 @@ function handleOrder_(body) {
     });
   }
   picked.forEach(function (x) {
-    lines.push(x.p.ua + (x.p.t === 'w' ? ' ' + weightLabel_(x.g) : '') + (x.wh ? ' (опт)' : '') + ' × ' + x.q + ' = ' + x.price * x.q + ' ₴');
+    lines.push(x.p.ua + (x.p.t === 'w' ? ' ' + weightLabel_(x.g) : '') + (x.wh ? ' (опт)' : '') + ' × ' + x.q + ' = ' + x.price * x.q + ' ₴' + setLines_(x.p, byId));
     compact.push([x.id, x.g, x.q]);
     total += x.price * x.q;
   });
@@ -1020,6 +1144,8 @@ function handleOrder_(body) {
     var svc = { i: compact };
     if (o.uid && !isTest && isFirstOrder_(sheet, col, o.uid)) { o.first = true; svc.f = 1; } // отметка «Перше замовлення» для админа
     if (o.gifts.length) svc.g = o.gifts;
+    if (o.delivery === 'np' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(body.cityRef || ''))) svc.nc = String(body.cityRef).toLowerCase(); // Ref города из np.city (необязательно): нужен «Створити ТТН», на цену и сумму не влияет
+    if (o.ifOut) svc.io = o.ifOut; // запасной путь: без колонки «Якщо немає» выбор всё равно виден админу в тексте
     if (whIds.length) { svc.w = whIds; o.wh = true; } // позиции по оптовой цене — для отметки «ОПТ» у админа
     o.num = nextOrderNumber_(sheet, col);
     var row = [];
@@ -1033,6 +1159,7 @@ function handleOrder_(body) {
     put('pay', PAY_UA[o.pay]);
     put('comment', safeCell_(o.giftNote ? (o.comment ? o.comment + ' | ' : '') + 'Підпис до подарунка: ' + o.giftNote : o.comment));
     if (o.src) put('srcClient', safeCell_(o.src));
+    if (o.ifOut) put('ifOut', IFOUT_UA[o.ifOut]);
     put('items', safeCell_(o.items)); put('total', o.total); put('lang', o.lang); put('source', o.source);
     put('svc', JSON.stringify(svc));
     sheet.appendRow(row);
@@ -1160,12 +1287,16 @@ function handleMyOrders_(body) {
   var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
   var orders = [];
   var done = 0; // выполненные заказы за всё время — для программы «постійний клієнт»
+  // num (необязательно): «Повторити замовлення» по ссылке startapp=re-<номер> — отдаём этот заказ в поле one, даже если он старше последних 20.
+  // Заказ чужого клиента не отдаётся никогда: строки отбираются по uid из подписи.
+  var wantNum = typeof body.num === 'string' && /^P-\d{1,9}$/.test(body.num) ? body.num : '';
+  var one = null;
   for (var r = values.length - 1; r >= 0; r--) {
     var row = values[r];
     if (String(row[col.uid]).trim() !== uid || !cell_(row, col.num)) continue;
     if (cell_(row, col.source).indexOf('test') >= 0) continue;
     if (cell_(row, col.status) === 'виконано') done++;
-    if (orders.length >= 20) continue;
+    if (orders.length >= 20 && !(wantNum && !one && cell_(row, col.num) === wantNum)) continue;
     var date = col.date >= 0 ? row[col.date] : '';
     var isDate = Object.prototype.toString.call(date) === '[object Date]' && !isNaN(date.getTime());
     var again = null;
@@ -1174,7 +1305,7 @@ function handleMyOrders_(body) {
       if (Array.isArray(svc.i) && svc.i.length) again = svc.i;
     } catch (err) { again = null; }
     var delivery = cell_(row, col.delivery);
-    orders.push({
+    var entry = {
       num: cell_(row, col.num),
       date: isDate ? Utilities.formatDate(date, 'Europe/Kiev', 'dd.MM.yyyy HH:mm') : '',
       status: cell_(row, col.status) || STATUS_NEW,
@@ -1183,9 +1314,13 @@ function handleMyOrders_(body) {
       delivery: delivery.toLowerCase().indexOf('пошта') >= 0 ? 'np' : 'pickup',
       i: again, ttn: svcTtn_(cell_(row, col.svc)), dl: delivery, city: cell_(row, col.city), branch: cell_(row, col.branch),
       paid: paidCode_(cell_(row, col.paid))
-    });
+    };
+    if (wantNum && !one && entry.num === wantNum) one = entry;
+    if (orders.length < 20) orders.push(entry);
   }
-  return { ok: true, orders: orders, done: done };
+  var res = { ok: true, orders: orders, done: done };
+  if (one) res.one = one;
+  return res;
 }
 
 /**
@@ -1289,7 +1424,8 @@ function findOrder_(num) {
         city: get('city'), branch: get('branch'), pay: payCode, comment: get('comment'),
         items: get('items'), total: toNum_(col.total >= 0 ? row[col.total] : 0),
         lang: get('lang') === 'ru' ? 'ru' : 'ua', source: get('source'), svc: get('svc'), paid: get('paid'),
-        npType: parseDelivery_(delivery).npType, point: parseDelivery_(delivery).point
+        npType: parseDelivery_(delivery).npType, point: parseDelivery_(delivery).point,
+        ifOut: ifOutCode_(get('ifOut')) || svcIfOut_(get('svc'))
       }
     };
   }
@@ -1315,12 +1451,19 @@ function adminText_(o, statusNote) {
   ];
   if (o.pay === 'card' && fopConfig_().bad) lines.splice(7, 0, '⚠️ Реквізити ФОП не надіслано: перевірте FOP_IBAN');
   if (o.first || svcFirst_(o.svc)) lines.splice(2, 0, '⭐ <b>Перше замовлення</b>');
-  String(o.items).split('; ').forEach(function (s) { if (s) lines.push('• ' + escHtml_(s)); });
+  String(o.items).split('; ').forEach(function (s) {
+    if (!s) return;
+    var parts = s.split('\n'); // набор: первая строка — позиция, дальше состав с отступом
+    lines.push('• ' + escHtml_(parts[0]));
+    parts.slice(1).forEach(function (sub) { if (sub.trim()) lines.push('    ' + escHtml_(sub.trim())); });
+  });
   lines.push('');
   lines.push('<b>Разом: ' + o.total + ' ₴</b>');
   var gifts = o.gifts;
   if (!gifts) { try { gifts = JSON.parse(o.svc || '{}').g || []; } catch (err) { gifts = []; } }
   gifts.forEach(function (g) { lines.push('🎁 Подарунок до замовлення: ' + escHtml_(g)); });
+  var ifOut = o.ifOut || svcIfOut_(o.svc);
+  if (isIfOut_(ifOut)) lines.push('❓ Якщо немає: ' + IFOUT_UA[ifOut]);
   var ttn = o.ttn || svcTtn_(o.svc);
   if (ttn) lines.push('📮 ТТН: ' + escHtml_(ttn));
   if (o.comment) lines.push('💬 ' + escHtml_(o.comment));
@@ -1786,7 +1929,7 @@ function safeErr_(err, withStack) {
   } catch (e0) { s = 'error'; }
   try {
     var props = scriptProps_();
-    ['BOT_TOKEN', 'WEBHOOK_SECRET'].forEach(function (k) {
+    ['BOT_TOKEN', 'WEBHOOK_SECRET', 'NP_API_KEY'].forEach(function (k) {
       var v = props.getProperty(k);
       if (v && String(v).length >= 4) {
         v = String(v);
@@ -1859,7 +2002,7 @@ function safeCell_(s) {
 function srcLabel_(raw, ids, listed) {
   var s = String(raw === null || raw === undefined ? '' : raw);
   if (!/^[a-z0-9_-]{1,24}$/.test(s)) return '';
-  if (/^(ref_|adm_|rec)/.test(s)) return '';
+  if (/^(ref_|adm_|rec|re-)/.test(s)) return ''; // re-<номер> — «Повторити замовлення» из сообщения бота, не источник
   if (/^[a-z]{3}-\d{3}$/.test(s)) return ''; // форма ID товара (DRY-039, SET-001)
   if (ids && ids[s.toUpperCase()]) return '';
   if (listed && srcList_().indexOf(s) < 0) return ''; // при записи — только метки из настройки src_list
@@ -2025,6 +2168,7 @@ function handleAdmin_(body) {
     if (!me.perms.stats) orders.stats = null;
     orders.me = mine;
     orders.replies = replyTemplates_();
+    if (me.perms.st && typeof npTtnOn_ === 'function' && npTtnOn_()) orders.npTtn = 1; // Stage9b2.gs: «Створити ТТН» доступно (ключ и все NP_SENDER_*)
     return orders;
   }
   if (a === 'admin.today') return { ok: true, today: todayCounts_(me) }; // любой активный админ; числа — по его правам
@@ -2070,6 +2214,8 @@ function handleAdmin_(body) {
   if (a === 'admin.adminSave') return deny('admins') || saveAdmin_(me, body, props, token);
   if (a === 'admin.log') return deny('admins') || listLog_();
   if (a === 'admin.ttn') return deny('st') || setTtn_(String(body.num || ''), String(body.ttn || ''), token);
+  if (a === 'admin.ttn.preview') return deny('st') || (typeof npTtnPreview_ === 'function' ? npTtnPreview_(String(body.num || '')) : { ok: false, error: 'off' }); // Stage9b2.gs
+  if (a === 'admin.ttn.create') return deny('st') || (typeof npTtnCreate_ === 'function' ? npTtnCreate_(body, token) : { ok: false, error: 'off' });
   // Рассылка (право «Розсилка»). Порядок «черновик → тільки мені → отправка» проверяет сервер.
   if (a === 'admin.mail') return deny('mail') || listMail_();
   if (a === 'admin.mailSave') return deny('mail') || saveMail_(body);
@@ -2507,17 +2653,28 @@ var SETTINGS_DEF = [
   ['father_title_ru', 'Подборка «Специи от отца»: заголовок (RU)', 'Специи от отца'],
   ['father_text_ua', 'Добірка «Спеції від батька»: текст під заголовком (UA). Порожньо — без тексту', ''],
   ['father_text_ru', 'Подборка «Специи от отца»: текст под заголовком (RU)', ''],
-  ['remind_text_ru', 'Текст напоминания (RU)', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.']
+  ['remind_text_ru', 'Текст напоминания (RU)', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.'],
+  ['hint_tag', 'Підказка в кошику: тег товару, при якому вона з’являється, наприклад «для плову» (колонка «Теги»). Порожньо — підказки немає', 'для плову'],
+  ['hint_id', 'Підказка в кошику: ID товару, який пропонуємо додати, наприклад SET-001. Порожньо — підказки немає', 'SET-001'],
+  ['hint_text_ua', 'Підказка в кошику (UA): {ціна} замінюється ціною товару з таблиці, наприклад «До плову: набір спецій від батька — {ціна}». Порожньо — підказки немає', 'До плову: набір спецій від батька — {ціна}'],
+  ['hint_text_ru', 'Подсказка в корзине (RU): {цена} заменяется ценой товара из таблицы, например «К плову: набор специй от отца — {цена}». Пусто — подсказки нет', 'К плову: набор специй от отца — {цена}'],
+  ['followup1_days', 'Після замовлення: через скільки днів після статусу «виконано» запитати «Як вам замовлення?» (0 — вимкнено). Наприклад 3. Якщо більше 0, прохання про відгук review_days не надсилається (його замінює це повідомлення)', '0'],
+  ['followup2_days', 'Після замовлення: через скільки днів після «виконано» надіслати рецепт і кнопку «Повторити замовлення» (0 — вимкнено). Наприклад 21. Якщо більше 0, старе нагадування remind_days не надсилається', '0'],
+  ['followup2_text_ua', 'Після замовлення, друге повідомлення (UA): короткий текст, якщо до куплених товарів немає рецепта. Порожньо і рецепта немає — повідомлення не надсилається', 'Вітаємо! Запаси горіхів і сухофруктів, мабуть, закінчуються. Попереднє замовлення можна повторити в один дотик.'],
+  ['followup2_text_ru', 'После заказа, второе сообщение (RU): короткий текст, если к купленным товарам нет рецепта', 'Здравствуйте! Запасы орехов и сухофруктов, наверное, заканчиваются. Прошлый заказ можно повторить в одно касание.'],
+  ['digest_hour', 'Ранкове зведення адмінам зі статистикою: о котрій годині (0–23, за часом таблиці), наприклад 9. Порожньо — зведення вимкнено', ''],
+  ['np_track_hours', 'Нова пошта: раз на скільки годин перевіряти, чи посилка прибула у відділення, і написати клієнту (0 — вимкнено). Працює лише з ключем Нової пошти. Наприклад 3', '0']
 ].concat([1, 2, 3, 4, 5].reduce(function (acc, i) { // готовые ответы клиенту в админ-панели (необязательные, до 300 знаков)
   acc.push(['reply_' + i + '_ua', 'Готова відповідь клієнту № ' + i + ' (UA, до 300 знаків). Порожньо — шаблону немає', '']);
   acc.push(['reply_' + i + '_ru', 'Готовый ответ клиенту № ' + i + ' (RU, до 300 знаков)', '']);
   return acc;
 }, []));
 var SRC_LIST_DEFAULT = 'qr1,qr2,insert';
-var SETTINGS_NUM = { referral_min_order: 100000, mail_every_days: 365, min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72, cart_mute_days: 365 };
+var SETTINGS_NUM = { np_track_hours: 24, followup1_days: 60, followup2_days: 365, referral_min_order: 100000, mail_every_days: 365, min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72, cart_mute_days: 365 };
 var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'notice_text_ua', 'notice_text_ru', 'feature_id', 'gift_text_ua', 'gift_text_ru', 'loyal_text_ua', 'loyal_text_ru',
   'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos',
   'father_ids', 'father_text_ua', 'father_text_ru', 'referral_gift_ua', 'referral_gift_ru',
+  'hint_tag', 'hint_id', 'hint_text_ua', 'hint_text_ru', 'followup2_text_ua', 'followup2_text_ru', 'digest_hour',
   'theme_until', 'ny_ids', 'ny_order_until_ua', 'ny_order_until_ru',
   'reply_1_ua', 'reply_1_ru', 'reply_2_ua', 'reply_2_ru', 'reply_3_ua', 'reply_3_ru', 'reply_4_ua', 'reply_4_ru', 'reply_5_ua', 'reply_5_ru'];
 var settingsMemo_ = null;
@@ -2570,9 +2727,11 @@ function saveSettings_(values) {
     else if (k === 'ny_snow' || k === 'gift_note') next[k] = values[k] === true || /^(1|так|да|yes|true)$/i.test(String(values[k]).trim()) ? '1' : '0';
     else if (k === 'ny_ids') next[k] = idList_(values[k], 12).join(', ');
     else if (k === 'theme_until') next[k] = themeUntilParse_(values[k]) ? themeUntilParse_(values[k]).split('-').reverse().join('.') : '';
+    else if (k === 'digest_hour') { var dh = String(values[k] === null || values[k] === undefined ? '' : values[k]).trim(); next[k] = /^\d{1,2}$/.test(dh) && Number(dh) <= 23 ? String(Number(dh)) : ''; }
     else if (SETTINGS_NUM[k]) next[k] = String(Math.max(0, Math.min(SETTINGS_NUM[k], Math.round(toNum_(values[k])))));
     else if (k === 'feature_id') next[k] = featureIds_(clean_(values[k], 120)).join(', ');
     else if (k === 'src_list') next[k] = String(values[k] === null ? '' : values[k]).toLowerCase().split(/[\s,;]+/).filter(function (x) { return /^[a-z0-9_-]{1,24}$/.test(x); }).slice(0, 30).join(',');
+    else if (k === 'hint_id') next[k] = idList_(values[k], 1).join('');
     else if (k === 'father_ids') next[k] = idList_(values[k], 20).join(', ');
     else if (k === 'referral_on') next[k] = /^(1|так|да|yes|true)$/i.test(String(values[k]).trim()) || values[k] === true ? '1' : '0';
     else if (k === 'theme') next[k] = /^(newyear|navruz)$/.test(String(values[k]).trim().toLowerCase()) ? String(values[k]).trim().toLowerCase() : '';
@@ -2658,7 +2817,7 @@ function salesStats_(write) {
       try { compact = JSON.parse(cell_(row, col.svc) || '{}').i || null; } catch (err) { compact = null; }
       var parts = cell_(row, col.items).split('; ');
       parts.forEach(function (text, idx) {
-        var m = text.match(/^(.*) × (\d+) = (\d+) ₴$/);
+        var m = text.split('\n')[0].match(/^(.*) × (\d+) = (\d+) ₴$/);
         if (!m) return;
         var name = m[1], q = Number(m[2]), sum = Number(m[3]);
         var pkey = name, kg = 0;
@@ -3052,6 +3211,7 @@ function remindRepeat_() {
   var st = readSettings_();
   var days = Math.round(toNum_(st.remind_days));
   if (!(days >= 7)) return 0;
+  if (typeof fuDays_ === 'function' && fuDays_(st.followup2_days, 365) > 0) return 0; // два сообщения после заказа (followup1/2) заменяют это напоминание
   var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   var webapp = props.getProperty('WEBAPP_URL');
@@ -3088,7 +3248,7 @@ function remindRepeat_() {
     });
     svc.rm = 1; // отмечаем в любом случае: второй попытки не будет
     sheet.getRange(x.r + 2, col.svc + 1).setValue(JSON.stringify(svc));
-    if (res.ok) sent++;
+    if (res.ok) { sent++; if (typeof fuMarkSent_ === 'function') fuMarkSent_(uid); } // общая отметка «недавно писали не по заказу»
   });
   return sent;
 }
@@ -3096,6 +3256,7 @@ function remindRepeat_() {
 /** Раз в день (триггер из меню PAMIR): сообщения о появлении товаров и напоминания о повторном заказе. */
 function dailyJob() {
   try { notifyBackInStock_(); } catch (err) { console.error('daily stock: ' + safeErr_(err, true)); }
+  try { if (typeof followupJob_ === 'function') followupJob_(); } catch (err) { console.error('daily followup: ' + safeErr_(err, true)); } // Stage9b2.gs: сообщения после заказа
   try { remindRepeat_(); } catch (err) { console.error('daily remind: ' + safeErr_(err, true)); }
   try { askReviews_(); } catch (err) { console.error('daily reviews: ' + safeErr_(err, true)); }
 }
@@ -3103,6 +3264,8 @@ function dailyJob() {
 /** Раз в час (тот же пункт меню PAMIR): напоминание о брошенной корзине. */
 function hourlyJob() {
   try { remindCarts_(); } catch (err) { console.error('hourly carts: ' + safeErr_(err, true)); }
+  try { if (typeof npTrackJob_ === 'function') npTrackJob_(); } catch (err) { console.error('hourly np track: ' + safeErr_(err, true)); } // Stage9b2.gs: посылка прибыла в отделение
+  try { if (typeof digestJob_ === 'function') digestJob_(); } catch (err) { console.error('hourly digest: ' + safeErr_(err, true)); } // Stage9b2.gs: утренняя сводка админам
   try { if (typeof errorsJob === 'function') errorsJob(); } catch (err) { console.error('hourly errors: ' + safeErr_(err)); } // сводка ошибок витрины (Stage9b.gs)
 }
 
@@ -3964,6 +4127,7 @@ function shopExtras8_(shop, st) {
   var contact = contactUrl_(st);
   if (contact) shop.contact = contact;
   if (npKey_()) shop.np = 1;
+  if (typeof npPriceOn_ === 'function' && npPriceOn_()) shop.npp = 1; // Stage9b2.gs: есть ключ и город отправителя — витрина может спрашивать np.price
   if (fopConfig_().on) shop.fop = 1; // только флаг: сами реквизиты на витрину не уходят
 }
 
@@ -4092,6 +4256,7 @@ function askReviews_() {
   var st = readSettings_();
   var days = Math.round(toNum_(st.review_days));
   if (!(days >= 1)) return 0;
+  if (typeof fuDays_ === 'function' && fuDays_(st.followup1_days, 60) > 0) return 0; // followup1 («Як вам замовлення?», Stage9b2.gs) заменяет эту просьбу
   var token = scriptProps_().getProperty('BOT_TOKEN');
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
   if (!token || !sheet || sheet.getLastRow() < 2) return 0;
@@ -4107,6 +4272,7 @@ function askReviews_() {
     var svc;
     try { svc = JSON.parse(cell_(row, col.svc) || '{}') || {}; } catch (err) { return; }
     if (!svc.dn || svc.rv) return;
+    if (svc.f1) return; // по этому заказу уже ушло «Як вам замовлення?» (followup1): второе похожее сообщение не шлём
     var age = (now - svc.dn) / day;
     if (age < days) return;
     svc.rv = 1; // отмечаем в любом случае: второй просьбы не будет
@@ -4122,7 +4288,7 @@ function askReviews_() {
                : 'Як вам замовлення ' + num + '? Оцініть, будь ласка, від 1 до 5 — це допоможе іншим покупцям.',
       reply_markup: { inline_keyboard: kb }
     });
-    if (res.ok) sent++;
+    if (res.ok) { sent++; if (typeof fuMarkSent_ === 'function') fuMarkSent_(uid); }
   });
   return sent;
 }
@@ -4520,7 +4686,7 @@ function remindCarts_() {
         [{ text: cartMuteLabel_(muteDays, ru), callback_data: 'nc' }]
       ] }
     });
-    if (res.ok) { sent++; cartLocked_(function () { cartLogAdd_(sheet, uid, 's'); }); }
+    if (res.ok) { sent++; cartLocked_(function () { cartLogAdd_(sheet, uid, 's'); }); if (typeof fuMarkSent_ === 'function') fuMarkSent_(uid); }
   });
   return sent;
 }
@@ -4606,6 +4772,10 @@ function handleMessage8_(msg, token, props) {
         return true;
       }
     }
+  }
+  // 1б) Ответ клиента на «Як вам замовлення?» (followup1): пересылается админам с правом «Замовлення: статуси».
+  if (text && text.charAt(0) !== '/' && typeof fuReply_ === 'function' && !(msg.photo && msg.photo.length) && !cache.get('rvt_' + uid)) {
+    if (fuReply_(msg, uid, text, token, props)) return true;
   }
   // 2) Клиент после оценки прислал текст и (или) фото отзыва.
   var pending = cache.get('rvt_' + uid);
@@ -4721,7 +4891,17 @@ function npCall_(method, properties, opts) {
   var key = npKey_();
   if (!key) return null;
   var cache = CacheService.getScriptCache();
-  var cacheKey = ('np_' + method + '_' + JSON.stringify(properties)).slice(0, 240);
+  // opts (Stage9b2): model — 'Address' по умолчанию, 'InternetDocument', 'TrackingDocument'; errOut — объект, куда пишется короткая причина
+  // без ключа (text, api: true — отказ самого API); quiet — не слать админам «Підказки НП не працюють» (ошибки накладных — не про подсказки).
+  var model = opts && opts.model ? String(opts.model) : 'Address';
+  var eo = opts && opts.errOut ? opts.errOut : null;
+  var quiet = !!(opts && opts.quiet);
+  function fail(why, api, nocall) {
+    if (eo) { eo.text = npSafeReason_(why, key, 300); eo.api = !!api; eo.nocall = !!nocall; } // nocall — запрос в API не уходил (лимит)
+    if (quiet) console.warn('np: ' + npSafeReason_(why, key)); else npReport_(why, key);
+    return null;
+  }
+  var cacheKey = ('np_' + (model === 'Address' ? '' : model + '_') + method + '_' + JSON.stringify(properties)).slice(0, 240);
   var noCache = !!(opts && opts.noCache);
   var cached = noCache ? null : cache.get(cacheKey);
   if (cached) return JSON.parse(cached);
@@ -4729,34 +4909,32 @@ function npCall_(method, properties, opts) {
   var now = Date.now(), parts = String(cache.get('np_calls') || '').split('|');
   var calls = parseInt(parts[0], 10) || 0, t0 = parseInt(parts[1], 10) || now;
   if (now - t0 > 3600000) { calls = 0; t0 = now; }
-  if (calls >= NP_MAX_CALLS_PER_HOUR) { npReport_('перевищено ліміт запитів на годину (' + NP_MAX_CALLS_PER_HOUR + ')', key); return null; }
+  if (calls >= NP_MAX_CALLS_PER_HOUR) return fail('перевищено ліміт запитів на годину (' + NP_MAX_CALLS_PER_HOUR + ')', false, true);
   cache.put('np_calls', (calls + 1) + '|' + t0, 3600);
   try {
     var res = UrlFetchApp.fetch(NP_API_URL, { method: 'post', contentType: 'application/json', muteHttpExceptions: true,
-      payload: JSON.stringify({ apiKey: key, modelName: 'Address', calledMethod: method, methodProperties: properties }) });
+      payload: JSON.stringify({ apiKey: key, modelName: model, calledMethod: method, methodProperties: properties }) });
     var code = typeof res.getResponseCode === 'function' ? res.getResponseCode() : 200;
     var data;
     try { data = JSON.parse(res.getContentText()); } catch (e1) { data = null; }
-    if (!data) { npReport_(code !== 200 ? 'відповідь API ' + code : 'некоректна відповідь API', key); return null; }
+    if (!data) return fail(code !== 200 ? 'відповідь API ' + code : 'некоректна відповідь API', false);
     if (!data.success || !Array.isArray(data.data)) {
       var why = [].concat(data.errors || [], data.errorCodes || []).join('; ');
-      npReport_('API відхилило запит' + (why ? ': ' + why : ''), key);
-      return null;
+      return fail('API відхилило запит' + (why ? ': ' + why : ''), true);
     }
     var text = JSON.stringify(data.data);
     if (!noCache && text.length < 90000) cache.put(cacheKey, text, 21600);
     return data.data;
   } catch (err) {
-    npReport_('помилка зв’язку: ' + safeErr_(err), key);
-    return null;
+    return fail('помилка зв’язку: ' + safeErr_(err), false);
   }
 }
 
 /** Причина без ключа и без адресов (URL может содержать ключ): коротко, для админа и для лога. */
-function npSafeReason_(text, key) {
+function npSafeReason_(text, key, max) {
   var s = String(text === null || text === undefined ? '' : text);
   if (key) s = s.split(key).join('***');
-  return s.replace(/https?:\/\/\S+/gi, '[url]').replace(/\s+/g, ' ').trim().slice(0, 120);
+  return s.replace(/https?:\/\/\S+/gi, '[url]').replace(/\s+/g, ' ').trim().slice(0, max || 120);
 }
 
 /** Сбой API Новой почты: в лог (без ключа) и админам не чаще раза в 24 часа. Витрина о причине не узнаёт. */
@@ -5312,7 +5490,9 @@ var CLIENT_HEAD = ['Chat id', 'Ім\'я', 'Мова', 'Перший вхід', '
 var CLIENT_COLS = { id: ['chat id'], name: ['ім\'я', 'ім’я'], lang: ['мова'], first: ['перший вхід'], last: ['останній вхід'],
   unsub: ['відписка'], blocked: ['заблокував'],
   mailId: ['остання розсилка'], mailAt: ['дата останньої розсилки'], // необязательные: появляются при первой рассылке
-  src: ['=джерело'] }; // необязательная (выпуск 9Б): первый источник клиента
+  src: ['=джерело'], // необязательная (выпуск 9Б): первый источник клиента
+  lastMsg: ['=останнє повідомлення'], // необязательные (волна Б2, блок 3): когда бот последний раз писал не по заказу; ответ клиента на «Як вам замовлення?»
+  fuWait: ['=очікуємо відповідь'] };
 var CLIENT_TOUCH_SEC = 6 * 3600; // «Останній вхід» обновляется не чаще раза в 6 часов: магазин не должен тормозить из-за записи в таблицу
 
 function ensureClientsSheet_() {
