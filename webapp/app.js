@@ -37,7 +37,7 @@
       pcs: 'шт',
       less: 'Менше',
       more: 'Більше',
-      close: 'Закрити', photos: 'Фото товару', photoN: 'Фото {n} з {m}',
+      close: 'Закрити', photoNext: 'Наступне фото',
       wholesale: 'Опт',
       outNote: 'Зараз цього товару немає в наявності.',
       emptyTitle: 'Нічого не знайдено',
@@ -156,7 +156,7 @@
       pcs: 'шт',
       less: 'Меньше',
       more: 'Больше',
-      close: 'Закрыть', photos: 'Фото товара', photoN: 'Фото {n} из {m}',
+      close: 'Закрыть', photoNext: 'Следующее фото',
       wholesale: 'Опт',
       outNote: 'Сейчас этого товара нет в наличии.',
       emptyTitle: 'Ничего не найдено',
@@ -1659,16 +1659,27 @@
     return '<img src="' + esc(verUrl(u)) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
   }
   function sheetDotsHtml(cur) {
-    // Точки — только индикатор (не кнопки): листают свайпом, поэтому зона нажатия не нужна.
-    var h = '<div class="sheet__dots" aria-hidden="true">';
-    for (var i = 0; i < 2; i++) h += '<span class="sheet__dot' + (i === cur ? ' is-on' : '') + '"></span>';
-    return h + '</div>';
+    // Вся полоска точек — одна кнопка (в Telegram на компьютере свайпа нет): нажатие переключает на другое фото. Свайп остаётся.
+    var h = '<button type="button" class="sheet__dots" data-action="photo-next" aria-label="' + esc(t('photoNext')) + '">';
+    for (var i = 0; i < 2; i++) h += '<span class="sheet__dot' + (i === cur ? ' is-on' : '') + '" aria-hidden="true"></span>';
+    return h + '</button>';
   }
   function sheetMarkDot(i) {
     if (state.sheet) state.sheet.slide = i;
     [].forEach.call(el.sheet.querySelectorAll('.sheet__dot'), function (d, k) {
       d.classList.toggle('is-on', k === i);
     });
+  }
+  function sheetPhotoNext() {
+    var strip = el.sheet.querySelector('.sheet__strip');
+    if (!strip || !state.sheet || !strip.clientWidth) return;
+    var to = state.sheet.slide === 1 ? 0 : 1, calm = false;
+    try { calm = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { /* без matchMedia — плавно */ }
+    sheetMarkDot(to); // отклик сразу, не дожидаясь конца прокрутки
+    state.sheet.goto = to;
+    var sh = state.sheet;
+    setTimeout(function () { if (sh.goto === to) delete sh.goto; }, 700);
+    try { strip.scrollTo({ left: strip.clientWidth * to, behavior: calm ? 'auto' : 'smooth' }); } catch (e) { strip.scrollLeft = strip.clientWidth * to; }
   }
   /** Второе фото не загрузилось — убираем слайд и точки, остаётся как с одним фото. */
   function dropPhoto2() {
@@ -2673,7 +2684,7 @@
         '<button type="button" class="btn btn--primary" data-nav="catalog">' + esc(t('toCatalog')) + '</button></div>';
     }
     html += '<ul class="lines">' + my.list.map(function (o) {
-      var items = String(o.items).split('; ').filter(Boolean).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
+      var items = orderItemsHtml(o.items);
       return '<li class="my"><div class="my__head"><span class="ord__num">' + esc(o.num) + '</span>' +
         '<span class="badge ' + (STATUS_BADGE[o.status] || '') + '">' + esc(t('ost_' + o.status) === 'ost_' + o.status ? o.status : t('ost_' + o.status)) + '</span>' +
         '<span class="my__date">' + esc(o.date) + '</span></div>' +
@@ -3020,6 +3031,14 @@
     }
     return html + '</div>';
   }
+  /** Строки заказа: «; » между позициями, «\n   · название» — состав набора отдельными строками под позицией. */
+  function orderItemsHtml(items) {
+    return String(items || '').split('; ').map(function (s) {
+      if (!s) return '';
+      var parts = s.split('\n'), head = parts.shift(), sub = parts.map(function (x) { return x.replace(/^\s+/, ''); }).filter(Boolean);
+      return '<li>' + esc(head) + sub.map(function (x) { return '<span class="ord__sub">' + esc(x) + '</span>'; }).join('') + '</li>';
+    }).join('');
+  }
   function orderAddress(o) {
     return [o.city, o.branch].filter(function (x) { return x && String(x).trim(); }).join(', ');
   }
@@ -3044,9 +3063,7 @@
         '<span class="ord__meta">' + esc(o.date) + ' · ' + esc(o.name) + '</span></button>';
       if (open) {
         var addr = orderAddress(o);
-        html += '<div class="ord__body"><ul class="ord__items">' + String(o.items).split('; ').map(function (s) {
-          return s ? '<li>' + esc(s) + '</li>' : '';
-        }).join('') + '</ul>' +
+        html += '<div class="ord__body"><ul class="ord__items">' + orderItemsHtml(o.items) + '</ul>' +
           '<p>' + esc(o.name) + (o.username ? ' · ' + esc(o.username) : '') + '<br>' + esc(o.phone) + '</p>' +
           '<p>' + esc(o.delivery) + (o.city ? ': ' + esc(o.city) + ', ' + esc(o.branch) : '') + '<br>' + esc(o.pay) + '</p>' +
           (o.comment ? '<p class="info">' + esc(o.comment) + '</p>' : '') + ttnAdminHtml(o) + payAdminHtml(o) +
@@ -3555,6 +3572,10 @@
     var box = document.getElementById('pv-' + k), input = document.getElementById('a-' + k);
     if (box && input) box.innerHTML = previewHtml(k, input.value);
   }
+  var SET_ZERO_OFF = /^(followup[12]_days|np_track_hours)$/;
+  function setOffHtml(k, v) {
+    return SET_ZERO_OFF.test(k) ? '<p class="field__hint field__off" id="off-' + esc(k) + '"' + (String(v).trim() === '0' ? '' : ' hidden') + '>' + esc(t('setOff')) + '</p>' : '';
+  }
   function setHintsHtml(k) {
     var base = setBase(k), h = I18N[state.lang]['sh_' + base] || I18N.ua['sh_' + base] || '';
     var ex = I18N.ua['sx_' + k] || I18N.ua['sx_' + base] || ''; // пример — это образец текста, он на языке самого поля
@@ -3583,7 +3604,7 @@
     else if (f.k === 'feature_id' || f.k.indexOf('feature_title') === 0) inner = fRow(f.k, f.label, f.v, 'type="text" maxlength="60" autocapitalize="' + (f.k === 'feature_id' ? 'characters' : 'sentences') + '"');
     else inner = fArea(f.k, f.label, f.v, /^reply_/.test(f.k) ? 300 : 500);
     // подсказка и превью — внутрь того же блока поля
-    return inner.replace(/<\/div>$/, setHintsHtml(f.k) + setPreviewBox(f) + '</div>').replace('<div class="field">', '<div class="field sfield">')
+    return inner.replace(/<\/div>$/, setHintsHtml(f.k) + setOffHtml(f.k, f.v) + setPreviewBox(f) + '</div>').replace('<div class="field">', '<div class="field sfield">')
       .replace(' id="a-' + f.k + '"', ' id="a-' + f.k + '"' + (previewKind(f.k) ? ' data-prev="' + f.k + '"' : ''));
   }
   function settingsHtml() {
@@ -3826,6 +3847,7 @@
         }
         return;
       }
+      if (input.id && /^a-(followup[12]_days|np_track_hours)$/.test(input.id)) { var offp = document.getElementById('off-' + input.id.slice(2)); if (offp) offp.hidden = String(input.value).trim() !== '0'; }
       if (input.hasAttribute && input.hasAttribute('data-prev')) refreshPreview(input.getAttribute('data-prev'));
       if (input.id === 'a-loyal_every') { refreshPreview('loyal_text_ua'); refreshPreview('loyal_text_ru'); }
       if (input.id === 'admAQ') { adm.aq = input.value; adm.ap = 1; renderArchiveList(); return; }
@@ -3986,6 +4008,7 @@
       var act = e.target.closest('[data-action]');
       var kind = act ? act.getAttribute('data-action') : '';
       if (kind === 'add') { addFromSheet(); return; }
+      if (kind === 'photo-next') { sheetPhotoNext(); return; }
       if (kind === 'share') { var sp = state.sheet && product(state.sheet.id); if (sp) shareProduct(sp); return; }
       if (kind === 'notify') { if (!act.disabled && state.sheet) notifyMe(state.sheet.id, act); return; }
       if (kind === 'fil-apply') { closeSheet(); return; }
@@ -4008,6 +4031,7 @@
       var strip = e.target;
       if (!strip || !strip.classList || !strip.classList.contains('sheet__strip') || !strip.clientWidth) return;
       var i = Math.max(0, Math.min(1, Math.round(strip.scrollLeft / strip.clientWidth)));
+      if (state.sheet && state.sheet.goto !== undefined) { if (i !== state.sheet.goto) return; delete state.sheet.goto; } // идёт прокрутка от кнопки: промежуточные значения не мигают точкой
       if (!state.sheet || state.sheet.slide !== i) sheetMarkDot(i);
     }, true);
     el.sheet.addEventListener('change', function (e) {
@@ -6844,11 +6868,11 @@
       sh_hint_tag: 'Підказка в кошику: тег товару (колонка «Теги»), при якому підказка з’являється. Порожньо — підказки немає.',
       sh_hint_id: 'Підказка в кошику: ID товару, який пропонуємо додати. Він має бути на вітрині й у наявності. Порожньо — підказки немає.',
       sh_hint_text: 'Текст підказки в кошику. {ціна} замінюється ціною товару з таблиці. Порожньо — підказки немає.',
-      sh_followup1_days: 'Через скільки днів після статусу «виконано» бот спитає «Як вам замовлення?» (немає статусу — після дати замовлення). 0 — вимкнено.',
-      sh_followup2_days: 'Через скільки днів після «виконано» бот надішле рецепт до купленого й кнопку «Повторити замовлення». 0 — вимкнено.',
+      sh_followup1_days: 'Через скільки днів після статусу «Виконано» бот спитає «Як вам замовлення?». Рекомендуємо 3; поки увімкнено, окреме прохання оцінити замовлення не надсилається. 0 — вимкнено.',
+      sh_followup2_days: 'Через скільки днів після статусу «Виконано» бот надішле рецепт до купленого й кнопку «Повторити замовлення». Рекомендуємо 21; поки увімкнено, старе нагадування не надсилається. 0 — вимкнено.',
       sh_followup2_text: 'Короткий текст другого повідомлення, коли до купленого немає рецепта. Порожньо й рецепта немає — повідомлення не надсилається.',
       sh_digest_hour: 'О котрій годині (0–23, за часом таблиці) адміни з правом «Статистика» отримують ранкове зведення. Порожньо — зведення вимкнено.',
-      sh_np_track_hours: 'Раз на скільки годин перевіряти, чи посилка Нової пошти прибула у відділення, і писати про це клієнтові. 0 — вимкнено. Працює лише з ключем Нової пошти.',
+      sh_np_track_hours: 'Раз на скільки годин перевіряти, чи посилка Нової пошти прибула у відділення, і писати про це клієнтові. Рекомендуємо 3; 0 — вимкнено. Працює лише з ключем Нової пошти.',
       sx_hint_tag: 'для плову', sx_hint_id: 'SET-001',
       sx_hint_text_ua: 'До плову: набір спецій від батька — {ціна}', sx_hint_text_ru: 'К плову: набор специй от отца — {цена}',
       sx_followup1_days: '3', sx_followup2_days: '21', sx_digest_hour: '9', sx_np_track_hours: '3',
@@ -6864,11 +6888,11 @@
       sh_hint_tag: 'Подсказка в корзине: тег товара (колонка «Теги»), при котором подсказка появляется. Пусто — подсказки нет.',
       sh_hint_id: 'Подсказка в корзине: ID товара, который предлагаем добавить. Он должен быть на витрине и в наличии. Пусто — подсказки нет.',
       sh_hint_text: 'Текст подсказки в корзине. {цена} заменяется ценой товара из таблицы. Пусто — подсказки нет.',
-      sh_followup1_days: 'Через сколько дней после статуса «виконано» бот спросит «Как вам заказ?» (нет статуса — после даты заказа). 0 — выключено.',
-      sh_followup2_days: 'Через сколько дней после «виконано» бот пришлёт рецепт к купленному и кнопку «Повторить заказ». 0 — выключено.',
+      sh_followup1_days: 'Через сколько дней после статуса «Виконано» бот спросит «Как вам заказ?». Рекомендуем 3; пока включено, отдельная просьба оценить заказ не отправляется. 0 — выключено.',
+      sh_followup2_days: 'Через сколько дней после статуса «Виконано» бот пришлёт рецепт к купленному и кнопку «Повторить заказ». Рекомендуем 21; пока включено, старое напоминание не отправляется. 0 — выключено.',
       sh_followup2_text: 'Короткий текст второго сообщения, когда к купленному нет рецепта. Пусто и рецепта нет — сообщение не отправляется.',
       sh_digest_hour: 'В котором часу (0–23, по времени таблицы) админы с правом «Статистика» получают утреннюю сводку. Пусто — сводка выключена.',
-      sh_np_track_hours: 'Раз в сколько часов проверять, прибыла ли посылка Новой почты в отделение, и писать об этом клиенту. 0 — выключено. Работает только с ключом Новой почты.'
+      sh_np_track_hours: 'Раз в сколько часов проверять, прибыла ли посылка Новой почты в отделение, и писать об этом клиенту. Рекомендуем 3; 0 — выключено. Работает только с ключом Новой почты.'
     }
   };
   ['ua', 'ru'].forEach(function (lang) {
@@ -6878,11 +6902,11 @@
   /* Волна Б2, блок 4: Нова пошта — стоимость доставки и «Створити ТТН». */
   var I18N_B6 = {
     ua: {
-      npCost: '≈ {n} за тарифом Нової пошти', npCostNote: 'Доставку сплачує отримувач перевізнику. У суму замовлення не входить.',
+      npCost: '≈ {n} за тарифом Нової пошти', npCostNote: 'У суму замовлення не входить. Точну суму рахує перевізник.',
       ttnMake: 'Створити ТТН', ttnMkTitle: 'Створити накладну Нової пошти', ttnMkErrTitle: 'Накладну не створено',
       ttnMkManual: 'Можна створити ТТН вручну в кабінеті Нової пошти й ввести номер у поле «Номер ТТН» у замовленні.',
       ttnMkFail: 'Не вдалося створити накладну. Спробуйте пізніше або введіть ТТН вручну.',
-      ttnRecv: 'Отримувач', ttnPhone: 'Телефон', ttnCity: 'Місто', ttnBranchW: 'Відділення', ttnBranchP: 'Поштомат', ttnCod: 'Накладений платіж', ttnNoCod: 'без накладеного платежу',
+      ttnPayer: 'Доставку оплачує', ttnPayerRecv: 'отримувач', setOff: 'Зараз вимкнено.', ttnRecv: 'Отримувач', ttnPhone: 'Телефон', ttnCity: 'Місто', ttnBranchW: 'Відділення', ttnBranchP: 'Поштомат', ttnCod: 'Накладений платіж', ttnNoCod: 'без накладеного платежу',
       ttnWeight: 'Вага посилки, г', ttnWeightHint: 'Від {a} до {b} г', ttnWeightAsk: 'Вагу в замовленні не збережено: вкажіть її.',
       ttnName: 'Прізвище та ім’я отримувача', ttnNameHint: 'У замовленні вказано не повне ім’я. Нова пошта вимагає прізвище та ім’я.',
       ttnDesc: 'Опис вантажу', ttnCreate: 'Створити накладну',
@@ -6893,11 +6917,11 @@
       ttnBusy: 'Перевірте кабінет Нової пошти: накладну могло бути створено. Не створюйте її повторно зараз.', ttnUnknown: 'Відповідь Нової пошти не отримано. Перевірте кабінет Нової пошти й не створюйте накладну повторно зараз.', ttnMadeTitle: 'Накладну створено'
     },
     ru: {
-      npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'Доставку оплачивает получатель перевозчику. В сумму заказа не входит.',
+      npCost: '≈ {n} по тарифу Новой почты', npCostNote: 'В сумму заказа не входит. Точную сумму считает перевозчик.',
       ttnMake: 'Создать ТТН', ttnMkTitle: 'Создать накладную Новой почты', ttnMkErrTitle: 'Накладная не создана',
       ttnMkManual: 'Можно создать ТТН вручную в кабинете Новой почты и ввести номер в поле «Номер ТТН» в заказе.',
       ttnMkFail: 'Не удалось создать накладную. Попробуйте позже или введите ТТН вручную.',
-      ttnRecv: 'Получатель', ttnPhone: 'Телефон', ttnCity: 'Город', ttnBranchW: 'Отделение', ttnBranchP: 'Почтомат', ttnCod: 'Наложенный платёж', ttnNoCod: 'без наложенного платежа',
+      ttnPayer: 'Доставку оплачивает', ttnPayerRecv: 'получатель', setOff: 'Сейчас выключено.', ttnRecv: 'Получатель', ttnPhone: 'Телефон', ttnCity: 'Город', ttnBranchW: 'Отделение', ttnBranchP: 'Почтомат', ttnCod: 'Наложенный платёж', ttnNoCod: 'без наложенного платежа',
       ttnWeight: 'Вес посылки, г', ttnWeightHint: 'От {a} до {b} г', ttnWeightAsk: 'Вес в заказе не сохранён: укажите его.',
       ttnName: 'Фамилия и имя получателя', ttnNameHint: 'В заказе указано неполное имя. Новая почта требует фамилию и имя.',
       ttnDesc: 'Описание груза', ttnCreate: 'Создать накладную',
@@ -6926,7 +6950,7 @@
     ttnFlight = true; btnBusy(btn);
     api('admin.ttn.preview', { num: num }).then(function (res) {
       ttnFlight = false; btnFree(btn);
-      if (res && res.ok && res.ttn) { ttnConfirm(res.ttn); return; }
+      if (res && res.ok && res.ttn) { if (res.payer && !res.ttn.payer) res.ttn.payer = res.payer; ttnConfirm(res.ttn); return; }
       haptic('error');
       if (res && res.error === 'no_perm') { toast(t('admNoPerm')); return; }
       askConfirm({ title: t('ttnMkErrTitle'), text: ttnMsg(res), warn: t('ttnMkManual') });
@@ -6953,6 +6977,7 @@
       (d.nameOk ? ttnRow(t('ttnRecv'), d.name) : '') + ttnRow(t('ttnPhone'), d.phone) + ttnRow(t('ttnCity'), d.city) +
       ttnRow(t(d.type === 'locker' ? 'ttnBranchP' : 'ttnBranchW'), d.npWarehouse || d.branch) +
       ttnRow(t('ttnCod'), cod > 0 ? money(cod) : t('ttnNoCod')) +
+      (d.payer === 'recipient' ? ttnRow(t('ttnPayer'), t('ttnPayerRecv')) : '') +
       (d.nameOk ? '' : '<div class="field"><label class="label" for="ttnN">' + esc(t('ttnName')) + '</label><input class="input" id="ttnN" type="text" autocomplete="off" maxlength="80" value="' + esc(d.name) + '"><p class="ttnc__hint">' + esc(t('ttnNameHint')) + '</p></div>') +
       '<div class="field"><label class="label" for="ttnW">' + esc(t('ttnWeight')) + '</label><input class="input" id="ttnW" type="text" inputmode="numeric" autocomplete="off" maxlength="6" value="' + esc(wg) + '">' +
       '<p class="ttnc__hint">' + esc(wg === '' ? t('ttnWeightAsk') + ' ' : '') + esc(tf('ttnWeightHint', { a: minG, b: maxG })) + '</p></div>' +
