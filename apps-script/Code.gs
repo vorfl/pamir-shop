@@ -1287,12 +1287,43 @@ function handleOrderCore_(body) {
     ordMark_('touch');
     // 6. Уведомления сразу в запросе (очередь выключена или недоступна). Заказ уже записан: сбой Telegram не должен его отменять.
     try {
-      orderNotifySend_(token, props, { o: o, svc: svc, sheet: sheet, col: col, rowIndex: rowIndex, job: false });
+      if (typeof orderNotifySend_ === 'function') orderNotifySend_(token, props, { o: o, svc: svc, sheet: sheet, col: col, rowIndex: rowIndex, job: false });
+      else orderNotifyBasic_(token, props, o, svc, sheet, col, rowIndex); // нет файла Stage9b5.gs: сообщения уходят, как до выпуска Б4
     } catch (err) {
       console.error('notify: ' + safeErr_(err, true));
     }
   }
   return { ok: true, number: o.num, gifts: o.giftsClient };
+}
+
+/** Сообщения о заказе без Stage9b5.gs (файл необязательный): по одному админу, затем клиент и реквизиты ФОП, как до выпуска Б4. */
+function orderNotifyBasic_(token, props, o, svc, sheet, col, rowIndex) {
+  var isTest = String(o.source).indexOf('test') >= 0;
+  var sent = [];
+  orderNotifyIds_(props).forEach(function (chatId) {
+    var res = tg_(token, 'sendMessage', {
+      chat_id: chatId, text: adminText_(o, ''), parse_mode: 'HTML',
+      disable_web_page_preview: true, reply_markup: adminKeyboard_(o.num)
+    });
+    if (res.ok) sent.push([chatId, res.result.message_id]);
+    else console.error('Не доставлено админу ' + chatId + ': ' + res.description);
+  });
+  if (col.svc >= 0 && sent.length) {
+    svc.m = sent;
+    sheet.getRange(rowIndex, col.svc + 1).setValue(JSON.stringify(svc));
+  }
+  if (o.uid && !isTest) {
+    tg_(token, 'sendMessage', { chat_id: o.uid, text: clientText_('new', o) });
+    if (o.pay === 'card') {
+      try {
+        var fop = fopConfig_();
+        if (fop.on) {
+          var fres = tg_(token, 'sendMessage', { chat_id: o.uid, text: fopRequisitesText_(o, fop), parse_mode: 'HTML', disable_web_page_preview: true });
+          if (fres && fres.ok && col.svc >= 0) { svc.r = 1; sheet.getRange(rowIndex, col.svc + 1).setValue(JSON.stringify(svc)); }
+        }
+      } catch (err2) { console.error('fop: send failed'); }
+    }
+  }
 }
 
 /**

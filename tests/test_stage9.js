@@ -3849,5 +3849,378 @@ console.log('Выпуск Б4, п.3: «Очистити тестові дані 
   }
 }
 
+/* ==================================================================================================================== */
+/* Выпуск Б4 · скорость оформления заказа (Stage9b5.gs: замер, одна пачка админам, необязательная очередь)              */
+/* ==================================================================================================================== */
+console.log('Выпуск Б4 · скорость оформления заказа');
+const q7 = (() => {
+  const fs = require('fs'), os = require('os'), cp = require('child_process');
+  const FOP = { FOP_NAME: 'ФОП Тестовий', FOP_IBAN: 'UA' + '1'.repeat(27), FOP_CODE: '1234567890' };
+  const GIFT = { gift_from: '100', gift_text_ua: 'Пакетик кураги 50 г (ua)', gift_text_ru: 'Пакетик кураги 50 г (ru)', gift_note: '1' };
+  const isDate = v => Object.prototype.toString.call(v) === '[object Date]';
+  function world(o) {
+    o = o || {};
+    const s = seed();
+    Object.assign(s.props, { ADMIN_CHAT_IDS: '900,901,902' }, o.props || {});
+    if (o.settings) { s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис']]; Object.keys(o.settings).forEach(k => s.sheets['Налаштування'].push([k, o.settings[k], ''])); }
+    if (o.wh) s.sheets['Оптові клієнти'] = [['Telegram user id', 'Контактна особа', 'Назва', 'Місто', 'Телефон', 'Статус', 'Дата', 'Хто вирішив', 'Заявка'], [String(o.wh), 'К', 'Н', 'Х', '+380501112233', 'активний', '', '', '']];
+    if (o.skip) s.skipFiles = o.skip;
+    return createGas(CODE, s);
+  }
+  let rn = 0;
+  const body = (g, user, extra) => Object.assign({ action: 'order', initData: g.initData(user), items: [{ id: 'DRY-039', g: 500, q: 1 }], total: 190, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'rq' + (++rn) }, extra || {});
+  const msgs = g => g.sent.filter(m => m.method === 'sendMessage');
+  const toC = (g, c) => msgs(g).filter(m => String(m.payload.chat_id) === String(c));
+  const chats = g => msgs(g).map(m => String(m.payload.chat_id)).join(',');
+  const rowOf = (g, num) => g.sheets['Замовлення'].rows.find(r => r[0] === num);
+  const svcOf = (g, num) => { const rows = g.sheets['Замовлення'].rows; const r = rowOf(g, num); return r ? JSON.parse(r[rows[0].indexOf('Службове')]) : null; };
+  const setSvc = (g, num, fn) => { const rows = g.sheets['Замовлення'].rows; const i = rows[0].indexOf('Службове'); const r = rowOf(g, num); const s = JSON.parse(r[i]); fn(s); r[i] = JSON.stringify(s); };
+  const cli = (g, uid) => ((g.sheets['Клієнти'] || { rows: [] }).rows.slice(1)).filter(r => r.some(v => String(v) === String(uid))).length;
+  const norm = rows => JSON.stringify(rows.map(r => r.map(v => isDate(v) ? 'D' : v)));
+  const hasNq = (g, num) => !!svcOf(g, num).nq;
+  const forceRun = (g, minAge) => { g.cache.oq = '1'; return g.sandbox.orderQueueRun_(minAge || 0); };
+  const jobSend = g => { g.cache.oq = '1'; g.call('orderNotifyJob'); };
+  const queueWorld = o => { const g = world(o); g.call('menuOrderQueueOn'); return g; };
+  const clear = g => { g.sent.splice(0); };
+  const addManager = g => {
+    g.call('ensureAdminsSheet_'); const sh = g.sheets['Адміни']; const hd = sh.rows[0], row = hd.map(() => '');
+    row[hd.indexOf('Chat id')] = '905'; row[hd.indexOf('Роль')] = 'Менеджер'; row[hd.indexOf('Отримувати сповіщення про замовлення')] = 'так'; row[hd.indexOf('Активний')] = 'так'; sh.appendRow(row);
+  };
+  const lockDepthOk = (g, from) => { let d = 0, bad = 0, writes = 0; g.lockLog.slice(from).forEach(e => { if (e.kind === 'script' && (e.op === 'try' || e.op === 'wait') && e.ok) d++; else if (e.kind === 'script' && e.op === 'release') d--; else if (e.kind === 'sheet' && e.op !== 'read') { writes++; if (d <= 0) bad++; } }); return { bad, writes }; };
+
+  /* ---------- А. очередь выключена: как до Б4 ---------- */
+  console.log('  А. очередь выключена (по умолчанию)');
+  {
+    const g = world(); g.resetOps();
+    const r = g.post(body(g, U(701)));
+    ok(r.ok === true && r.number === 'P-0008', 'А1 заказ с 3 админами: ok и номер', r);
+    ok(g.urlStats.batches === 1 && g.urlStats.telegram === 4 && g.urlStats.trips === 2, 'А1 админам одна пачка (fetchAll), потом клиенту: batches=1, telegram=4, поездок 2', g.urlStats);
+    ok(chats(g) === '900,901,902,701', 'А1 порядок: 900, 901, 902, затем клиент 701', chats(g));
+    const sv = svcOf(g, r.number);
+    ok(Array.isArray(sv.m) && sv.m.map(x => String(x[0])).join() === '900,901,902' && sv.m.every(x => x[1] > 100), 'А1 svc.m: все три админа с id сообщения', sv);
+    ok(!('nq' in sv) && !('gc' in sv) && !('cn' in sv) && !('nx' in sv), 'А1 ключей nq/gc/cn/nx в ячейке нет', Object.keys(sv));
+    ok(cli(g, 701) === 1, 'А1 «Клієнти» отмечен один раз');
+    ok(g.sent.every(m => m.lockHeld === 0), 'А1 Telegram не вызывается под блокировкой заказа');
+  }
+  {
+    const g = world({ props: FOP }); g.resetOps();
+    const r = g.post(body(g, U(702), { pay: 'card' }));
+    const cm = toC(g, 702);
+    ok(r.ok && cm.length === 2 && /прийнято/.test(cm[0].payload.text) && /IBAN/.test(cm[1].payload.text) && cm[1].payload.text.indexOf(FOP.FOP_IBAN) > 0, 'А2 card + ФОП: подтверждение, затем реквизиты отдельным сообщением', cm.map(m => m.payload.text.slice(0, 30)));
+    ok(svcOf(g, r.number).r === 1 && g.urlStats.batches === 1, 'А2 svc.r = 1, админам по-прежнему одна пачка');
+    const g2 = world(); const r2 = g2.post(body(g2, U(703), { pay: 'card' }));
+    ok(r2.ok && toC(g2, 703).length === 1 && svcOf(g2, r2.number).r === undefined, 'А2 ФОП выключен: реквизитов нет, svc.r нет');
+  }
+  {
+    const g = world(); g.setTelegramFail(true);
+    const r = g.post(body(g, U(704)));
+    ok(r.ok === true && r.number === 'P-0008' && !!rowOf(g, 'P-0008'), 'А3 Telegram падает: заказ ok, строка записана, номер выдан', r);
+    ok(svcOf(g, 'P-0008').m === undefined, 'А3 отметок «доставлено» нет');
+    g.setTelegramFail(false);
+  }
+  {
+    const g = world(); const b = body(g, U(705));
+    const r1 = g.post(b); const n0 = g.sheets['Замовлення'].rows.length, s0 = g.sent.length;
+    const r2 = g.post(b);
+    ok(r1.ok && r2.ok && r2.number === r1.number && g.sheets['Замовлення'].rows.length === n0 && g.sent.length === s0, 'А4 повтор того же rid: тот же номер, второй строки и вторых сообщений нет', [r1, r2]);
+    const f = world(); f.setTelegramFail(true); const b2 = body(f, U(706));
+    const a1 = f.post(b2); f.setTelegramFail(false); const sf = f.sent.length; const n1 = f.sheets['Замовлення'].rows.length;
+    const a2 = f.post(b2);
+    ok(a1.ok && a2.ok && a2.number === a1.number && f.sheets['Замовлення'].rows.length === n1 && f.sent.length === sf, 'А4 повтор после упавшей отправки: тот же номер, строки нет, сообщений нет', [a1, a2]);
+  }
+  {
+    const g = world({ props: { ALLOW_TEST_ORDERS: '1' } });
+    const r = g.post(body(g, U(707), { test: true }));
+    ok(r.ok && toC(g, 707).length === 0 && toC(g, 900).length === 1 && cli(g, 707) === 0 && !g.sheets['Клієнти'], 'А5 тестовый заказ (initData + test): клиенту не пишет, «Клієнти» не трогает', chats(g));
+    const g2 = world({ props: { ALLOW_TEST_ORDERS: '1' } });
+    const b2 = body(g2, U(1), {}); delete b2.initData;
+    const r2 = g2.post(b2);
+    ok(r2.ok && chats(g2) === '900,901,902' && !g2.sheets['Клієнти'], 'А5 тестовый заказ без initData: только админам, «Клієнти» нет', chats(g2));
+  }
+  {
+    const g = world();
+    const tbl = () => { const t = g.sheets['Товари'].rows; return { h: t[0], r: t.find(x => x[0] === 'SWT-004') }; };
+    const cc = { n: 0 }; const orig = g.sandbox.clearCatalogCache_;
+    g.sandbox.clearCatalogCache_ = (...a) => { cc.n++; return orig(...a); };
+    const qi = tbl().h.indexOf('Залишок'), si = tbl().h.indexOf('Наявність');
+    const r1 = g.post(body(g, U(708), { items: [{ id: 'SWT-004', g: 0, q: 1 }], total: 65 }));
+    ok(r1.ok && tbl().r[qi] === 2 && tbl().r[si] === 'є' && cc.n === 1, 'А6 «Залишок» 3 → 2, каталог помечен изменённым один раз', [r1, tbl().r[qi], cc.n]);
+    const r2 = g.post(body(g, U(709), { items: [{ id: 'SWT-004', g: 0, q: 2 }], total: 130 }));
+    ok(r2.ok && tbl().r[qi] === 0 && tbl().r[si] === 'немає' && cc.n === 2, 'А6 до нуля → «немає»', [tbl().r[qi], tbl().r[si]]);
+    const before = JSON.stringify(g.sheets['Товари'].rows); cc.n = 0;
+    const r3 = g.post(body(g, U(710)));
+    ok(r3.ok && JSON.stringify(g.sheets['Товари'].rows) === before && cc.n === 0, 'А6 товар без числа в «Залишок» не трогается, каталог не помечается');
+  }
+  {
+    const g = world({ skip: ['Stage9b5.gs'] });
+    ok(typeof g.sandbox.orderNotifySend_ === 'undefined', 'А7 файл Stage9b5.gs не загружен');
+    const r = g.post(body(g, U(711)));
+    ok(r.ok === true && r.number === 'P-0008' && !!rowOf(g, 'P-0008'), 'А7 без Stage9b5.gs заказ записан и вернул ok', r);
+    ok(chats(g) === '900,901,902,711', 'А7 без Stage9b5.gs сообщения всё равно уходят (админам и клиенту)', chats(g));
+    ok(svcOf(g, r.number).m.length === 3 && !g.sandbox.__errors.some(e => /notify/.test(e)), 'А7 svc.m записан, в журнале нет «notify»-ошибки', g.sandbox.__errors);
+    const g2 = world({ skip: ['Stage9b5.gs'], props: FOP }); const r2 = g2.post(body(g2, U(712), { pay: 'card' }));
+    ok(r2.ok && toC(g2, 712).length === 2 && svcOf(g2, r2.number).r === 1, 'А7 без Stage9b5.gs реквизиты ФОП тоже уходят, svc.r = 1');
+    const g3 = world({ skip: ['Stage9b5.gs'] });
+    let threw = false; try { g3.call('hourlyJob'); } catch (e) { threw = true; }
+    ok(!threw, 'А7 hourlyJob без Stage9b5.gs не падает');
+  }
+
+  /* ---------- Б. очередь включена ---------- */
+  console.log('  Б. очередь включена (menuOrderQueueOn)');
+  {
+    const g = world();
+    g.call('menuOrderQueueOn'); g.call('menuOrderQueueOn');
+    ok(g.triggers.filter(t => t === 'orderNotifyJob').length === 1 && g.props.ORDER_QUEUE === '1', 'Б0 один триггер orderNotifyJob (повторное включение не дублирует), ORDER_QUEUE=1', g.triggers);
+  }
+  {
+    const g = queueWorld(); g.resetOps();
+    const r = g.post(body(g, U(721)));
+    ok(r.ok && r.number === 'P-0008', 'Б1 заказ в очереди: ok и номер', r);
+    ok(g.urlStats.telegram === 0 && g.urlStats.trips === 0 && g.sent.length === 0, 'Б1 в самом заказе запросов к Telegram НОЛЬ', g.urlStats);
+    const sv = svcOf(g, r.number);
+    ok(sv.nq && sv.nq.t > 0 && sv.nq.u[0] === '721', 'Б1 в «Службове» есть nq (время, данные для «Клієнти»)', sv);
+    ok(cli(g, 721) === 0, 'Б1 «Клієнти» ещё не тронут');
+    ok(!!g.cache.oq, 'Б1 подсказка «в очереди есть» стоит');
+  }
+  {
+    const g = queueWorld({ props: FOP }); const r = g.post(body(g, U(722), { pay: 'card' })); g.resetOps();
+    const lk = g.lockLog.length;
+    g.call('orderNotifyJob');
+    ok(g.urlStats.batches === 1 && chats(g) === '900,901,902,722,722', 'Б2 job: админам одна пачка, клиенту подтверждение и реквизиты ФОП', [g.urlStats, chats(g)]);
+    const cm = toC(g, 722);
+    ok(/прийнято/.test(cm[0].payload.text) && /IBAN/.test(cm[1].payload.text), 'Б2 реквизиты — после подтверждения');
+    const sv = svcOf(g, r.number);
+    ok(sv.nq === undefined && sv.m.length === 3 && sv.cn === 1 && sv.r === 1 && sv.nx === undefined, 'Б2 nq снят; svc.m (3), cn=1, r=1', sv);
+    ok(cli(g, 722) === 1, 'Б2 «Клієнти» отмечен ровно один раз');
+    forceRun(g); forceRun(g);
+    ok(cli(g, 722) === 1 && msgs(g).length === 5, 'Б2 повторные запуски: «Клієнти» и сообщения без изменений');
+    const ld = lockDepthOk(g, lk);
+    ok(ld.writes > 0 && ld.bad === 0, 'Б12 все записи в таблицу из очереди идут под LockService (записей: ' + ld.writes + ')', ld);
+    ok(g.sent.every(m => m.lockHeld === 0), 'Б12 Telegram из очереди не вызывается под блокировкой');
+  }
+
+  // Б3. тексты из очереди дословно такие же, как в прямом режиме
+  {
+    const cmp = (name, wopt, user, extra, must) => {
+      const a = world(wopt); const ra = a.post(body(a, user, extra));
+      const b = queueWorld(wopt); const rb = b.post(body(b, user, extra)); b.call('orderNotifyJob');
+      const pa = JSON.stringify(msgs(a).map(m => m.payload)), pb = JSON.stringify(msgs(b).map(m => m.payload));
+      const txt = msgs(a).map(m => m.payload.text).join('\n');
+      ok(ra.ok && rb.ok && ra.number === rb.number && JSON.stringify(ra) === JSON.stringify(rb) && msgs(a).length >= 4 && pa === pb, 'Б3 ' + name + ': тексты и кнопки админу и клиенту дословно совпадают', pa === pb ? [ra, rb] : [pa.slice(0, 1200), pb.slice(0, 1200)]);
+      ok((must || []).every(re => re.test(txt)), 'Б3 ' + name + ': в тексте есть ожидаемое', [(must || []).map(String), txt.slice(0, 500)]);
+      const cut = (g, num) => { const h = g.sheets['Замовлення'].rows[0]; return g.sheets['Замовлення'].rows.find(r => r[0] === num).filter((v, i) => h[i] !== 'Дата/час' && h[i] !== 'Службове'); };
+      ok(norm([cut(a, ra.number)]) === norm([cut(b, rb.number)]) && norm((a.sheets['Клієнти'] || { rows: [] }).rows) === norm((b.sheets['Клієнти'] || { rows: [] }).rows), 'Б3 ' + name + ': строка заказа и лист «Клієнти» совпадают');
+    };
+    cmp('первый заказ', {}, U(731), {}, [/Перше замовлення/, /Замовлення P-0008/]);
+    cmp('повторный клиент', {}, U(501), {}, [/Замовлення P-0008/]);
+    cmp('RU + подарок на языке клиента', { settings: GIFT }, U(732), { lang: 'ru', items: [{ id: 'DRY-039', g: 500, q: 1 }, { id: 'NUT-001', g: 250, q: 1 }], total: 330 }, [/Подарок к заказу: Пакетик кураги 50 г \(ru\)/, /Подарунок до замовлення: Пакетик кураги 50 г \(ua\)/]);
+    cmp('подпись к подарку + комментарий', { settings: GIFT }, U(733), { giftNote: 'Для мами', comment: 'Подзвоніть заздалегідь', items: [{ id: 'DRY-039', g: 500, q: 1 }, { id: 'NUT-001', g: 250, q: 1 }], total: 330 }, [/Підпис до подарунка: Для мами/, /Подзвоніть заздалегідь/]);
+    cmp('«якщо немає»', {}, U(734), { ifOut: 'replace' }, [/Якщо немає: Замінити схожим/]);
+    cmp('ОПТ', { wh: 735 }, U(735), { items: [{ id: 'DRY-039', g: 1000, q: 5 }], total: 1600 }, [/ОПТ/, /Разом: 1600/]);
+    cmp('источник src + НП с cityRef + накладений платіж', {}, U(736), { src: 'qr1', delivery: 'np', city: 'Харків', branch: '12', npType: 'branch', pay: 'cod', cityRef: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, [/Харків/]);
+    cmp('НП-курьер, card + ФОП, RU', { props: FOP }, U(737), { delivery: 'np', city: 'Київ', branch: 'вул. Хрещатик 1, кв. 5', npType: 'courier', pay: 'card', lang: 'ru' }, [/Київ/, /Реквизиты для оплаты/]);
+    const g = queueWorld(); const r = g.post(body(g, U(738), { src: 'qr1', delivery: 'np', city: 'Харків', branch: '12', cityRef: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }));
+    const sv = svcOf(g, r.number);
+    ok(sv.nc === 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' && sv.nq.s === 'qr1', 'Б3 cityRef (svc.nc) и источник (nq.s) записаны одной записью заказа', sv);
+    const calls = []; const origT = g.sandbox.touchClient_; g.sandbox.touchClient_ = (...a) => { calls.push(JSON.stringify(a)); return origT(...a); };
+    g.call('orderNotifyJob');
+    const d = world(); const calls2 = []; const origD = d.sandbox.touchClient_; d.sandbox.touchClient_ = (...a) => { calls2.push(JSON.stringify(a)); return origD(...a); };
+    d.post(body(d, U(738), { src: 'qr1', delivery: 'np', city: 'Харків', branch: '12', cityRef: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }));
+    ok(calls.length === 1 && calls2.length === 1 && ((x, y) => x[1] === y[1] && x[2] === y[2] && x[3] === y[3] && String(x[0].id) === String(y[0].id) && x[0].first_name === y[0].first_name && x[0].language_code === y[0].language_code)(JSON.parse(calls[0]), JSON.parse(calls2[0])) && /qr1/.test(calls[0]), 'Б3 в «Клієнти» уходит тот же пользователь, язык и источник qr1, что и в прямом режиме (один вызов)', [calls, calls2]);
+  }
+
+  // Б4. повторные и одновременные запуски
+  {
+    const g = queueWorld(); g.post(body(g, U(741)));
+    jobSend(g); const n1 = msgs(g).length;
+    jobSend(g); jobSend(g); forceRun(g, 0);
+    ok(n1 === 4 && msgs(g).length === 4, 'Б4 второй запуск ничего повторно не шлёт', msgs(g).length);
+    const h = queueWorld(); const r2 = h.post(body(h, U(742)));
+    let nested = false, inner = null;
+    h.setTelegramFail(() => { if (!nested) { nested = true; h.cache.oq = '1'; inner = h.sandbox.orderQueueRun_(0); } return null; });
+    jobSend(h); h.setTelegramFail(false);
+    ok(nested && msgs(h).length === 4 && toC(h, 742).length === 1 && toC(h, 900).length === 1 && svcOf(h, r2.number).m.length === 3, 'Б4 два «одновременных» запуска (второй во время первого): каждому ровно одно сообщение', [msgs(h).length, inner]);
+    ok(inner && inner.done === 0 && inner.left === 1, 'Б4 второй запуск увидел «взят в работу» и ушёл', inner);
+    const k = queueWorld(); const r3 = k.post(body(k, U(743)));
+    setSvc(k, r3.number, s => { s.nq.c = Date.now() + k.sandbox.__shift; });
+    jobSend(k);
+    ok(msgs(k).length === 0 && hasNq(k, r3.number), 'Б4 отметка «взят в работу» удерживает заказ от второго запуска');
+  }
+
+  // Б5. частичный сбой
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(751)));
+    let phase = 1;
+    g.setTelegramFail((m, p) => phase === 1 && String(p.chat_id) === '901' ? { ok: false, error_code: 429, description: 'Too Many Requests' } : phase === 1 && String(p.chat_id) === '902' ? { ok: false, error_code: 403, description: 'Forbidden: bot was blocked' } : null);
+    jobSend(g);
+    let sv = svcOf(g, r.number);
+    ok(sv.m.map(x => String(x[0])).join() === '900' && sv.nx.join() === '902' && sv.cn === 1 && sv.nq && sv.nq.c === 0, 'Б5 900 получил, 901 (429) ждёт, 902 (403) в nx, клиент получил, nq остался', sv);
+    phase = 2; clear(g);
+    jobSend(g);
+    sv = svcOf(g, r.number);
+    ok(chats(g) === '901' && sv.m.length === 2 && sv.nq === undefined && sv.nx.join() === '902', 'Б5 следующий запуск: только 901; 900, 902 и клиенту повторно не шлётся; nq снят', [chats(g), sv]);
+    clear(g); jobSend(g);
+    ok(msgs(g).length === 0, 'Б5 админ с 403 больше не тревожится');
+    g.setTelegramFail(false);
+    const h = queueWorld(); const r2 = h.post(body(h, U(752)));
+    let net = true; h.setTelegramFail((m, p) => net && String(p.chat_id) === '900' ? { ok: false, description: 'network' } : null);
+    jobSend(h); const s1 = svcOf(h, r2.number);
+    net = false; clear(h); jobSend(h);
+    ok(s1.nq && !s1.m.some(x => String(x[0]) === '900') && chats(h) === '900' && svcOf(h, r2.number).nq === undefined, 'Б5 сбой сети: админ получил со следующего запуска, остальные не продублированы', [chats(h), s1]);
+    h.setTelegramFail(false);
+    const c = queueWorld({ props: FOP }); const r3 = c.post(body(c, U(753), { pay: 'card' }));
+    c.setTelegramFail((m, p) => String(p.chat_id) === '753' ? { ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' } : null);
+    jobSend(c);
+    const s3 = svcOf(c, r3.number);
+    ok(s3.cn === 2 && s3.nq === undefined && s3.r === undefined && toC(c, 753).length === 1, 'Б5 клиент заблокировал бота: cn=2, реквизиты не шлются, nq снят', s3);
+    clear(c); jobSend(c); forceRun(c);
+    ok(msgs(c).length === 0, 'Б5 заблокировавшему клиенту повторов нет');
+    c.setTelegramFail(false);
+  }
+
+  // Б6. упавший запуск и OQ_MAX_TRIES
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(761)));
+    addManager(g);
+    setSvc(g, r.number, s => { s.nq.c = Date.now() + g.sandbox.__shift; s.nq.a = 1; });
+    jobSend(g); ok(msgs(g).length === 0, 'Б6 пока «взят в работу» (< OQ_CLAIM_MS) — не трогается');
+    g.advance(g.sandbox.OQ_CLAIM_MS + 1000); jobSend(g);
+    ok(msgs(g).length === 5 && toC(g, 905).length === 1 && svcOf(g, r.number).nq === undefined, 'Б6 после OQ_CLAIM_MS заказ берётся снова и уходит (3 админа + менеджер + клиент)', chats(g));
+    const h = queueWorld(); const r2 = h.post(body(h, U(762), { name: 'Секретне Імя', phone: '+380509998877' }));
+    addManager(h);
+    const origFind = h.sandbox.findOrder_; h.sandbox.findOrder_ = () => { throw new Error('boom'); };
+    const MAX = h.sandbox.OQ_MAX_TRIES;
+    for (let i = 0; i < MAX; i++) jobSend(h);
+    let sv = svcOf(h, r2.number);
+    ok(msgs(h).length === 0 && sv.nq && sv.nq.a === MAX && sv.nq.c === 0, 'Б6 исключение в середине: запуск не падает, попытки считаются (' + MAX + '), «взят в работу» снимается', sv.nq);
+    jobSend(h);
+    sv = svcOf(h, r2.number);
+    ok(sv.nq === undefined && msgs(h).length === 3 && chats(h) === '900,901,902', 'Б6 после OQ_MAX_TRIES: тревога только владельцу и админам с ролью «Адмін» (не менеджеру), nq снят', [chats(h), sv]);
+    ok(msgs(h).every(m => /P-0008/.test(m.payload.text) && !/Секретне|380509998877|762|Олена/.test(m.payload.text)), 'Б6 в тексте тревоги только номер заказа, без имени и телефона');
+    clear(h); jobSend(h); forceRun(h);
+    ok(msgs(h).length === 0, 'Б6 после сдачи тревога не повторяется');
+    h.sandbox.findOrder_ = origFind;
+  }
+
+  // Б7. админы не получили > 10 минут
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(771)));
+    g.setTelegramFail((m, p) => p.reply_markup ? { ok: false, description: 'network' } : null);
+    jobSend(g); clear(g);
+    g.advance(11 * 60000);
+    jobSend(g); jobSend(g); jobSend(g);
+    const alarms = toC(g, 900).filter(m => /^Увага/.test(m.payload.text));
+    ok(alarms.length === 1 && /P-0008/.test(alarms[0].payload.text) && toC(g, 901).filter(m => /^Увага/.test(m.payload.text)).length === 1, 'Б7 админы не получили > 10 минут: одна тревога на человека, не повторяется (3 запуска)', alarms.length);
+    g.setTelegramFail(false); jobSend(g);
+    ok(svcOf(g, r.number).m.length === 3 && svcOf(g, r.number).nq === undefined, 'Б7 после починки сообщения доходят');
+  }
+
+  // Б8. триггер умер
+  {
+    const g = world(); g.call('menuOrderQueueOn'); g.clearCache(); g.resetOps();
+    const r = g.post(body(g, U(781)));
+    const sv = svcOf(g, r.number);
+    ok(r.ok && g.urlStats.batches === 1 && chats(g) === '900,901,902,781' && sv.nq === undefined && sv.m.length === 3, 'Б8 нет метки oq_hb: заказ шлёт сообщения сам, как в режиме А', [chats(g), sv]);
+    g.call('orderNotifyJob');
+    const r2 = g.post(body(g, U(782)));
+    ok(svcOf(g, r2.number).nq && !!g.cache.oq_hb, 'Б8 триггер ожил (oq_hb есть) — снова очередь');
+  }
+
+  // Б9. страховка
+  {
+    ['hourlyJob', 'mailJob', 'flushJob'].forEach((fn, i) => {
+      const g = queueWorld(); const r = g.post(body(g, U(791 + i)));
+      const mine = () => msgs(g).filter(m => /P-0008/.test(m.payload.text)).length;
+      g.call(fn);
+      ok(mine() === 0 && hasNq(g, r.number), 'Б9 ' + fn + ': заказ моложе 2 минут не трогается');
+      g.advance(g.sandbox.OQ_STALE_MS + 5000); g.call(fn);
+      ok(mine() === 4 && !hasNq(g, r.number), 'Б9 ' + fn + ': заказ старше 2 минут досылается (3 админа + клиент)', mine());
+    });
+  }
+
+  // Б10. выключение
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(801))); const r1 = g.post(body(g, U(802)));
+    g.call('menuOrderQueueOff');
+    ok(g.triggers.filter(t => t === 'orderNotifyJob').length === 0 && g.props.ORDER_QUEUE === '0', 'Б10 триггер снят, ORDER_QUEUE=0');
+    ok(!hasNq(g, r.number) && !hasNq(g, r1.number) && toC(g, 801).length === 1 && toC(g, 802).length === 1 && toC(g, 900).length === 2, 'Б10 очередь дослана сразу (оба заказа)', chats(g));
+    clear(g); g.resetOps();
+    const r2 = g.post(body(g, U(803)));
+    ok(r2.ok && g.urlStats.batches === 1 && !hasNq(g, r2.number) && toC(g, 803).length === 1, 'Б10 новые заказы идут прямым путём');
+    ok(g.ui.alerts.some(a => /Швидке оформлення вимкнено/.test(a)), 'Б10 владелец получает пояснение (UA/RU)');
+  }
+
+  // Б11. строки удалены / сдвинуты
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(811)));
+    g.sheets['Замовлення'].rows.splice(2, 1); // удалили строку выше
+    jobSend(g);
+    ok(chats(g) === '900,901,902,811' && /P-0008/.test(msgs(g)[0].payload.text) && svcOf(g, r.number).nq === undefined && svcOf(g, r.number).m.length === 3, 'Б11 удалена строка выше: сообщения по правильному заказу, отметки в нужной строке', chats(g));
+    const h = queueWorld(); const ra = h.post(body(h, U(812))); h.post(body(h, U(813), { items: [{ id: 'NUT-001', g: 250, q: 1 }], total: 140 }));
+    h.sheets['Замовлення'].rows.splice(h.sheets['Замовлення'].rows.findIndex(x => x[0] === ra.number), 1); // удалили первый заказ очереди вручную
+    let threw = false; try { jobSend(h); } catch (e) { threw = true; }
+    ok(!threw && toC(h, 813).length === 1 && toC(h, 812).length === 0 && /P-0009/.test(toC(h, 900)[0].payload.text), 'Б11 строку заказа удалили вручную: запуск не падает, второй заказ уходит', chats(h));
+    const k = queueWorld(); const rk = k.post(body(k, U(814)));
+    const sh = k.sheets['Замовлення']; const col = k.call('orderCols_', sh);
+    const res = k.call('orderSvcUpdate_', sh, col, rk.number, 3, cur => { cur.zz = 1; return true; }); // подсказка строки устарела
+    ok(res && res.row === sh.rows.findIndex(x => x[0] === rk.number) + 1 && svcOf(k, rk.number).zz === 1 && JSON.stringify(sh.rows[2]).indexOf('"zz"') < 0, 'Б11 устаревшая подсказка строки: запись идёт в строку заказа по номеру', res && res.row);
+  }
+
+  /* ---------- В. замер ---------- */
+  console.log('  В. замер PERF_LOG');
+  {
+    const run = (props, mode) => {
+      const g = mode === 'queue' ? queueWorld({ props }) : world({ props }); const lines = [];
+      g.sandbox.console.log = (...a) => { lines.push(a.join(' ')); };
+      const r = g.post(body(g, U(7777777), { name: 'Приватне Імя', phone: '+380670001122', comment: 'Мій секретний коментар', delivery: 'np', city: 'Дніпро', branch: '77' }));
+      return { g, lines, r };
+    };
+    const a = run({ PERF_LOG: '1' }), b = run({});
+    const mine = a.lines.filter(l => /^PERF order /.test(l));
+    ok(mine.length === 1, 'В1 PERF_LOG=1: одна строка «PERF order …» на заказ', a.lines);
+    const re = /^PERF order (direct|queued) \d+ ms \| ([a-z:_]+ \d+)( \| [a-z:_]+ \d+)*( \| ([a-z_]+=\d+)( [a-z_]+=\d+)*)?$/;
+    ok(re.test(mine[0]), 'В1 в строке только названия этапов и числа', mine[0]);
+    const all = a.lines.join('\n');
+    ok(!/Приватне|Імя|0670001122|Дніпро|секретн|7777777|initData|TEST_TOKEN|123456:|hash=|900|Курага/.test(all), 'В1 нет имени, телефона, адреса, комментария, id, initData, токена', all);
+    ok(b.lines.filter(l => /^PERF/.test(l)).length === 0, 'В2 без PERF_LOG ничего не пишется');
+    ok(JSON.stringify(a.r) === JSON.stringify(b.r) && a.r.ok, 'В3 PERF_LOG не меняет ответ заказа', [a.r, b.r]);
+    const c = run({ PERF_LOG: '1' }, 'queue'); const cm = c.lines.filter(l => /^PERF order /.test(l));
+    ok(cm.length === 1 && /^PERF order queued /.test(cm[0]) && re.test(cm[0]), 'В4 в режиме очереди: одна строка «PERF order queued …»', cm);
+    c.g.call('orderNotifyJob');
+    ok(c.lines.filter(l => /^PERF order-job /.test(l)).length === 1 && !/Приватне|0670001122|7777777/.test(c.lines.join('\n')), 'В5 запуск очереди: одна строка «PERF order-job …», без личных данных', c.lines.filter(l => /^PERF/.test(l)));
+    ok(c.r.ok && JSON.stringify(c.r) === JSON.stringify(a.r), 'В6 ответ заказа в очереди и без неё одинаков (номер, подарки)', [c.r, a.r]);
+  }
+
+  /* ---------- Г. цифры ---------- */
+  console.log('  Г. цифры на один заказ с 3 админами');
+  {
+    const measure = (g, fn) => { g.resetOps(); g.resetIo(); fn(); return { telegram: g.urlStats.telegram, trips: g.urlStats.trips, batches: g.urlStats.batches, writes: g.io.writes, flush: g.ops.flush || 0 }; };
+    let oldDir = null;
+    try {
+      const root = path.join(__dirname, '..');
+      oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pamir-old-b4o-'));
+      cp.execSync('git ls-tree --name-only 41fdc50 apps-script/', { cwd: root }).toString().split(/\r?\n/).filter(n => /\.gs$/.test(n)).forEach(n => {
+        fs.writeFileSync(path.join(oldDir, path.basename(n)), cp.execSync('git show 41fdc50:' + n, { cwd: root, maxBuffer: 64 * 1024 * 1024 }));
+      });
+    } catch (e) { oldDir = null; }
+    const mk = (queue, old) => { const s = seed(); s.props.ADMIN_CHAT_IDS = '900,901,902'; const g = createGas(old ? path.join(oldDir, 'Code.gs') : CODE, s); if (queue) g.call('menuOrderQueueOn'); return g; };
+    const out = {};
+    if (oldDir) { const g = mk(false, true); out.old = measure(g, () => { g.post(body(g, U(901))); }); }
+    const gd = mk(false); out.direct = measure(gd, () => { gd.post(body(gd, U(902))); });
+    const gq = mk(true);
+    out.queueOrder = measure(gq, () => { gq.post(body(gq, U(903))); });
+    out.queueJob = measure(gq, () => { gq.call('orderNotifyJob'); });
+    const line = (n, s) => '    ' + n + ': Telegram ' + s.telegram + ', поездок в сеть ' + s.trips + ', fetchAll ' + s.batches + ', записей в лист ' + s.writes + ', flush ' + s.flush;
+    console.log('  ЦИФРЫ (заказ, 3 админа + клиент):');
+    if (out.old) console.log(line('до Б4 (41fdc50)', out.old));
+    console.log(line('сейчас, прямой', out.direct));
+    console.log(line('очередь, сам заказ', out.queueOrder));
+    console.log(line('очередь, запуск триггера (в фоне)', out.queueJob));
+    ok(!out.old || (out.old.telegram === 4 && out.old.trips === 4), 'Г до Б4: по одному запросу на админа и клиента (4 запроса, 4 поездки)', out.old);
+    ok(out.direct.telegram === 4 && out.direct.trips === 2 && out.queueOrder.telegram === 0 && out.queueOrder.trips === 0, 'Г сейчас: прямой — 4 запроса в 2 поездки; очередь — 0 запросов в заказе', out);
+    ok(!out.old || out.direct.flush <= out.old.flush, 'Г вызовов flush на заказ не больше, чем до Б4', [out.old && out.old.flush, out.direct.flush]);
+  }
+})();
+
 console.log('\n' + pass + ' ok, ' + fail + ' fail');
 process.exit(fail ? 1 : 0);
