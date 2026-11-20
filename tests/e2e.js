@@ -8,6 +8,9 @@ const { start: startRaw } = require('./serve');
 const PORT_OFF = Number(process.env.E2E_PORT_OFFSET || 0); // сдвиг портов стенда, если рядом идёт другой прогон
 const start = (port, ...rest) => startRaw(port + PORT_OFF, ...rest);
 const { open, OUT } = require('./shot');
+// Старый Code.gs кладём в СВОЮ пустую папку: gas_mock подгружает все *.gs из папки файла, и случайный .gs во временной папке подменял «старый бэкенд» новым.
+const oldGsDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'pamir-e2e-old-'));
+const oldGsPath = name => { const d = path.join(oldGsDir, name.replace(/\.gs$/, '')); fs.mkdirSync(d, { recursive: true }); return path.join(d, name); };
 
 // Бэкенд выпуска А (до волны Б1): в main теперь уже бэкенд Б1, поэтому для проверок «без admin.message / без блоков источников» берём коммит слияния выпуска А.
 const OLD_REF_A = '185bff6';
@@ -400,7 +403,7 @@ const smallTargets = page => page.evaluate(() => {
   console.log('Новая витрина со СТАРЫМ бэкендом (пока Code.gs не обновлён) и режим ?debug=1');
   {
     // «Старый бэкенд» — Code.gs из main (то, что сейчас работает у клиентов). Другую версию можно задать через OLD_BACKEND_REF.
-    const oldCode = path.join(require('os').tmpdir(), 'Code.old.gs');
+    const oldCode = oldGsPath('Code.old.gs');
     fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const st = await start(8814, oldCode, s => { s.props.ALLOW_TEST_ORDERS = '1'; });
     const { page, errors } = await open(browser, st.url, { uid: 0, query: '?debug=1' });
@@ -2960,7 +2963,7 @@ const smallTargets = page => page.evaluate(() => {
   /* ---------------- Блок 2: старый бэкенд ---------------- */
   console.log('Выпуск Б · блок 2: админка со СТАРЫМ бэкендом');
   {
-    const oldCode = path.join(require('os').tmpdir(), 'Code.old.gs');
+    const oldCode = oldGsPath('Code.old.gs');
     fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || OLD_REF_A) + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const st = await start(8843, oldCode, s => { withPhotos(s); });
     const g = st.gas, n = a => st.log.filter(x => x.action === a).length;
@@ -3299,7 +3302,7 @@ const smallTargets = page => page.evaluate(() => {
     // метка из события экранируется
     st.gas.post({ action: 'ev', initData: st.gas.initData({ id: 72 }), sid: 'z', events: [{ e: 'src', v: 'qr2', t: Date.now() }] });
     // старый бэкенд: статистика открывается, блоков нет
-    const oldCodeS = path.join(require('os').tmpdir(), 'Code.old.src.gs');
+    const oldCodeS = oldGsPath('Code.old.src.gs');
     fs.writeFileSync(oldCodeS, execSync('git show ' + (process.env.OLD_BACKEND_REF || OLD_REF_A) + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const soS = await start(8874, oldCodeS, s => { withPhotos(s); });
     const Os = await open(browser, soS.url, { uid: 900, query: '?admin=1', w: 360, h: 740 });
@@ -3407,7 +3410,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(attempts.length === 1 && await c2.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_err_v1')).n) === 1, 'сбой отправки ошибки новых записей не порождает (одна попытка, счётчик 1)', attempts.length);
     await c2.ctx.close();
     // старый бэкенд: ответ на err — ошибка, витрина молчит
-    const oldCode = path.join(require('os').tmpdir(), 'Code.old.gs');
+    const oldCode = oldGsPath('Code.old.gs');
     fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
     const so = await start(8873, oldCode, s => { withPhotos(s); });
     const co = await open(browser, so.url, { uid: 732, w: 360, h: 640 });
@@ -3716,7 +3719,7 @@ const smallTargets = page => page.evaluate(() => {
     }
     // 9. старый бэкенд: автоповтор чтения работает без регрессий
     {
-      const oldCode = path.join(require('os').tmpdir(), 'Code.old4.gs');
+      const oldCode = oldGsPath('Code.old4.gs');
       fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || 'main') + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
       const so = await start(8977, oldCode, s => { withPhotos(s); });
       const A = await mkApi(so, 790);
@@ -4229,7 +4232,7 @@ const smallTargets = page => page.evaluate(() => {
         ok(X.errors.length === 0, 'повтор по ссылке (' + label + '): в консоли нет ошибок', X.errors);
         await X.ctx.close();
       }
-      const oldCode = path.join(require('os').tmpdir(), 'Code.oldA.gs');
+      const oldCode = oldGsPath('Code.oldA.gs');
       fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || OLD_REF_A) + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
       const so = await start(8902, oldCode, s => { withPhotos(s); });
       const O = await open(browser, so.url, { uid: 501, start: 're-0001' });
@@ -4484,7 +4487,7 @@ const smallTargets = page => page.evaluate(() => {
       const sent = await sendOrder(c.page, st2);
       ok(sent && sent.cityRef === REF_KH, 'без shop.npp: cityRef всё равно уходит (город выбран из подсказки)');
       await c.ctx.close(); st2.server.close();
-      const oldCode = path.join(require('os').tmpdir(), 'Code.oldB4.gs');
+      const oldCode = oldGsPath('Code.oldB4.gs');
       fs.writeFileSync(oldCode, execSync('git show ' + (process.env.OLD_BACKEND_REF || OLD_REF_A) + ':apps-script/Code.gs', { cwd: path.join(__dirname, '..') }));
       const so = await start(8913, oldCode, s => { withPhotos(s); });
       const o = await open(browser, so.url, { uid: 922, start: 'DRY-039' });
@@ -5432,6 +5435,8 @@ const smallTargets = page => page.evaluate(() => {
     const realCfgText = fs.readFileSync(path.join(__dirname, '..', 'webapp', 'config.js'), 'utf8');
     const WORKER = (/CATALOG_URL:\s*'([^']*)'/.exec(realCfgText) || [])[1] || '';
     ok(/^https:\/\/pamir-bot\.pochoev2306\.workers\.dev\/catalog$/.test(WORKER), 'боевой config.js: CATALOG_URL = https://pamir-bot.pochoev2306.workers.dev/catalog', WORKER);
+    const NPW = (/NP_URL:\s*'([^']*)'/.exec(realCfgText) || [])[1] || '';
+    ok(/^https:\/\/pamir-bot\.pochoev2306\.workers\.dev\/np$/.test(NPW), 'боевой config.js: NP_URL = https://pamir-bot.pochoev2306.workers.dev/np', NPW);
     const html = fs.readFileSync(path.join(__dirname, '..', 'webapp', 'index.html'), 'utf8');
     const vCfg = (/config\.js\?v=(\d+)/.exec(html) || [])[1], vApp = (/app\.js\?v=(\d+)/.exec(html) || [])[1], vCss = (/styles\.css\?v=(\d+)/.exec(html) || [])[1];
     ok(vCfg === '29' && vApp === '29' && vCss === '29', 'index.html: config.js, app.js, styles.css — все с ?v=29 (телефоны не оставят старый config)', [vCfg, vApp, vCss]);
@@ -5796,7 +5801,7 @@ const smallTargets = page => page.evaluate(() => {
     await v.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'A');
     await v.page.waitForSelector('#grid .card');
     const s1 = await state(v.page);
-    ok(s1.gone.length === 0 && s1.keep.length === KEEP.length && s1.cdv === 'A' && s1.removes === 1 && s1.cloud === 'other' && s1.nppause === '123', 'нет сохранённой версии + есть shop.cdv: данные покупателя стёрты (localStorage и CloudStorage); язык, did, админ, реферал, опт и пауза НП на месте', s1);
+    ok(s1.gone.length === 0 && s1.keep.length === KEEP.length && s1.cdv === 'A' && s1.removes === 1 && s1.cloud === 'cdv,other' && await v.page.evaluate(() => window.__tg.cloud.cdv) === 'A' && s1.nppause === '123', 'нет сохранённой версии, в облаке метки нет: данные покупателя стёрты (localStorage и CloudStorage), метка версии записана в облако; язык, did, админ, реферал, опт и пауза НП на месте', s1);
     ok(await count(v.page, '#cartCount') === 0 && await cartLines(v.page) === 0, 'корзина в памяти и на экране пуста сразу, без перезагрузки');
     // 2) повторная загрузка с той же версией — не чистит
     await v.page.evaluate(() => { localStorage.setItem('pamir_fav_v1', '["DRY-039"]'); localStorage.setItem('pamir_cart_v1', JSON.stringify({ t: Date.now(), i: [{ id: 'NUT-007', g: 0, q: 1, pr: 85 }] })); });
@@ -5814,7 +5819,7 @@ const smallTargets = page => page.evaluate(() => {
     release(); hold = null;
     await v.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'B');
     const s3 = await state(v.page);
-    ok(s3.gone.length === 0 && s3.removes === 1 && s3.cloud === 'other' && await count(v.page, '#cartCount') === 0, 'версия изменилась A → B: данные стёрты один раз (и то, что положили за эти секунды)', s3);
+    ok(s3.gone.length === 0 && s3.removes === 1 && s3.cloud === 'cdv,other' && await v.page.evaluate(() => window.__tg.cloud.cdv) === 'B' && await count(v.page, '#cartCount') === 0, 'версия изменилась A → B: данные стёрты один раз (и то, что положили за эти секунды)', s3);
     await v.page.evaluate(() => localStorage.setItem('pamir_fav_v1', '["DRY-039"]'));
     await v.page.reload({ waitUntil: 'networkidle' });
     const s3b = await state(v.page);
@@ -5849,7 +5854,278 @@ const smallTargets = page => page.evaluate(() => {
     await w.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'C');
     const s6 = await state(w.page);
     ok(s6.gone.length === 0 && w.errors.length === 0, 'облако ломается при очистке: localStorage всё равно очищен, ошибок нет', [s6, w.errors]);
-    await w.ctx.close(); stV.server.close();
+    await w.ctx.close();
+
+    // 7) очистка — раз на покупателя, а не раз на устройство: метка версии лежит и в облаке (ключ 'cdv')
+    {
+      cdv = 'A';
+      const NOW = Date.now();
+      const CCART = q => JSON.stringify({ t: NOW + 5000, i: [{ id: 'NUT-007', g: 0, q, pr: 85 }] });
+      const cloudNow = page => page.evaluate(() => ({ keys: Object.keys(window.__tg.cloud).sort().join(','), cdv: window.__tg.cloud.cdv || '', cart: window.__tg.cloud.cart || '', fav: window.__tg.cloud.fav || '', removes: window.__tg.calls.filter(x => x[0] === 'cloudRemove').length }));
+      /** Облако стенда создаётся заново при каждой загрузке: seed кладётся в него сразу (ключ __cloudseed в localStorage можно менять между перезагрузками). */
+      const openS = async (uid, seed) => {
+        const c = await open(browser, stV.url, { uid, w: 360, h: 640, until: 'domcontentloaded', before: async page => {
+          await page.addInitScript(sd => {
+            if (localStorage.getItem('__cloudseed') === null) localStorage.setItem('__cloudseed', JSON.stringify(sd));
+            let tgv;
+            Object.defineProperty(window, '__tg', { configurable: true, get() { return tgv; }, set(x) { tgv = x; try { Object.assign(x.cloud, JSON.parse(localStorage.getItem('__cloudseed') || '{}')); } catch (e) { /* без seed */ } } });
+          }, seed);
+          await page.route(/\/api\?action=catalog/, async r => { if (hold) await hold; r.fallback(); });
+        } });
+        await c.page.waitForFunction(() => window.__tg && document.getElementById('tabbar'));
+        return c;
+      };
+      const localCart = page => page.evaluate(() => { try { return JSON.parse(localStorage.getItem('pamir_cart_v1')).i.map(l => l.q).join(); } catch (e) { return ''; } });
+      const withSeedLs = async (c, ver) => { await seedLs(c.page, ver); await c.page.reload({ waitUntil: 'domcontentloaded' }); await c.page.waitForFunction(() => window.__tg && document.getElementById('tabbar')); };
+
+      // а) первое устройство покупателя, в облаке метки нет — чистим телефон и облако, метка в облаке появилась
+      hold = new Promise(res => { release = res; });
+      const ca = await openS(970, { cart: CCART(3), fav: '["DRY-039"]', form: '{"name":"Хмара"}', seen: '["NUT-007"]', notice: 'nabc1', other: 'keep' });
+      await withSeedLs(ca);
+      release(); hold = null;
+      await ca.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'A');
+      const ga = await cloudNow(ca.page), sa = await state(ca.page);
+      ok(sa.gone.length === 0 && ga.keys === 'cdv,other' && ga.cdv === 'A' && ga.removes === 1, 'г-а) первое устройство, в облаке метки нет: стёрто и на телефоне, и в облаке; метка версии в облаке', [sa, ga]);
+      await ca.ctx.close();
+
+      // б) второе устройство того же покупателя: пустой localStorage, в облаке метка той же версии и настоящие cart/fav
+      hold = new Promise(res => { release = res; });
+      const cb = await openS(971, { cdv: 'A', cart: CCART(3), fav: '["DRY-039"]', seen: '["NUT-007"]', other: 'keep' });
+      await cb.page.waitForFunction(() => document.getElementById('cartCount'));
+      release(); hold = null;
+      await cb.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'A');
+      await cb.page.waitForSelector('#grid .card');
+      const gb = await cloudNow(cb.page);
+      ok(gb.removes === 0 && gb.keys === 'cart,cdv,fav,other,seen' && gb.cart === CCART(3) && gb.fav === '["DRY-039"]', 'г-б) второе устройство: облако не стёрто, removeItems не вызывался', gb);
+      ok(await localCart(cb.page) === '3' && await count(cb.page, '#cartCount') === 1 && await cb.page.evaluate(() => localStorage.getItem('pamir_fav_v1')) === '["DRY-039"]' && cb.errors.length === 0, 'г-б) корзина и избранное подтянулись из облака, метка записана на телефоне, ошибок нет', [await localCart(cb.page), await count(cb.page, '#cartCount'), cb.errors]);
+      await cb.ctx.close();
+
+      // в) на телефоне старая версия, в облаке уже новая — телефон стёрт, облако цело, данные взяты из облака заново
+      hold = new Promise(res => { release = res; });
+      const cc = await openS(972, { cdv: 'A', cart: CCART(5), fav: '["DRY-005"]', other: 'keep' });
+      await withSeedLs(cc, 'Z');
+      release(); hold = null;
+      await cc.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'A');
+      await cc.page.waitForSelector('#grid .card');
+      await cc.page.waitForTimeout(400);
+      const gc = await cloudNow(cc.page);
+      const lc = await cc.page.evaluate(() => ['pamir_search_v1', 'pamir_subs_v1', 'pamir_rid_v1', 'pamir_notice_closed', 'pamir_form_v1'].filter(k => localStorage.getItem(k)));
+      ok(gc.removes === 0 && gc.cart === CCART(5) && gc.fav === '["DRY-005"]' && lc.length === 0 && await localCart(cc.page) === '5' && await cc.page.evaluate(() => localStorage.getItem('pamir_fav_v1')) === '["DRY-005"]', 'г-в) старая версия на телефоне, в облаке новая: локальные тестовые данные стёрты, облако цело, корзина и избранное — из облака', [gc, lc, await localCart(cc.page)]);
+      await cc.ctx.close();
+
+      // г) версия сменилась A → B: очистка везде один раз, дальше не повторяется
+      cdv = 'B'; hold = new Promise(res => { release = res; });
+      const cd = await openS(973, { cdv: 'A', cart: CCART(2), fav: '["DRY-039"]', other: 'keep' });
+      await withSeedLs(cd, 'A');
+      release(); hold = null;
+      await cd.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'B');
+      const gd = await cloudNow(cd.page), sd = await state(cd.page);
+      ok(sd.gone.length === 0 && gd.removes === 1 && gd.keys === 'cdv,other' && gd.cdv === 'B', 'г-г) версия A → B: стёрто на телефоне и в облаке один раз, метка в облаке B', [sd, gd]);
+      await cd.page.evaluate(() => { localStorage.setItem('__cloudseed', JSON.stringify({ cdv: 'B', other: 'keep' })); localStorage.setItem('pamir_fav_v1', '["DRY-039"]'); });
+      await cd.page.reload({ waitUntil: 'networkidle' });
+      const gd2 = await cloudNow(cd.page);
+      ok(gd2.removes === 0 && await cd.page.evaluate(() => localStorage.getItem('pamir_fav_v1')) === '["DRY-039"]', 'г-г) после очистки повторная загрузка с B — не чистит', gd2);
+      await cd.ctx.close();
+
+      // д) облако отвечает ошибкой на чтение 'cdv' — облако не стёрто, телефон очищен как без облака, витрина работает
+      cdv = 'A'; hold = new Promise(res => { release = res; });
+      const ce = await openS(974, { cart: CCART(3), fav: '["DRY-039"]', other: 'keep' });
+      await withSeedLs(ce, 'Z');
+      await ce.page.evaluate(() => { const cs = window.Telegram.WebApp.CloudStorage, g = cs.getItem; cs.getItem = function (k, cb) { if (k === 'cdv') return cb('ERR', null); return g.apply(cs, arguments); }; });
+      release(); hold = null;
+      await ce.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'A');
+      await ce.page.waitForSelector('#grid .card');
+      const ge = await cloudNow(ce.page);
+      ok(ge.removes === 0 && ge.keys === 'cart,fav,other' && ge.cart === CCART(3) && ce.errors.length === 0 && await count(ce.page, '#grid .card') > 0, 'г-д) ошибка чтения метки в облаке: облако не стёрто, витрина работает, ошибок в консоли нет', [ge, ce.errors]);
+      await ce.ctx.close();
+
+      // е) облако не отвечает вовсе — витрина не зависает, облако не стёрто
+      hold = new Promise(res => { release = res; });
+      const cf = await openS(975, { cart: CCART(3), other: 'keep' });
+      await withSeedLs(cf, 'Z');
+      await cf.page.evaluate(() => { const cs = window.Telegram.WebApp.CloudStorage, g = cs.getItem; cs.getItem = function (k, cb) { if (k === 'cdv') return; return g.apply(cs, arguments); }; });
+      release(); hold = null;
+      await cf.page.waitForSelector('#grid .card');
+      ok(await count(cf.page, '#grid .card') > 0 && await cf.page.locator('#tabbar').isVisible(), 'г-е) облако не отвечает: каталог и вкладки на месте, витрина не зависла');
+      await cf.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'A', null, { timeout: 8000 });
+      const gf = await cloudNow(cf.page);
+      ok(gf.removes === 0 && gf.cart === CCART(3) && cf.errors.length === 0, 'г-е) через ~3 с решение принято как без облака; облако не стёрто, ошибок нет', [gf, cf.errors]);
+      await cf.ctx.close();
+    }
+    stV.server.close();
+  }
+
+  /* ---------------- Выпуск Б4 · справочник Новой пошты через Worker (NP_URL) ---------------- */
+  console.log('Выпуск Б4 · справочник Новой пошты через Worker: города и отделения сначала из Worker, при сбое — из Apps Script (360 px)');
+  {
+    const WURL = 'https://pamir-bot.pochoev2306.workers.dev';
+    const REF_W = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', REF_W2 = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', REF_A = '11111111-1111-1111-1111-111111111111', REF_A2 = '22222222-2222-2222-2222-222222222222';
+    const cities = (q, r1, r2) => { q = String(q).toLowerCase(); return q.indexOf('харк') === 0 ? [{ n: 'м. Харків, Харківська обл.', s: 'Харків', ref: r1 }, { n: 'с. Харківка, Київська обл.', s: 'Харківка', ref: r2 }] : q.indexOf('ки') === 0 ? [{ n: 'м. Київ, Київська обл.', s: 'Київ', ref: r1 }] : []; };
+    const WH_W = [[12, 'вул. Воркерна, 12', 'w'], [15, 'вул. Воркерна, 15', 'p'], [112, 'вул. Воркерна, 112', 'w']];
+    const WH_A = [[12, 'вул. Апсова, 12', 'w'], [15, 'вул. Апсова, 15', 'p']];
+    const cors = { 'Access-Control-Allow-Origin': '*' };
+    const wJson = (body, status) => r => r.fulfill({ status: status || 200, contentType: 'application/json; charset=utf-8', headers: cors, body: JSON.stringify(body) });
+    const wGood = r => { const u = new URL(r.request().url()); return u.pathname === '/np/cities' ? wJson({ ok: true, list: cities(u.searchParams.get('q'), REF_W, REF_W2) })(r) : wJson({ ok: true, list: WH_W })(r); };
+    const st = await start(9150, undefined, s => { withPhotos(s); });
+    const orig = st.gas.get; st.gas.get = q => { const r = orig(q); if (q.action === 'catalog' && r && r.shop) { r.shop.np = true; r.shop.npp = 1; } return r; };
+    const sugg = (page, id) => page.locator('#' + id + ' button').allInnerTexts();
+    /** Витрина на NP_URL = Worker (подменён заглушкой); o.noUrl — config без NP_URL; o.pause — общая пауза Apps Script уже включена; fn — поведение Worker. */
+    const b4 = async (uid, fn, o) => {
+      o = o || {};
+      const wreq = [], log = [], held = [];
+      const cfgBody = "window.PAMIR_CONFIG = { API_URL: location.origin + '/api', BOT: 'pamir_test_bot', APP: 'shop', CATALOG_URL: ''" + (o.noUrl ? '' : ", NP_URL: '" + WURL + "/np'") + ' };';
+      const c = await open(browser, st.url, { uid, theme: o.theme, lc: o.lc, start: 'DRY-039', before: async p => {
+        await p.route('**/config.js*', r => r.fulfill({ contentType: 'application/javascript', body: cfgBody }));
+        await p.route(/^https:\/\/pamir-bot\.pochoev2306\.workers\.dev\//, r => { const q = r.request(); wreq.push({ method: q.method(), url: q.url(), headers: q.headers(), body: q.postData() }); if (fn) return fn(r, held); return r.abort(); });
+        if (o.pause) await p.addInitScript(() => { if (!sessionStorage.getItem('pamir_nppause_v1')) sessionStorage.setItem('pamir_nppause_v1', String(Date.now() + 600000)); });
+        await p.route(/\/api\?.*action=np\./, route => {
+          const u = new URL(route.request().url()), a = u.searchParams.get('action');
+          log.push({ a, q: u.searchParams.get('q'), city: u.searchParams.get('city') });
+          const send = b => route.fulfill({ status: 200, contentType: 'application/json', headers: cors, body: JSON.stringify(b) }).catch(() => {});
+          if (a === 'np.city') return send({ ok: true, list: cities(u.searchParams.get('q'), REF_A, REF_A2) });
+          if (a === 'np.whall') return send({ ok: true, list: WH_A });
+          if (a === 'np.price') return send({ ok: true, cost: 85 });
+          return send({ ok: false });
+        });
+      } });
+      const n = a => log.filter(x => x.a === a).length;
+      const wn = p => wreq.filter(x => new URL(x.url).pathname === p).length;
+      await c.page.waitForSelector('.sheet__title');
+      await c.page.click('#sheet [data-action="add"]');
+      await c.page.click('.tabbar [data-go="cart"]'); await c.page.waitForSelector('.line');
+      await c.page.evaluate(() => window.__tg.main.cb()); await c.page.waitForSelector('#form');
+      await c.page.locator('.opt', { hasText: o.lc === 'ru' ? 'Новая почта' : 'Нова пошта' }).first().click();
+      const store = k => c.page.evaluate(k2 => sessionStorage.getItem(k2), k);
+      return { c, p: c.page, wreq, log, held, n, wn, store };
+    };
+    const quiet = async X => (await count(X.p, '.form__err:not([hidden])')) === 0 && !/помил|ошиб|сервер|воркер/i.test((await X.p.locator('.toast:not([hidden])').allInnerTexts()).join(' ')) && await X.p.locator('#cityBusy').isHidden() && X.c.errors.length === 0;
+    const sendOrder = async X => {
+      await X.p.fill('#f-phone', '+380671112233');
+      if (!(await X.p.inputValue('#f-branch'))) await X.p.fill('#f-branch', '12');
+      await X.p.evaluate(() => window.__tg.main.cb());
+      await X.p.waitForSelector('.done');
+      return st.log.filter(x => x.action === 'order').slice(-1)[0];
+    };
+    const pickFirst = async X => { await X.p.waitForSelector('#citySugg button'); await X.p.locator('#citySugg button').first().click(); };
+
+    // а) Worker отвечает
+    {
+      const X = await b4(9101, wGood), p = X.p;
+      await p.locator('#f-city').click(); await p.type('#f-city', 'Харк', { delay: 60 });
+      await pickFirst(X);
+      await p.waitForSelector('#whSugg button');
+      await p.waitForFunction(() => document.querySelector('.js-npcost') && !document.querySelector('.js-npcost').hidden);
+      ok(X.n('np.city') === 0 && X.n('np.whall') === 0 && X.n('np.wh') === 0, 'Б4 а) Worker отвечает: в Apps Script нет ни np.city, ни np.whall', X.log);
+      ok(X.wn('/np/cities') >= 1 && X.wn('/np/warehouses') === 1 && X.wreq.every(q => q.method === 'GET' && !q.body), 'Б4 а) к Worker ушли только GET: /np/cities и один /np/warehouses', X.wreq.map(q => q.method + ' ' + q.url));
+      const hk = [].concat(...X.wreq.map(q => Object.keys(q.headers).map(k => k.toLowerCase())));
+      ok(X.wreq.every(q => /^https:\/\/pamir-bot\.pochoev2306\.workers\.dev\/np\/(cities\?q=[^&]*|warehouses\?city=[0-9a-f-]{36})$/.test(q.url) && !/initdata|tgwebappdata|uid|hash=|user=/i.test(q.url)) && !hk.some(k => /authorization|cookie|x-pamir|x-telegram|init/.test(k)), 'Б4 а) в запросах к Worker только q или city: нет initData, tgWebAppData, uid, cookie и авторизации', X.wreq.map(q => q.url));
+      ok(X.n('np.price') >= 1 && /Воркерна/.test((await sugg(p, 'whSugg')).join()), 'Б4 а) отделения из Worker показаны; тариф np.price по-прежнему идёт в Apps Script', [X.n('np.price'), await sugg(p, 'whSugg')]);
+      await p.fill('#f-branch', '112'); await p.waitForTimeout(200);
+      ok(/№112,/.test((await sugg(p, 'whSugg'))[0] || '') && X.wn('/np/warehouses') === 1, 'Б4 а) отделения фильтруются на телефоне, без новых запросов', await sugg(p, 'whSugg'));
+      ok(await X.store('pamir_npworker_v1') === null && await X.store('pamir_nppause_v1') === null, 'Б4 а) меток пауз нет: Worker исправен');
+      const sent = await sendOrder(X);
+      ok(sent && sent.cityRef === REF_W && sent.delivery === 'np' && sent.city === 'Харків', 'Б4 а) выбранный из Worker город даёт cityRef в теле заказа', sent && [sent.city, sent.cityRef]);
+      ok(!(sent && JSON.stringify(sent).indexOf('workers.dev') >= 0) && X.c.errors.length === 0, 'Б4 а) тело заказа прежнее, ошибок в консоли нет', X.c.errors);
+      await X.c.ctx.close();
+    }
+
+    // б) и в) сбой Worker: те же подсказки из Apps Script, покупатель ничего не видит, Worker 10 минут не дёргаем
+    const bad = [
+      ['nodata (200, ok:false)', wJson({ ok: false, error: 'nodata' })],
+      ['500', wJson({ ok: false, error: 'x' }, 500)],
+      ['404 (старый Worker)', wJson({ ok: false, error: 'not_found' }, 404)],
+      ['не JSON', r => r.fulfill({ status: 200, contentType: 'text/html', headers: cors, body: '<html>oops</html>' })],
+      ['ok:true без списка', wJson({ ok: true })],
+      ['обрыв сети', r => r.abort()],
+      ['висит дольше таймаута', (r, held) => { held.push(r); }]
+    ];
+    for (let i = 0; i < bad.length; i++) {
+      const X = await b4(9110 + i, bad[i][1]), p = X.p, nm = 'Б4 ' + (i < 1 ? 'б' : 'в') + ') Worker: ' + bad[i][0];
+      await p.locator('#f-city').click(); await p.type('#f-city', 'Харк', { delay: 60 });
+      await p.waitForSelector('#citySugg button', { timeout: 15000 });
+      ok((await sugg(p, 'citySugg')).length === 2 && X.n('np.city') === 1 && X.wn('/np/cities') === 1 && await quiet(X), nm + ' — подсказки городов из Apps Script, ошибки покупателю нет', [await sugg(p, 'citySugg'), X.log, X.wreq.length]);
+      ok(await X.store('pamir_npworker_v1') !== null && await X.store('pamir_nppause_v1') === null, nm + ' — поставлена отдельная метка паузы Worker, общая пауза Apps Script не тронута');
+      await p.fill('#f-city', 'Київ'); await p.waitForSelector('#citySugg button:text-is("м. Київ, Київська обл.")'); // не has-text: «Київська» есть и в прежних подсказках Харківки
+      ok(X.wn('/np/cities') === 1 && X.n('np.city') === 2, nm + ' — следующий ввод Worker уже не дёргает', [X.wreq.length, X.log.length]);
+      await p.locator('#citySugg button').first().click();
+      await p.waitForSelector('#whSugg button');
+      ok(X.wn('/np/warehouses') === 0 && X.n('np.whall') === 1 && /Апсова/.test((await sugg(p, 'whSugg')).join()) && await quiet(X), nm + ' — отделения тоже из Apps Script', [X.wreq.length, X.log]);
+      if (i === 0) {
+        const sent = await sendOrder(X);
+        ok(sent && sent.cityRef === REF_A, 'Б4 б) город из запасного пути даёт cityRef в заказе', sent && sent.cityRef);
+      }
+      X.held.forEach(r => r.abort().catch(() => {}));
+      await X.c.ctx.close();
+    }
+
+    // г) ok:true и пустой список — настоящий ответ «ничего не найдено»
+    {
+      const X = await b4(9120, wJson({ ok: true, list: [] })), p = X.p;
+      await p.locator('#f-city').click(); await p.type('#f-city', 'Харк', { delay: 60 });
+      await p.waitForTimeout(1800);
+      ok(X.wn('/np/cities') === 1 && X.n('np.city') === 0 && await p.locator('#citySugg').isHidden() && await quiet(X), 'Б4 г) Worker: ok:true, список пуст — подсказок нет, как при «ничего не найдено», Apps Script не дёргается', [X.wreq.length, X.log]);
+      ok(await X.store('pamir_npworker_v1') === null, 'Б4 г) пустой список — не сбой: метки паузы Worker нет');
+      await p.fill('#f-city', 'Київ'); await p.waitForTimeout(1500);
+      ok(X.wn('/np/cities') === 2 && X.n('np.city') === 0, 'Б4 г) следующий ввод снова идёт в Worker', [X.wreq.length, X.log]);
+      await X.c.ctx.close();
+    }
+
+    // д) города из Worker, а список отделений — nodata: отделения из Apps Script
+    {
+      const X = await b4(9130, r => (new URL(r.request().url()).pathname === '/np/warehouses' ? wJson({ ok: false, error: 'nodata' })(r) : wGood(r))), p = X.p;
+      await p.locator('#f-city').click(); await p.type('#f-city', 'Харк', { delay: 60 });
+      await pickFirst(X);
+      await p.waitForSelector('#whSugg button');
+      ok(X.n('np.city') === 0 && X.wn('/np/warehouses') === 1 && X.n('np.whall') === 1 && /Апсова/.test((await sugg(p, 'whSugg')).join()) && await quiet(X), 'Б4 д) города из Worker, /np/warehouses → nodata: отделения из Apps Script, ошибки нет', [X.wreq.map(q => q.url), X.log]);
+      const sent = await sendOrder(X);
+      ok(sent && sent.cityRef === REF_W, 'Б4 д) cityRef — от выбранного города (из Worker)', sent && sent.cityRef);
+      await X.c.ctx.close();
+    }
+
+    // е) нет NP_URL: поведение прежнее, к /np/ запросов нет
+    {
+      const X = await b4(9140, wGood, { noUrl: true }), p = X.p;
+      await p.locator('#f-city').click(); await p.type('#f-city', 'Харк', { delay: 60 });
+      await pickFirst(X);
+      await p.waitForSelector('#whSugg button');
+      ok(X.wreq.length === 0 && X.n('np.city') === 1 && X.n('np.whall') === 1 && /Апсова/.test((await sugg(p, 'whSugg')).join()) && await X.store('pamir_npworker_v1') === null && await quiet(X), 'Б4 е) нет NP_URL в config: города и отделения из Apps Script, к Worker 0 запросов, меток нет', [X.wreq.length, X.log]);
+      await X.c.ctx.close();
+    }
+
+    // з) общая пауза Apps Script не мешает подсказкам от Worker
+    {
+      const X = await b4(9160, wGood, { pause: true }), p = X.p;
+      await p.locator('#f-city').click(); await p.type('#f-city', 'Харк', { delay: 60 });
+      await pickFirst(X);
+      await p.waitForSelector('#whSugg button');
+      ok(X.log.length === 0 && /Воркерна/.test((await sugg(p, 'whSugg')).join()) && await quiet(X), 'Б4 з) пауза Apps Script включена, Worker исправен: города и отделения пришли от Worker, Apps Script 0 запросов', [X.log, X.wreq.length]);
+      await X.c.ctx.close();
+      const Y = await b4(9161, wJson({ ok: false, error: 'nodata' }), { pause: true });
+      await Y.p.locator('#f-city').click(); await Y.p.type('#f-city', 'Харк', { delay: 60 });
+      await Y.p.waitForTimeout(1800);
+      await Y.p.fill('#f-city', 'Київ'); await Y.p.waitForTimeout(1500);
+      ok(Y.wn('/np/cities') === 1 && Y.log.length === 0 && await Y.p.locator('#citySugg').isHidden() && await quiet(Y), 'Б4 з) пауза Apps Script и сбой Worker: подсказок нет, запросов в Apps Script нет, ошибки нет, Worker больше не дёргается (поле работает вручную)', [Y.wreq.length, Y.log]);
+      await Y.c.ctx.close();
+    }
+
+    // ж) вид: UA светлая и RU тёмная, 360 px
+    for (const v of [{ lc: 'uk', theme: 'light', tag: 'ua-light', uid: 9170 }, { lc: 'ru', theme: 'dark', tag: 'ru-dark', uid: 9171 }]) {
+      const X = await b4(v.uid, wGood, { lc: v.lc, theme: v.theme }), p = X.p;
+      await p.locator('#f-city').click(); await p.type('#f-city', 'Харк', { delay: 60 });
+      await p.waitForSelector('#citySugg button');
+      await p.screenshot({ path: OUT + '/b4-np-worker-' + v.tag + '.png' });
+      const t1 = await smallTargets(p), o1 = await noOverflow(p);
+      await p.locator('#citySugg button').first().click();
+      await p.waitForSelector('#whSugg button');
+      await p.waitForSelector('.toast:not([hidden])', { state: 'hidden', timeout: 8000 }).catch(() => {}); // ждём, пока уйдёт тост «Додано в кошик»
+      await p.evaluate(() => document.getElementById('whSugg').scrollIntoView({ block: 'center' }));
+      await p.waitForTimeout(300);
+      await p.screenshot({ path: OUT + '/b4-np-worker-' + v.tag + '-wh.png' });
+      const t2 = await smallTargets(p), o2 = await noOverflow(p);
+      ok(o1 && o2 && t1.length === 0 && t2.length === 0 && X.c.errors.length === 0 && (await sugg(p, 'whSugg')).length === 2, 'Б4 ж) ' + v.tag + ': подсказки города и список отделений из Worker, 360 px без прокрутки, кнопки ≥ 44 px, ошибок нет', [o1, o2, t1, t2, X.c.errors]);
+      await X.c.ctx.close();
+    }
+    st.server.close();
   }
 
   // Защита: ни один тест не должен был дойти до настоящего Worker или Apps Script
