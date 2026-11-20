@@ -3041,7 +3041,7 @@ const b4 = (() => {
   const fs = require('fs'), os = require('os'), cp = require('child_process');
   const DAY = 24 * 3600 * 1000;
   const T = (fn) => { const t = process.hrtime.bigint(); const r = fn(); return { ms: Number(process.hrtime.bigint() - t) / 1e6, r }; };
-  const norm = (t) => t.replace(/"updated":"[^"]*"/, '"updated":0');
+  const norm = (t) => t.replace(/"updated":"[^"]*"/, '"updated":0').replace(/,"codNote":\{[^}]*\}/, ''); // codNote — новое необязательное поле этого выпуска (текст о комиссии), старый код его не знает
   const raw = (g) => g.call('doGet', { parameter: { action: 'catalog' } }).text;
   const ddmmyyyy = (d) => String(d.getUTCDate()).padStart(2, '0') + '.' + String(d.getUTCMonth() + 1).padStart(2, '0') + '.' + d.getUTCFullYear();
 
@@ -4355,6 +4355,105 @@ const q7 = (() => {
     ok(!out.old || out.direct.flush <= out.old.flush, 'Г вызовов flush на заказ не больше, чем до Б4', [out.old && out.old.flush, out.direct.flush]);
   }
 })();
+
+/* ==================================================================================================================== */
+/* Выпуск Б4 · текст комиссии наложенного платежа в настройках (cod_note_ua / cod_note_ru)                              */
+/* ==================================================================================================================== */
+console.log('Выпуск Б4 · текст комиссии наложенного платежа в настройках');
+{
+  const NB = ' ';
+  const UA1 = 'Нова пошта бере комісію за накладений платіж — зазвичай 20' + NB + '₴ + 2' + NB + '% від суми.';
+  const UA2 = 'Оплата на рахунок ФОП — без цієї комісії.';
+  const RU1 = 'Новая почта берёт комиссию за наложенный платёж — обычно 20' + NB + '₴ + 2' + NB + '% от суммы.';
+  const RU2 = 'Оплата на счёт ФОП — без этой комиссии.';
+  const FOP = { FOP_NAME: 'ФОП Тестовий', FOP_IBAN: 'UA' + '1'.repeat(27), FOP_CODE: '1234567890' };
+  const mk = (props, rows) => {
+    const s = seed();
+    Object.assign(s.props, props || {});
+    if (rows) s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис']].concat(rows.map(r => [r[0], r[1], '']));
+    return createGas(CODE, s);
+  };
+  const shop = g => { g.clearCache(); return g.get({ action: 'catalog' }).shop; };
+
+  {
+    const s = shop(mk(FOP));
+    ok(s.codNote && s.codNote.ua === UA1 + ' ' + UA2 && s.codNote.ru === RU1 + ' ' + RU2, 'ключей нет, ФОП доступен (card и cod): обе фразы UA и RU дословно, с неразрывными пробелами', s.codNote);
+    ok(s.codNote.ua.indexOf('20' + NB + '₴') > 0 && s.codNote.ua.indexOf('2' + NB + '%') > 0 && s.codNote.ru.indexOf('20' + NB + '₴') > 0, 'NBSP между «20» и «₴», «2» и «%»');
+    ok(s.fop === 1, 'ФОП включён (shop.fop = 1)');
+  }
+  {
+    const s = shop(mk());
+    ok(s.codNote && s.codNote.ua === UA1 && s.codNote.ru === RU1 && !s.fop, 'ключей нет, ФОП выключен: только первая фраза', s.codNote);
+    const s2 = shop(mk(FOP, [['pay_card', 'ні']]));
+    ok(s2.fop === 1 && !s2.pay.includes('card') && s2.codNote.ua === UA1 && s2.codNote.ru === RU1, 'ключей нет, ФОП включён, но способа «card» нет: только первая фраза', [s2.pay, s2.codNote]);
+    const s3 = shop(mk({ FOP_NAME: 'ФОП', FOP_IBAN: 'UA12', FOP_CODE: '1' }));
+    ok(s3.codNote.ua === UA1 && s3.codNote.ru === RU1, 'ФОП с неверным IBAN (не включён): только первая фраза');
+  }
+  {
+    const s = shop(mk(FOP, [['pay_cod', 'ні']]));
+    ok(s.codNote === undefined && !('codNote' in s), 'наложенный платёж выключен в магазине: поля codNote нет', s.pay);
+    const s2 = shop(mk(FOP, [['pay_cod', 'ні'], ['cod_note_ua', 'Текст'], ['cod_note_ru', 'Текст']]));
+    ok(!('codNote' in s2), 'и заданный текст при выключенном наложенном платеже не отдаётся');
+  }
+  {
+    const long = 'Д'.repeat(400);
+    const s = shop(mk(FOP, [['cod_note_ua', '   Свій текст UA   '], ['cod_note_ru', long]]));
+    ok(s.codNote.ua === 'Свій текст UA' && s.codNote.ru === 'Д'.repeat(300) && Object.keys(s.codNote).join() === 'ua,ru', 'ключ есть с текстом: ровно он (обрезка пробелов, предел 300 знаков), условной фразы нет', [s.codNote.ua, s.codNote.ru.length]);
+    const s2 = shop(mk(FOP, [['cod_note_ua', 'A <b>"x"</b> & \'y\' </script>'], ['cod_note_ru', 'Строка\nс переносом\tи табом']]));
+    ok(s2.codNote.ua === 'A <b>"x"</b> & \'y\' </script>' && s2.codNote.ru === 'Строка\nс переносом и табом', 'HTML-символы и кавычки отдаются как есть (JSON цел, экранирует витрина); перенос строки сохраняется (как у соседних текстовых настроек), таб становится пробелом', s2.codNote);
+    const raw = (() => { const g = mk(FOP, [['cod_note_ua', '<img src=x onerror=1>']]); g.clearCache(); return g.call('doGet', { parameter: { action: 'catalog' } }).text; })();
+    ok(JSON.parse(raw).shop.codNote.ua === '<img src=x onerror=1>', 'ответ каталога — валидный JSON с этим текстом');
+  }
+  {
+    const s = shop(mk(FOP, [['cod_note_ua', '']]));
+    ok(s.codNote.ua === undefined && s.codNote.ru === RU1 + ' ' + RU2 && Object.keys(s.codNote).join() === 'ru', 'ключ UA есть и пуст — UA нет; RU (ключа нет) — по умолчанию', s.codNote);
+    const s2 = shop(mk(FOP, [['cod_note_ua', '  '], ['cod_note_ru', '']]));
+    ok(!('codNote' in s2), 'оба пусты: поля shop.codNote нет вовсе', s2.codNote);
+    const s3 = shop(mk(FOP, [['cod_note_ua', 'Тільки UA'], ['cod_note_ru', '']]));
+    ok(JSON.stringify(s3.codNote) === JSON.stringify({ ua: 'Тільки UA' }), 'только UA задан, RU пуст: в объекте только ua', s3.codNote);
+    const s4 = shop(mk(FOP, [['cod_note_ru', 'Только RU'], ['cod_note_ua', '']]));
+    ok(JSON.stringify(s4.codNote) === JSON.stringify({ ru: 'Только RU' }), 'только RU задан: только ru');
+  }
+  {
+    // два одинаковых ключа: действует последний (как у остальных настроек)
+    const s = shop(mk(FOP, [['cod_note_ua', 'Первый'], ['cod_note_ua', 'Последний'], ['cod_note_ru', 'R']]));
+    ok(s.codNote.ua === 'Последний', 'при двух одинаковых ключах действует последний, как у других настроек');
+  }
+  {
+    // пункт меню
+    const g = mk(FOP);
+    g.call('onOpen');
+    ok(g.ui.menu.items.some(i => i[0] === 'Налаштування: додати текст про комісію накладеного платежу' && i[1] === 'menuCodNoteSetup'), 'пункт меню PAMIR «Налаштування: додати текст про комісію накладеного платежу»');
+    const before = g.get({ action: 'catalog' }).shop.codNote; // кэш каталога прогрет
+    const res = g.call('menuCodNoteSetup');
+    const rows = g.sheets['Налаштування'].rows;
+    const ua = rows.find(r => r[0] === 'cod_note_ua'), ru = rows.find(r => r[0] === 'cod_note_ru');
+    ok(res.added.join() === 'cod_note_ua,cod_note_ru' && ua[1] === UA1 + ' ' + UA2 && ru[1] === RU1 + ' ' + RU2 && rows[0].join() === 'Ключ,Значення,Опис', 'пункт меню создаёт лист и обе строки с полным текстом (обе фразы, NBSP)', rows);
+    ok(g.get({ action: 'catalog' }).shop.codNote.ua === UA1 + ' ' + UA2 && before.ua === UA1 + ' ' + UA2, 'каталог из кэша после пункта меню без ручного сброса отдаёт актуальное');
+    // владелец изменил — повторное нажатие не перезаписывает
+    ua[1] = 'Мій текст'; ru[1] = '';
+    const res2 = g.call('menuCodNoteSetup');
+    ok(res2.added.length === 0 && ua[1] === 'Мій текст' && ru[1] === '' && rows.filter(r => r[0] === 'cod_note_ua').length === 1, 'повторное нажатие: изменённые и пустые значения не перезаписываются, строки не дублируются', rows);
+    // ручная правка в таблице доходит до витрины (onEdit помечает каталог)
+    g.get({ action: 'catalog' });
+    ua[1] = 'Правка в таблице';
+    g.call('onEdit', { range: { getSheet: () => ({ getName: () => 'Налаштування' }) } });
+    ok(g.get({ action: 'catalog' }).shop.codNote.ua === 'Правка в таблице', 'ручная правка настройки в таблице (onEdit) доходит до витрины так же, как другие настройки');
+    // частично: одна строка есть, другой нет
+    const h = mk(FOP, [['cod_note_ru', 'Вручную']]);
+    const r3 = h.call('menuCodNoteSetup');
+    ok(r3.added.join() === 'cod_note_ua' && h.sheets['Налаштування'].rows.find(r => r[0] === 'cod_note_ru')[1] === 'Вручную', 'добавляется только недостающий ключ, существующий не трогается');
+    // панель настроек не затирает строки cod_note_*
+    const p = mk(FOP, [['cod_note_ua', 'Не затирать'], ['cod_note_ru', '']]);
+    const sv = p.call('saveSettings_', { min_order: '100' });
+    const prow = p.sheets['Налаштування'].rows;
+    ok(sv.ok && prow.filter(r => r[0] === 'cod_note_ua').length === 1 && prow.find(r => r[0] === 'cod_note_ua')[1] === 'Не затирать' && prow.filter(r => r[0] === 'cod_note_ru').length === 1, 'сохранение настроек из админ-панели сохраняет строки cod_note_* (и их значения)', prow.filter(r => /cod_note/.test(r[0])));
+    ok(!JSON.stringify(sv.fields).includes('cod_note'), 'в админ-панель эти ключи не попадают (панель их не знает)');
+    // служебное в ответ не попадает
+    const text = JSON.stringify(shop(mk(FOP)));
+    ok(!/СЕКРЕТ|1234567890|TEST_TOKEN|UA1{27}/.test(text), 'в ответе каталога нет реквизитов ФОП и служебных данных');
+  }
+}
 
 console.log('\n' + pass + ' ok, ' + fail + ' fail');
 process.exit(fail ? 1 : 0);

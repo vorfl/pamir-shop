@@ -879,6 +879,7 @@ function onOpen() {
   if (typeof stage9bMenu_ === 'function') stage9bMenu_(menu); // Stage9b.gs: «Етап 9Б: створити колонки»
   if (typeof stage9b2Menu_ === 'function') stage9b2Menu_(menu); // Stage9b2.gs: «Етап 9Б2: записати другі фото»
   if (typeof stage9b4Menu_ === 'function') stage9b4Menu_(menu); // Stage9b4.gs: «Службове: перевстановити / перевірити webhook»
+  if (typeof stage9b6Menu_ === 'function') stage9b6Menu_(menu); // Stage9b6.gs: «Налаштування: додати текст про комісію накладеного платежу»
   if (typeof stage9b5Menu_ === 'function') stage9b5Menu_(menu); // Stage9b5.gs: «Швидке оформлення замовлень»
   menu.addToUi();
 }
@@ -2825,6 +2826,7 @@ var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'notice_text_ua', 'notice
   'theme_until', 'ny_ids', 'ny_order_until_ua', 'ny_order_until_ru', 'client_data_version',
   'reply_1_ua', 'reply_1_ru', 'reply_2_ua', 'reply_2_ru', 'reply_3_ua', 'reply_3_ru', 'reply_4_ua', 'reply_4_ru', 'reply_5_ua', 'reply_5_ru'];
 var settingsMemo_ = null;
+var settingsExtra_ = {}; // строки листа «Налаштування», которых нет в SETTINGS_DEF и нужны отдельно (cod_note_ua / cod_note_ru): ключ есть — значение, ключа нет — свойства нет
 
 function isYes_(v) {
   return /^(так|да|yes|true|1|є|x|х|\+)$/i.test(String(v === null || v === undefined ? '' : v).trim());
@@ -2836,6 +2838,7 @@ function readSettings_() {
   var out = {};
   var props = scriptProps_();
   SETTINGS_DEF.forEach(function (d) { out[d[0]] = d[2]; });
+  var extra = {};
   [['address_ua', 'PICKUP_ADDRESS_UA'], ['address_ru', 'PICKUP_ADDRESS_RU'], ['hours_ua', 'PICKUP_HOURS_UA'], ['hours_ru', 'PICKUP_HOURS_RU']]
     .forEach(function (m) { var v = props.getProperty(m[1]); if (v) out[m[0]] = v; });
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETTINGS);
@@ -2854,12 +2857,15 @@ function readSettings_() {
           rv = Utilities.formatDate(rv, cdvTz, 'yyyy-MM-dd') + 'T' + Utilities.formatDate(rv, cdvTz, 'HH:mm');
         }
         out[key] = String(rv === null || rv === undefined ? '' : rv).trim();
+      } else if (COD_NOTE_KEYS.indexOf(key) >= 0) {
+        extra[key] = multiline_(row[1], 300); // «ключ есть, значение пустое» отличимо от «ключа нет»
       }
     });
   }
   // Пустой обязательный текст заменяем значением по умолчанию: бот не должен слать пустое сообщение.
   SETTINGS_DEF.forEach(function (d) { if (!out[d[0]] && SETTINGS_MAY_BE_EMPTY.indexOf(d[0]) < 0) out[d[0]] = d[2]; });
   settingsMemo_ = out;
+  settingsExtra_ = extra;
   return out;
 }
 
@@ -2902,6 +2908,10 @@ function saveSettings_(values) {
       sheet.setFrozenRows(1);
     }
     var rows = SETTINGS_DEF.map(function (d) { return [d[0], d[0] === 'theme_until' && next[d[0]] ? '\'' + next[d[0]] : safeCell_(next[d[0]]), d[1]]; });
+    var keepRows = []; // строки cod_note_*: панель их не знает, но и затирать их не должна
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 3).getValues().forEach(function (r) { if (COD_NOTE_KEYS.indexOf(String(r[0] === null || r[0] === undefined ? '' : r[0]).trim()) >= 0) keepRows.push(r); });
+    rows = rows.concat(keepRows);
     sheet.getRange(2, 1, rows.length, 3).setValues(rows);
     SpreadsheetApp.flush();
     SETTINGS_DEF.forEach(function (d) {
@@ -4311,6 +4321,33 @@ function shopExtras8_(shop, st) {
   if (npKey_()) shop.np = 1;
   if (typeof npPriceOn_ === 'function' && npPriceOn_()) shop.npp = 1; // Stage9b2.gs: есть ключ и город отправителя — витрина может спрашивать np.price
   if (fopConfig_().on) shop.fop = 1; // только флаг: сами реквизиты на витрину не уходят
+  var codNote = codNote_(shop);
+  if (codNote) shop.codNote = codNote; // необязательно: текст о комиссии наложенного платежа; в объекте только непустые языки
+}
+
+/* Текст о комиссии наложенного платежа (настройки cod_note_ua / cod_note_ru; необязательные). Цифры подтверждены накладной и тарифом NovaPay. */
+var COD_NOTE_KEYS = ['cod_note_ua', 'cod_note_ru'];
+var COD_NOTE_UA1 = 'Нова пошта бере комісію за накладений платіж — зазвичай 20\u00a0₴ + 2\u00a0% від суми.';
+var COD_NOTE_UA2 = 'Оплата на рахунок ФОП — без цієї комісії.';
+var COD_NOTE_RU1 = 'Новая почта берёт комиссию за наложенный платёж — обычно 20\u00a0₴ + 2\u00a0% от суммы.';
+var COD_NOTE_RU2 = 'Оплата на счёт ФОП — без этой комиссии.';
+
+/**
+ * { ua, ru } (только непустые языки) или null. Нет поля — наложенный платёж в магазине не включён или оба текста пусты.
+ * Ключ есть в листе — берётся его значение (пусто — этого языка нет). Ключа нет — текст по умолчанию: первая фраза всегда,
+ * вторая («оплата на ФОП без комиссии») только если ФОП включён и способ «card» доступен (shop.pay), иначе она была бы неправдой.
+ */
+function codNote_(shop) {
+  if (!shop.pay || shop.pay.indexOf('cod') < 0) return null;
+  readSettings_();
+  var extra = settingsExtra_ || {};
+  var fop = shop.pay.indexOf('card') >= 0 && fopConfig_().on;
+  var out = {};
+  var ua = 'cod_note_ua' in extra ? extra.cod_note_ua : COD_NOTE_UA1 + (fop ? ' ' + COD_NOTE_UA2 : '');
+  var ru = 'cod_note_ru' in extra ? extra.cod_note_ru : COD_NOTE_RU1 + (fop ? ' ' + COD_NOTE_RU2 : '');
+  if (ua) out.ua = ua;
+  if (ru) out.ru = ru;
+  return out.ua || out.ru ? out : null;
 }
 
 /* ------------------------------ 1.6 Хит недели и цены фасовок ------------------------------ */
