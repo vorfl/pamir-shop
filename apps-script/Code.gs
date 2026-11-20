@@ -110,7 +110,8 @@ function doGet(e) {
   try {
     if (action === 'ping') return jsonText_(JSON.stringify({ ok: true, service: 'PAMIR' })); // проверка живости для Worker: таблицу не читает
     if (action === 'catalog') {
-      return jsonText_(getCatalogJson_());
+      // Stage9b4.gs: дольше живущий кэш, одна пересборка на всех, до минуты можно отдать прежнюю копию. Нет файла — как раньше.
+      return jsonText_(typeof catalogServe_ === 'function' ? catalogServe_({ stale: true }) : getCatalogJson_());
     }
     if (action === 'reviews') return jsonText_(JSON.stringify(reviewsFor_(String(e.parameter.id || ''))));
     if (action === 'np.city') return jsonText_(JSON.stringify(npCities_(String(e.parameter.q || ''))));
@@ -132,6 +133,7 @@ function jsonText_(text) {
 
 /** Каталог строкой JSON: из кэша или заново из таблицы. */
 function getCatalogJson_() {
+  if (typeof catalogServe_ === 'function') return catalogServe_({}); // Stage9b4.gs; внутренним вызовам устаревшую копию не отдаём
   var cached = cacheGetLarge_(CACHE_KEY);
   if (cached) return cached;
   var json = JSON.stringify(buildCatalog_());
@@ -139,15 +141,32 @@ function getCatalogJson_() {
   return json;
 }
 
-/** Читает таблицу и собирает объект каталога. */
-function buildCatalog_() {
+/** Ближайший момент (мс), когда каталог изменится сам по часам: конец акции, «свіжа поставка», конец темы. 0 — нет. Заполняет buildCatalog_. */
+var catBoundMs_ = 0;
+function catBound_(ms) { if (ms > 0 && (!catBoundMs_ || ms < catBoundMs_)) catBoundMs_ = ms; }
+/** Отметка этапа для необязательного замера (PERF_LOG = 1, Stage9b4.gs). Без Stage9b4.gs и без замера — ничего не делает. */
+function catMark_(name) { if (typeof catPerfMark_ === 'function') catPerfMark_(name); }
+
+/**
+ * Читает таблицу и собирает объект каталога.
+ * opt (необязательно, Stage9b4.gs): lite — только товары (заказ: цены и наличие по таблице); sig — готовые сигналы {o, r} вместо чтения листов
+ * «Замовлення» и «Відгуки»; sigOut — сюда складываются прочитанные сигналы, чтобы их можно было сохранить в кэш.
+ */
+function buildCatalog_(opt) {
+  opt = opt || {};
+  catBoundMs_ = 0;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var categories = readCategories_(ss);
+  catMark_('категорії');
   var products = readProducts_(ss, categories);
+  catMark_('товари');
+  if (opt.lite) return { ok: true, products: products };
 
   // Популярность и «разом купують» — только из настоящих заказов за последние 30 дней.
   try {
-    var sig = orderSignals_(ss);
+    var sig = opt.sig ? opt.sig.o : orderSignals_(ss);
+    if (opt.sigOut) opt.sigOut.o = sig;
+    catMark_('замовлення');
     products.forEach(function (p) {
       if (sig.n[p.id]) p.n = sig.n[p.id];
       if (sig.r[p.id]) p.r = sig.r[p.id];
@@ -160,7 +179,9 @@ function buildCatalog_() {
 
   // Отзывы: только одобренные. Средняя оценка — когда отзывов три и больше.
   try {
-    var rs = reviewStats_(ss);
+    var rs = opt.sig ? opt.sig.r : reviewStats_(ss);
+    if (opt.sigOut) opt.sigOut.r = rs;
+    catMark_('відгуки');
     products.forEach(function (p) {
       var x = rs[p.id];
       if (!x) return;
@@ -176,6 +197,7 @@ function buildCatalog_() {
   categories = categories.filter(function (c) { return used[c.code]; });
 
   var shopInfo = readShop_();
+  catMark_('налаштування');
   try {
     var hintInfo = shopHint_(readSettings_(), products); // подсказка в корзине: нужен список товаров, поэтому здесь, а не в readShop_
     if (hintInfo) shopInfo.hint = hintInfo;
@@ -189,6 +211,7 @@ function buildCatalog_() {
   } catch (err) {
     console.warn('syn: ' + safeErr_(err, true));
   }
+  catMark_('синоніми');
   if (shopInfo.feature) {
     var visibleIds = {};
     products.forEach(function (p) { visibleIds[p.id.toUpperCase()] = true; });
@@ -220,6 +243,7 @@ function buildCatalog_() {
   } catch (err) {
     console.warn('recipes: ' + err);
   }
+  catMark_('рецепти');
   return out;
 }
 
@@ -396,6 +420,7 @@ function readProducts_(ss, categories) {
       oldP = 0;
       saleEnd = null;
     }
+    if (saleEnd && oldP > base && base > 0 && saleEnd.end > nowMs) catBound_(saleEnd.end); // в этот момент цена сама вернётся к обычной
     p.t = price.t;
     if (price.t === 'w') {
       p.k = price.k;
@@ -435,6 +460,10 @@ function readProducts_(ss, categories) {
     if (harvest) p.ph = harvest;
     if (origin) p.po = origin;
     var fresh = col.fresh >= 0 ? saleEnd_(row[col.fresh], sheetTz) : null;
+    if (fresh) { // моменты, когда «свіжа поставка» включается и выключается сама по часам
+      if (fresh.end - 24 * 3600 * 1000 > nowMs) catBound_(fresh.end - 24 * 3600 * 1000);
+      if (freshMs > 0 && fresh.end + freshMs > nowMs) catBound_(fresh.end + freshMs);
+    }
     if (fresh && fresh.end - 24 * 3600 * 1000 <= nowMs) {
       p.pf = fresh.day;
       if (freshMs > 0 && nowMs - fresh.end < freshMs) p.f = 1;
@@ -619,9 +648,23 @@ function orderSignals_(ss) {
   if (!sheet || sheet.getLastRow() < 2) return out;
   var col = orderCols_(sheet);
   if (col.svc < 0 || col.date < 0) return out;
-  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
   var from = Date.now() - SIGNAL_DAYS * 24 * 3600 * 1000;
   var weekFrom = Date.now() - 7 * 24 * 3600 * 1000;
+  // Сначала только колонка дат: строки старше SIGNAL_DAYS целиком не читаем. Порядок строк не важен: читаются только куски, где есть
+  // подходящие даты (близкие куски склеиваются, кусков не больше 6), строки идут в прежнем порядке — результат тот же, что при чтении всего листа.
+  var lastRow = sheet.getLastRow();
+  var dates = sheet.getRange(2, col.date + 1, lastRow - 1, 1).getValues();
+  var runs = [];
+  for (var di = 0; di < dates.length; di++) {
+    var dv = dates[di][0];
+    if (Object.prototype.toString.call(dv) !== '[object Date]' || isNaN(dv.getTime()) || dv.getTime() < from) continue;
+    if (runs.length && di - runs[runs.length - 1][1] <= 40) runs[runs.length - 1][1] = di; else runs.push([di, di]);
+  }
+  if (!runs.length) return out;
+  if (runs.length > 6) runs = [[runs[0][0], runs[runs.length - 1][1]]];
+  var width = sheet.getLastColumn();
+  var values = [];
+  runs.forEach(function (run) { values = values.concat(sheet.getRange(2 + run[0], 1, run[1] - run[0] + 1, width).getValues()); });
   var pairs = {};
   values.forEach(function (row) {
     var date = row[col.date];
@@ -800,7 +843,8 @@ var purgePending_ = false; // выпуск 9Б, б7.1: каталог сброш
  * Уведомляют Worker только пункты меню и действия админ-панели (doPost вызывает purgeWorkerIfPending_ только для admin.*).
  */
 function clearCatalogCache_(skipPurge) {
-  CacheService.getScriptCache().remove(CACHE_KEY + '_n');
+  if (typeof catalogMarkDirty_ === 'function') catalogMarkDirty_(); // Stage9b4.gs: отметка «каталог изменился», старая копия живёт до первой пересборки
+  else CacheService.getScriptCache().remove(CACHE_KEY + '_n');
   if (!skipPurge) purgePending_ = true; // Worker узнает об этом в конце запроса (purgeWorkerIfPending_), уже вне блокировки
 }
 
@@ -827,6 +871,7 @@ function onOpen() {
   if (typeof stage9Menu_ === 'function') stage9Menu_(menu); // Stage9.gs: «Етап 9: застосувати дані запуску»
   if (typeof stage9bMenu_ === 'function') stage9bMenu_(menu); // Stage9b.gs: «Етап 9Б: створити колонки»
   if (typeof stage9b2Menu_ === 'function') stage9b2Menu_(menu); // Stage9b2.gs: «Етап 9Б2: записати другі фото»
+  if (typeof stage9b4Menu_ === 'function') stage9b4Menu_(menu); // Stage9b4.gs: «Службове: перевстановити / перевірити webhook»
   menu.addToUi();
 }
 
@@ -860,8 +905,9 @@ function menuBotDescription() {
 /** Сбрасывает кэш: изменения в таблице видны в магазине сразу, а не через 5 минут. */
 function menuRefreshCatalog() {
   clearCatalogCache_();
-  var cat = buildCatalog_();
-  cachePutLarge_(CACHE_KEY, JSON.stringify(cat));
+  var cat;
+  if (typeof catalogRebuild_ === 'function') cat = catalogRebuild_(); // Stage9b4.gs: свежая сборка, в том числе заказы и отзывы
+  else { cat = buildCatalog_(); cachePutLarge_(CACHE_KEY, JSON.stringify(cat)); }
   if (typeof purgeWorkerIfPending_ === 'function') purgeWorkerIfPending_();
   SpreadsheetApp.getUi().alert('Каталог оновлено: ' + cat.products.length + ' товарів.');
 }
@@ -1081,8 +1127,9 @@ function handleOrder_(body) {
   }
 
   // 4. Цены и наличие — только по таблице. Ценам от клиента не доверяем.
-  var catalog = buildCatalog_();
-  cachePutLarge_(CACHE_KEY, JSON.stringify(catalog)); // витрина сразу увидит то же, что видел сервер
+  var catalog;
+  if (typeof catalogServe_ === 'function') catalog = buildCatalog_({ lite: true }); // Stage9b4.gs: заказу нужны только цены и наличие по таблице; витринный кэш он не трогает
+  else { catalog = buildCatalog_(); cachePutLarge_(CACHE_KEY, JSON.stringify(catalog)); } // витрина сразу увидит то же, что видел сервер
   var byId = {};
   var idUp = {};
   catalog.products.forEach(function (p) { byId[p.id] = p; idUp[p.id.toUpperCase()] = true; });
@@ -1960,7 +2007,8 @@ function safeErr_(err, withStack) {
       }
     });
   } catch (e1) { /* свойства недоступны — остаётся шаблон ниже */ }
-  return s.replace(/bot\d+:[^\s\/'"?&]+/gi, 'bot***').replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}/g, '***');
+  return s.replace(/bot\d+:[^\s\/'"?&]+/gi, 'bot***').replace(/\b\d{6,}:[A-Za-z0-9_-]{20,}/g, '***')
+    .replace(/(secret_token"?\s*[:=]\s*"?)[^"\s&,}]+/gi, '$1***'); // если текст ошибки повторяет тело setWebhook
 }
 
 function tg_(token, method, payload) {
@@ -3290,6 +3338,7 @@ function dailyJob() {
 
 /** Раз в час (тот же пункт меню PAMIR): напоминание о брошенной корзине. */
 function hourlyJob() {
+  try { if (typeof catalogWarm_ === 'function') catalogWarm_(); } catch (err) { console.error('hourly catalog: ' + safeErr_(err)); } // Stage9b4.gs: каталог собирает расписание, а не покупатель
   try { remindCarts_(); } catch (err) { console.error('hourly carts: ' + safeErr_(err, true)); }
   try { if (typeof npTrackJob_ === 'function') npTrackJob_(); } catch (err) { console.error('hourly np track: ' + safeErr_(err, true)); } // Stage9b2.gs: посылка прибыла в отделение
   try { if (typeof npSenderJob_ === 'function') npSenderJob_(); } catch (err) { console.error('hourly np sender: ' + safeErr_(err, true)); } // Stage9b2.gs: Ref-ы отправителя НП через API (раз в 7 дней, при смене настроек и с нарастающей паузой после неудачи: 1 ч, 6 ч, 24 ч)
@@ -4132,6 +4181,10 @@ function effectiveTheme_(st) {
   if (!theme) return '';
   var until = themeUntilParse_(st.theme_until);
   if (until && Utilities.formatDate(new Date(), 'Europe/Kiev', 'yyyy-MM-dd') > until) return '';
+  if (until) { // тема выключится сама после этого дня: кэш каталога не должен жить дольше (с запасом в пользу ранней пересборки: 21:00 UTC)
+    var up = until.split('-');
+    catBound_(Date.UTC(+up[0], +up[1] - 1, +up[2], 21, 0, 0));
+  }
   return theme;
 }
 
@@ -4286,6 +4339,7 @@ function reviewsFor_(pid) {
 function reviewCacheDrop_(pids) {
   var cache = CacheService.getScriptCache();
   pids.forEach(function (pid) { cache.remove('rv_' + pid); });
+  if (typeof catalogDropSignals_ === 'function') catalogDropSignals_(); // Stage9b4.gs: оценки в каталоге считаются заново
   clearCatalogCache_(); // purge из doPost уходит только у admin.*; оценка покупателя и бот Worker не уведомляют
 }
 
