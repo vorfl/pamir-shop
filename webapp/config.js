@@ -12,5 +12,9 @@ window.PAMIR_CONFIG = {
   // 'https://pamir-bot.ИМЯ.workers.dev/catalog'. Пусто — каталог берётся из Apps Script, как раньше.
   // Если Worker не ответил за 6 секунд или ответил не так, витрина сама идёт в Apps Script.
   // Заказы, цены и всё остальное в любом случае идут только в Apps Script.
-  CATALOG_URL: 'https://pamir-bot.pochoev2306.workers.dev/catalog'
+  CATALOG_URL: 'https://pamir-bot.pochoev2306.workers.dev/catalog',
+  // Необязательно: справочник Новой пошты (города и отделения) через Cloudflare Worker — адрес Worker + /np.
+  // Пусто или нет ключа — города и отделения берутся из Apps Script, как раньше. Если Worker не ответил за 4 секунды
+  // или ответил не так, витрина сама идёт в Apps Script и 10 минут Worker не спрашивает. Тариф и заказ идут только в Apps Script.
+  NP_URL: 'https://pamir-bot.pochoev2306.workers.dev/np'
 };

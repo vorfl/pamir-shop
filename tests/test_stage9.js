@@ -3034,5 +3034,1426 @@ console.log('Выпуск 9Б3 (приёмка): тревога о лимите 
   ok(h(429, null) === true && h('429', undefined) === true && h(200, null) === false && h(200, 'text') === false && h(500, F({})) === false, 'HTTP 429 (числом и строкой); пустой, не-объектный и 500 без текста — нет');
 }
 
+/* ==================================================================================================================== */
+/* Выпуск Б4: скорость каталога (кэш, одна пересборка, эталон «было / стало») и пункты меню webhook                  */
+/* ==================================================================================================================== */
+const b4 = (() => {
+  const fs = require('fs'), os = require('os'), cp = require('child_process');
+  const DAY = 24 * 3600 * 1000;
+  const T = (fn) => { const t = process.hrtime.bigint(); const r = fn(); return { ms: Number(process.hrtime.bigint() - t) / 1e6, r }; };
+  const norm = (t) => t.replace(/"updated":"[^"]*"/, '"updated":0').replace(/,"codNote":\{[^}]*\}/, ''); // codNote — новое необязательное поле этого выпуска (текст о комиссии), старый код его не знает
+  const raw = (g) => g.call('doGet', { parameter: { action: 'catalog' } }).text;
+  const ddmmyyyy = (d) => String(d.getUTCDate()).padStart(2, '0') + '.' + String(d.getUTCMonth() + 1).padStart(2, '0') + '.' + d.getUTCFullYear();
+
+  // «Было»: apps-script/*.gs из ветки main (до выпуска Б4), во временной папке
+  let oldCode = null, tmp = null;
+  try {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pamir-old-b4-'));
+    const root = path.join(__dirname, '..');
+    cp.execSync('git ls-tree --name-only main apps-script/', { cwd: root }).toString().split(/\r?\n/).filter(n => /\.gs$/.test(n)).forEach(n => {
+      fs.writeFileSync(path.join(tmp, path.basename(n)), cp.execSync('git show main:' + n, { cwd: root, maxBuffer: 64 * 1024 * 1024 }));
+    });
+    oldCode = path.join(tmp, 'Code.gs');
+    if (!fs.existsSync(oldCode) || fs.existsSync(path.join(tmp, 'Stage9b4.gs'))) oldCode = null;
+  } catch (e) { oldCode = null; }
+
+  // ---------- таблицы ----------
+  const col = (s, name, fill) => { const rows = s.sheets['Товари']; rows[0].push(name); for (let i = 1; i < rows.length; i++) rows[i].push(fill ? fill(rows[i]) : ''); };
+  const setc = (s, name, id, v) => { const rows = s.sheets['Товари']; const c = rows[0].indexOf(name); rows.forEach(r => { if (r[0] === id) r[c] = v; }); };
+  const settings = (s, pairs) => {
+    if (!s.sheets['Налаштування']) s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис']];
+    Object.keys(pairs).forEach(k => s.sheets['Налаштування'].push([k, pairs[k], '']));
+  };
+  const addOrder = (s, n, daysAgo, status, items, uid) => {
+    s.sheets['Замовлення'].push(['P-' + String(n).padStart(4, '0'), new Date(Date.now() - daysAgo * DAY), status, String(uid || 900), '@u', 'Клієнт', '+380501112233', 'самовивіз', '', '', 'при отриманні', '', '', 100, 'ua', 'miniapp',
+      JSON.stringify({ i: items.map(i => [i[0], i[1] || 0, i[2] || 1]) })]);
+  };
+  const STATES = [
+    ['база: 40 товарів, «немає», приховані', s => {}],
+    ['набори (доступний, недоступний, набір у наборі)', s => {
+      col(s, 'Склад набору');
+      setc(s, 'Склад набору', 'CND-004', 'CND-001, SWT-006, SPC-004');
+      setc(s, 'Склад набору', 'CND-005', 'SWT-006, NUT-008');
+      setc(s, 'Склад набору', 'SWT-006', 'CND-004');
+    }],
+    ['фото 2, порядок, вага упаковки', s => {
+      col(s, 'Фото 2'); col(s, 'Порядок'); col(s, 'Вага упаковки, г');
+      setc(s, 'Фото 2', 'DRY-039', 'https://example.test/p2.webp'); setc(s, 'Фото 2', 'NUT-001', 'не-посилання');
+      setc(s, 'Порядок', 'NUT-005', 1); setc(s, 'Порядок', 'NUT-001', 2); setc(s, 'Вага упаковки, г', 'SPC-004', 50);
+    }],
+    ['підказка в кошику (hint)', s => {
+      col(s, 'Теги'); setc(s, 'Теги', 'SPC-004', 'для плову, спеції');
+      settings(s, { hint_tag: 'для плову', hint_id: 'SPC-004', hint_text_ua: 'Додайте {ціна}', hint_text_ru: 'Добавьте {цена}' });
+    }],
+    ['рецепти (показані, прихований інгредієнт, вимкнений)', s => {
+      s.sheets['Рецепти'] = [['ID', 'Назва (UA)', 'Название (RU)', 'Фото', 'Текст (UA)', 'Текст (RU)', 'Товари', 'Показувати'],
+        ['PLOV', 'Плов', 'Плов', 'https://example.test/r.webp', 'Текст', 'Текст ru', 'SPC-004, DRY-001', 'так'],
+        ['HID', 'Без товару', '', '', 'x', '', 'NUT-008', 'так'], ['OFF', 'Вимкнений', '', '', '', '', 'DRY-001', 'ні']];
+    }],
+    ['відгуки (3+ схвалених, один новий)', s => {
+      const h = ['ID', 'Дата', 'Замовлення', 'Telegram user id', "Ім'я", 'Товар ID', 'Товар', 'Оцінка', 'Текст', 'Фото', 'Статус', 'Мова', 'Модерував'];
+      s.sheets['Відгуки'] = [h];
+      [5, 4, 5, 3].forEach((r, i) => s.sheets['Відгуки'].push(['R-000' + i, new Date(), 'P-0001', '501', 'Ім' + i, 'DRY-039', 'Курага', r, 'Добре', '', 'схвалено', 'ua', '']));
+      s.sheets['Відгуки'].push(['R-0009', new Date(), 'P-0001', '501', 'Нова', 'NUT-001', 'Мигдаль', 5, '', '', 'новий', 'ua', '']);
+    }],
+    ['новорічна тема, добірка, сніг', s => {
+      settings(s, { theme: 'newyear', ny_snow: '1', ny_ids: 'DRY-039, NUT-001, XXX-999', theme_until: '31.12.2099', feature_id: 'DRY-039, NUT-001', gift_from: '1000', gift_text_ua: 'Подарунок', gift_text_ru: 'Подарок' });
+    }],
+    ['точки, синоніми', s => {
+      s.sheets['Точки'] = [['Назва (UA)', 'Адреса (UA)', 'Пн', 'Вт', 'Активна'], ['Точка 1', 'Ринок', '', '8:00-16:00', 'так'], ['Точка 2', 'Інша', '', '', 'ні']];
+      s.sheets['Синоніми'] = [['Слово', 'Що шукати'], ['урюк', 'курага'], ['кешью', "кеш'ю"]];
+    }],
+    ['акція до завтра, свіжа поставка, залишок', s => {
+      col(s, 'Свіжа поставка'); setc(s, 'Свіжа поставка', 'NUT-002', ddmmyyyy(new Date()));
+      setc(s, 'Акція до', 'DRY-001', ddmmyyyy(new Date(Date.now() + DAY))); setc(s, 'Стара ціна', 'DRY-001', 320);
+      settings(s, { fresh_days: '30', low_stock: '4' });
+    }],
+    ['замовлення: хіт тижня, старі й невпорядковані дати', s => {
+      addOrder(s, 20, 1, 'виконано', [['NUT-002', 250, 1], ['DRY-002', 250, 1]]);
+      addOrder(s, 21, 2, 'підтверджено', [['NUT-002', 250, 2], ['DRY-002', 250, 1]]);
+      addOrder(s, 22, 200, 'виконано', [['SPC-001', 100, 1]]);
+      addOrder(s, 23, 3, 'виконано', [['NUT-002', 500, 1], ['DRY-002', 250, 1]]);
+      addOrder(s, 24, 100, 'виконано', [['TEA-001', 100, 1]]);
+      s.sheets['Замовлення'].push(['P-0025', 'не дата', 'виконано', '1', '', '', '', '', '', '', '', '', '', 1, 'ua', 'miniapp', '{}']);
+    }],
+  ];
+  const mkSeed = (fns) => { const s = seed(); fns.forEach(f => f(s)); return s; };
+  const BASE_STATES = STATES.slice();
+  STATES.push(['усе разом', s => BASE_STATES.forEach(st => st[1](s))]);
+
+  // ---------- большая таблица: 300 товаров, 2 000 заказов, 5 000 событий, 50 рецептов ----------
+  function bigSeed() {
+    const s = seed();
+    const rows = s.sheets['Товари'], head = rows[0], tpl = rows[1];
+    const cats = [['Горіхи', 'Орехи'], ['Сухофрукти', 'Сухофрукты'], ['Спеції', 'Специи'], ['Чай', 'Чай']];
+    for (let i = 0; i < 260; i++) {
+      const r = tpl.slice();
+      r[0] = 'BIG-' + String(i).padStart(3, '0');
+      r[head.indexOf('Категорія (UA)')] = cats[i % 4][0]; r[head.indexOf('Категория (RU)')] = cats[i % 4][1];
+      r[head.indexOf('Назва (UA)')] = 'Товар номер ' + i + ' для великого каталогу'; r[head.indexOf('Название (RU)')] = 'Товар номер ' + i + ' для большого каталога';
+      r[head.indexOf('Опис (UA)')] = 'Довгий опис товару, щоб каталог був як справжній. '.repeat(6); r[head.indexOf('Описание (RU)')] = 'Длинное описание товара, чтобы каталог был как настоящий. '.repeat(6);
+      r[head.indexOf('Ціна за 1 кг')] = 200 + i; r[head.indexOf('Бейдж')] = '';
+      rows.push(r);
+    }
+    const ids = rows.slice(1).map(r => r[0]);
+    const ord = s.sheets['Замовлення'];
+    const seedOrders = ord.splice(1); // старые тестовые строки встанут по датам вместе с остальными: лист хронологический, как в жизни
+    for (let i = 0; i < 2000; i++) {
+      const a = ids[(i * 7) % ids.length], b = ids[(i * 13 + 3) % ids.length];
+      ord.push(['P-' + String(1000 + i).padStart(4, '0'), new Date(Date.now() - (200 - i * 0.1) * DAY), i % 17 === 0 ? 'скасовано' : 'виконано', String(1000 + (i % 300)), '@u', 'Клієнт ' + i, '+380501112233', 'самовивіз', '', '', 'при отриманні', '', a + ' x1; ' + b + ' x1', 300, 'ua', 'miniapp',
+        JSON.stringify({ i: [[a, 250, 1], [b, 500, 2]] })]);
+    }
+    seedOrders.concat(ord.splice(1)).sort((x, y) => x[1] - y[1]).forEach(r => ord.push(r));
+    const ev = [['Час', 'Подія', 'Дані']];
+    for (let i = 0; i < 5000; i++) ev.push([new Date(Date.now() - i * 60000), 'view', 'BIG-' + (i % 260)]);
+    s.sheets['Події'] = ev;
+    const rec = [['ID', 'Назва (UA)', 'Название (RU)', 'Фото', 'Текст (UA)', 'Текст (RU)', 'Товари', 'Показувати']];
+    for (let i = 0; i < 50; i++) rec.push(['REC' + i, 'Рецепт ' + i, 'Рецепт ' + i, '', 'Текст рецепта '.repeat(10), 'Текст рецепта '.repeat(10), ids[i] + ', ' + ids[i + 1], 'так']);
+    s.sheets['Рецепти'] = rec;
+    const rv = [['ID', 'Дата', 'Замовлення', 'Telegram user id', "Ім'я", 'Товар ID', 'Товар', 'Оцінка', 'Текст', 'Фото', 'Статус', 'Мова', 'Модерував']];
+    for (let i = 0; i < 200; i++) rv.push(['R-' + (1000 + i), new Date(), 'P-1', '5', 'Ім', ids[i % 100], 'т', 5 - (i % 3), 'ок', '', 'схвалено', 'ua', '']);
+    s.sheets['Відгуки'] = rv;
+    const syn = [['Слово', 'Що шукати']]; for (let i = 0; i < 100; i++) syn.push(['слово' + i, 'товар']);
+    s.sheets['Синоніми'] = syn;
+    return s;
+  }
+
+  const counter = (g) => { const o = g.sandbox.buildCatalog_; const c = { n: 0, lite: 0 }; g.sandbox.buildCatalog_ = function (opt) { if (opt && opt.lite) c.lite++; else c.n++; return o.apply(this, arguments); }; return c; };
+  const logsOf = (g) => { const l = []; g.sandbox.console.log = (...a) => l.push(a.join(' ')); return l; };
+
+  // ---------- замеры «было / стало» ----------
+  function scenarios(code) {
+    const g = createGas(code, bigSeed()); g.setCacheStrict(true);
+    const out = {};
+    const rec = (name, fn) => {
+      g.resetIo(); g.resetOps();
+      const t = T(fn);
+      out[name] = { reads: g.io.reads, cells: g.io.cells, sheets: g.io.sheetByName, lastRC: g.io.lastRow + g.io.lastCol, ms: t.ms, byName: JSON.parse(JSON.stringify(g.io.byName)), cache: g.ops.cache || 0, r: t.r };
+    };
+    const cat = () => g.get({ action: 'catalog' });
+    rec('1. холодный запрос каталога', cat);
+    rec('2. тёплый запрос (через 10 с)', () => { g.advance(10000); return cat(); });
+    rec('3. сам заказ (остаток меняется)', () => order(g, U(1), [{ id: 'SWT-004', g: 0, q: 1 }], 65));
+    rec('4. каталог сразу после заказа', cat);
+    rec('5. правка админа (цена)', () => admP(g, 900, 'admin.product', { id: 'NUT-001', patch: { price: 570 } }));
+    rec('6. каталог после правки админа', cat);
+    const rows = g.sheets['Товари'].rows; const cK = rows[0].indexOf('Ціна за 1 кг');
+    rows.find(r => r[0] === 'NUT-002')[cK] = 650; // ручная правка без onEdit
+    rec('7. ручная правка, запрос через 1 мин', () => { g.advance(60000); return cat(); });
+    rec('8. тот же запрос через 6 мин после правки', () => { g.advance(6 * 60000); return cat(); });
+    rec('9. «Оновити каталог у магазині зараз»', () => g.call('menuRefreshCatalog'));
+    return { g, out };
+  }
+
+  return { fs, DAY, T, norm, raw, ddmmyyyy, oldCode, tmp, col, setc, settings, addOrder, STATES, mkSeed, bigSeed, counter, logsOf, scenarios };
+})();
+
+console.log('Выпуск Б4: ответ каталога совпадает со старым кодом (main) байт в байт, кроме updated');
+{
+  if (!b4.oldCode) console.log('  (ветка main недоступна: эталонное сравнение пропущено)');
+  else {
+    const results = [];
+    b4.STATES.forEach(([name, fn]) => {
+      const sd = () => b4.mkSeed([fn]);
+      const gOld = createGas(b4.oldCode, sd()), gNew = createGas(CODE, sd());
+      const a = b4.raw(gOld), c = b4.raw(gNew), w = b4.raw(gNew), cNew = JSON.parse(c);
+      ok(b4.norm(a) === b4.norm(c) && JSON.parse(a).products.length > 0, 'эталон: «' + name + '» — холодный ответ идентичен', { old: a.length, new: c.length });
+      ok(w === c, 'эталон: «' + name + '» — тёплый ответ из кэша тот же, строка в строку');
+      // после пересчёта по проверке таблицы (через 6 минут, таблица не менялась) ответ остаётся тем же
+      gNew.advance(6 * 60000); const r6 = b4.raw(gNew);
+      ok(b4.norm(r6) === b4.norm(a), 'эталон: «' + name + '» — после проверки через 6 минут без изменений ответ тот же');
+      gNew.call('clearCatalogCache_'); const rS = b4.raw(gNew);
+      ok(b4.norm(rS) === b4.norm(a), 'эталон: «' + name + '» — пересборка с сигналами из кэша (заказы, отзывы) даёт тот же ответ, что полное чтение таблицы');
+      results.push(cNew);
+    });
+    const all = results[results.length - 1];
+    ok(all.shop.syn && all.recipes && all.shop.ny && all.products.some(p => p.ks) && all.products.some(p => p.i2) && all.products.some(p => p.rc) && all.products.some(p => p.n) && all.shop.hint, 'состояния действительно содержат наборы, фото 2, рецепты, отзывы, тему, синонимы, hint и «Популярне»', Object.keys(all.shop));
+    const hw = all.products.filter(p => p.hw);
+    ok(hw.length === 1, 'в состоянии «заказы» есть «Хіт тижня» (hw) у одного товара', hw.map(p => p.id));
+  }
+}
+
+console.log('Выпуск Б4: число обращений к таблице на запрос каталога («было / стало», большая таблица)');
+{
+  const newRun = b4.scenarios(CODE);
+  const oldRun = b4.oldCode ? b4.scenarios(b4.oldCode) : null;
+  const n = newRun.out, o = oldRun && oldRun.out;
+  const fmt = (x) => x ? [x.sheets, x.lastRC, x.reads, x.cells, x.ms.toFixed(1)].map(String) : ['-', '-', '-', '-', '-'];
+  console.log('  [обращения кода к таблице: getSheetByName / getLastRow+getLastColumn / getValues / ячеек / мс Node (мс — это процессор стенда, не секунды Apps Script)]');
+  console.log('    ' + 'сценарий'.padEnd(46) + 'было (main)'.padEnd(34) + 'стало');
+  Object.keys(n).forEach(k => {
+    const a = fmt(o && o[k]), c = fmt(n[k]);
+    console.log('    ' + k.padEnd(46) + (a[0] + ' / ' + a[1] + ' / ' + a[2] + ' / ' + a[3] + ' / ' + a[4]).padEnd(34) + c[0] + ' / ' + c[1] + ' / ' + c[2] + ' / ' + c[3] + ' / ' + c[4]);
+  });
+  const sheetsOf = (x) => Object.keys(x.byName).sort().join(', ');
+  console.log('  [какие листы читает холодная сборка, стало] ' + sheetsOf(n['1. холодный запрос каталога']) + (o ? '\n  [какие листы читала холодная сборка, было] ' + sheetsOf(o['1. холодный запрос каталога']) : ''));
+  console.log('  [чтение листов после правки/проверки (стало)] после заказа: ' + sheetsOf(n['4. каталог сразу после заказа']) + '; через 6 мин: ' + sheetsOf(n['8. тот же запрос через 6 мин после правки']));
+  const cold = n['1. холодный запрос каталога'], warm = n['2. тёплый запрос (через 10 с)'];
+  ok(warm.reads === 0 && warm.sheets === 0 && warm.lastRC === 0 && warm.cells === 0, 'тёплый запрос: ни одного обращения к листам', warm);
+  ok(!cold.byName['Події'], 'лист «Події» (5 000 строк) каталог не читает ни холодным, ни после правок', Object.keys(cold.byName));
+  ok(n['4. каталог сразу после заказа'].byName['Замовлення'] === undefined && n['4. каталог сразу после заказа'].byName['Відгуки'] === undefined, 'после заказа каталог пересобирается без чтения заказов и отзывов (они в кэше сигналов)', n['4. каталог сразу после заказа'].byName);
+  ok(n['6. каталог после правки админа'].byName['Замовлення'] === undefined, 'после правки админа заказы тоже не читаются заново');
+  const o3 = n['3. сам заказ (остаток меняется)'];
+  ok(o3.byName['Замовлення'] && !o3.byName['Відгуки'] && !o3.byName['Рецепти'] && !o3.byName['Синоніми'], 'заказ: рецепты, синонимы и отзывы не читаются (нужны только цены и наличие по таблице)', Object.keys(o3.byName));
+  ok(n['7. ручная правка, запрос через 1 мин'].reads === 0, 'ручная правка без onEdit: в пределах 5 минут копия остаётся (0 чтений)');
+  const m8 = n['8. тот же запрос через 6 мин после правки'];
+  ok(m8.r && m8.r.products.find(p => p.id === 'NUT-002').k === 650 && m8.byName['Замовлення'] === undefined, 'ручная правка без onEdit подхвачена через 6 минут, заказы не читались', m8.r && m8.r.products.find(p => p.id === 'NUT-002').k);
+  const m9 = n['9. «Оновити каталог у магазині зараз»'];
+  ok(m9.byName['Замовлення'] && m9.byName['Відгуки'], '«Оновити каталог»: свежая сборка читает и заказы, и отзывы');
+  if (o) {
+    ok(oldRun.out['2. тёплый запрос (через 10 с)'].reads === 0 && oldRun.out['1. холодный запрос каталога'].reads > 5, 'контроль стенда: старый код на тёплом кэше тоже 0, на холодном читает листы', oldRun.out['1. холодный запрос каталога'].reads);
+    ok(o['4. каталог сразу после заказа'].reads > n['4. каталог сразу после заказа'].reads, 'после заказа: чтений листов меньше, чем было', [o['4. каталог сразу после заказа'].reads, n['4. каталог сразу после заказа'].reads]);
+    ok(o['4. каталог сразу после заказа'].cells > n['4. каталог сразу после заказа'].cells && o['6. каталог после правки админа'].cells > n['6. каталог после правки админа'].cells, 'после заказа и после правки админа: прочитанных ячеек меньше, чем было');
+    ok(o['3. сам заказ (остаток меняется)'].cells > o3.cells && o['3. сам заказ (остаток меняется)'].reads > o3.reads, 'сам заказ читает меньше таблицы, чем раньше', [o['3. сам заказ (остаток меняется)'].reads, o3.reads]);
+    ok(o['8. тот же запрос через 6 мин после правки'].cells > m8.cells, 'проверка таблицы через 6 минут читает меньше ячеек, чем полная пересборка раньше');
+    ok(o['1. холодный запрос каталога'].cells > cold.cells, 'холодная сборка читает меньше ячеек, чем раньше (заказы: только последние 30 дней)', [o['1. холодный запрос каталога'].cells, cold.cells]);
+    ok(Object.keys(n).every(k => n[k].cells <= o[k].cells && n[k].reads <= o[k].reads + 3), 'ни в одном сценарии стало не хуже было (ячейки; чтений не больше чем на 3: узкое чтение дат заказов)', Object.keys(n).filter(k => !(n[k].cells <= o[k].cells)));
+    // ответ сценария «холодный» одинаков
+    ok(b4.norm(JSON.stringify(oldRun.out['1. холодный запрос каталога'].r)) === b4.norm(JSON.stringify(n['1. холодный запрос каталога'].r)), 'большая таблица: холодный ответ нового кода совпадает со старым (кроме updated)');
+  }
+  // процессорное время самой сборки (мс Node, медиана из 5 запусков) на большой таблице
+  const med = (code) => {
+    const g = createGas(code, b4.bigSeed()); const xs = [];
+    for (let i = 0; i < 5; i++) xs.push(b4.T(() => g.call('buildCatalog_')).ms);
+    xs.sort((a, b) => a - b); return xs[2];
+  };
+  const cpuNew = med(CODE), cpuOld = b4.oldCode ? med(b4.oldCode) : null;
+  console.log('  [процессорное время buildCatalog_ на таблице 300 товаров / 2 000 заказов / 5 000 событий / 50 рецептов, стенд Node, медиана из 5] было ' + (cpuOld === null ? '-' : cpuOld.toFixed(1)) + ' мс, стало ' + cpuNew.toFixed(1) + ' мс');
+  const gw = createGas(CODE, b4.bigSeed()); gw.get({ action: 'catalog' });
+  const warmMs = [1, 2, 3, 4, 5].map(() => b4.T(() => gw.get({ action: 'catalog' })).ms).sort((a, b) => a - b)[2];
+  console.log('  [тёплый запрос каталога, мс Node (стенд, без сети), медиана из 5] ' + warmMs.toFixed(1) + ' мс; размер ответа ' + Math.round(JSON.stringify(gw.get({ action: 'catalog' })).length / 1024) + ' КБ');
+  console.log('  [секунды Apps Script стендом не измеряются; оценка по числу обращений: чтение листа в Apps Script обычно 0,1–0,5 с, т. е. холодная сборка = число getValues × (0,1…0,5) с — это оценка, не измерение]');
+  ok(true, 'таблица «было / стало» напечатана');
+}
+
+console.log('Выпуск Б4: кэш — версия, onEdit, все пути записи, срок, пересборка один раз');
+{
+  const mk = (extra) => { const g = createGas(CODE, b4.mkSeed(extra || [])); g.setCacheStrict(true); return g; };
+  const reads = (g, f) => { g.resetIo(); const r = f(); return { r, reads: g.io.reads, sheets: g.io.sheetByName }; };
+  const g = mk();
+  const cnt = b4.counter(g);
+  g.get({ action: 'catalog' });
+  ok(cnt.n === 1 && !!g.cache['cat2_m'] && !g.cache['catalog_v1_n'], 'холодный запрос: одна сборка, копия в кэше под ключами cat2_*');
+  const meta = JSON.parse(g.cache['cat2_m']);
+  ok(meta.x - meta.t === 6 * 3600 * 1000, 'копия живёт 6 часов (потолок CacheService), если таблица не меняется сама по часам', meta.x - meta.t);
+  g.advance(4 * 60000);
+  ok(reads(g, () => g.get({ action: 'catalog' })).reads === 0 && cnt.n === 1, 'через 4 минуты — 0 чтений листов, сборки нет');
+  // ручная правка + onEdit
+  const rows = g.sheets['Товари'].rows, cK = rows[0].indexOf('Ціна за 1 кг'), cur = (id) => g.get({ action: 'catalog' }).products.find(p => p.id === id).k;
+  rows.find(r => r[0] === 'NUT-003')[cK] = 790;
+  ok(cur('NUT-003') === 780, 'правка без onEdit до истечения 5 минут ещё не видна (как и раньше)', cur('NUT-003'));
+  g.call('onEdit', { range: { getSheet: () => ({ getName: () => 'Клієнти' }) } });
+  ok(cur('NUT-003') === 780 && cnt.n === 1, 'onEdit в листе, который каталога не касается, ничего не сбрасывает');
+  g.call('onEdit', { range: { getSheet: () => ({ getName: () => 'Товари' }) } });
+  ok(cur('NUT-003') === 790 && cnt.n === 2, 'onEdit в листе «Товари»: ручная правка видна сразу, одна пересборка', [cur('NUT-003'), cnt.n]);
+  ok(cur('NUT-003') === 790 && cnt.n === 2, 'после неё каталог снова из кэша');
+  g.call('onEdit'); g.call('onEdit', {}); g.call('onEdit', { range: { getSheet: () => { throw new Error('x'); } } });
+  ok(true, 'onEdit без данных и с ошибкой не падает');
+  // правка листа «Замовлення» руками сбрасывает и сигналы
+  const ordRows = { sheets: { 'Замовлення': g.sheets['Замовлення'].rows } };
+  const sig0 = g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039').n;
+  b4.addOrder(ordRows, 90, 0.1, 'виконано', [['DRY-039', 500, 1]]);
+  g.call('onEdit', { range: { getSheet: () => ({ getName: () => 'Замовлення' }) } });
+  ok(g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039').n === sig0 + 1, 'ручная правка листа «Замовлення» (onEdit) сразу обновляет «Популярне»');
+  // сигналы: заказ добавлен скриптом без сброса — подхватится через срок сигналов
+  b4.addOrder(ordRows, 91, 0.1, 'виконано', [['DRY-039', 500, 1]]);
+  g.call('clearCatalogCache_');
+  ok(g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039').n === sig0 + 1, 'сброс каталога (правка админа) НЕ перечитывает заказы: «Популярне» живёт в своём кэше сигналов');
+  g.advance(31 * 60000); g.call('clearCatalogCache_');
+  ok(g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039').n === sig0 + 2, 'через 31 минуту кэш сигналов истёк: «Популярне» пересчитано');
+  // «Оновити каталог»
+  b4.addOrder(ordRows, 92, 0.1, 'виконано', [['DRY-039', 500, 1]]);
+  g.call('menuRefreshCatalog');
+  ok(g.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039').n === sig0 + 3 && /Каталог оновлено/.test(g.ui.alerts[g.ui.alerts.length - 1]), '«Оновити каталог у магазині зараз» даёт свежую сборку, включая заказы', g.ui.alerts.slice(-1));
+  // отзывы: одобрение сбрасывает кэш сигналов
+  const gr = mk([b4.STATES[5][1]]);
+  gr.get({ action: 'catalog' });
+  gr.sheets['Відгуки'].rows.push(['R-0010', new Date(), 'P-1', '501', 'Ім', 'DRY-039', 'Курага', 5, '', '', 'схвалено', 'ua', '']);
+  gr.call('reviewCacheDrop_', ['DRY-039']);
+  ok(gr.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-039').rc === 5, 'одобренный отзыв виден сразу (reviewCacheDrop_ сбрасывает кэш сигналов и каталог)');
+  // все пути записи вызывают clearCatalogCache_ → отметка версии
+  const g2 = mk(); g2.get({ action: 'catalog' });
+  const before = g2.cache['cat2_inv'];
+  admP(g2, 900, 'admin.product', { id: 'NUT-001', patch: { price: 575 } });
+  ok(g2.cache['cat2_inv'] !== before && g2.get({ action: 'catalog' }).products.find(p => p.id === 'NUT-001').k === 575, 'правка админа: отметка версии поставлена, новая цена видна');
+  g2.call('saveSettings_', { min_order: '300' });
+  ok(g2.get({ action: 'catalog' }).shop.min === 300, 'настройки магазина: изменение видно в каталоге сразу');
+  // заказ с остатком
+  const gq = mk(); const c3 = b4.counter(gq); gq.get({ action: 'catalog' });
+  const r1 = order(gq, U(1), [{ id: 'SWT-004', g: 0, q: 1 }], 65);
+  ok(r1.ok === true && c3.lite === 1 && c3.n === 1, 'заказ строит только лёгкий список цен (lite), полный каталог не собирает', [r1.ok, c3]);
+  ok(gq.get({ action: 'catalog' }).products.find(p => p.id === 'SWT-004').q === 2, 'после заказа остаток в каталоге уже новый (2)');
+  // цена и наличие при заказе — по таблице, а не по кэшу
+  const gs = mk(); gs.get({ action: 'catalog' });
+  const stockCol = gs.sheets['Товари'].rows[0].indexOf('Наявність');
+  gs.sheets['Товари'].rows.find(r => r[0] === 'SPC-005')[stockCol] = 'немає';
+  const r2 = order(gs, U(2), [{ id: 'SPC-005', g: 100, q: 1 }], 52);
+  ok(r2.ok === false, 'витрина (кэш) ещё показывает товар, а в таблице «немає»: заказ отклонён по таблице', r2);
+  const gp2 = mk(); gp2.get({ action: 'catalog' });
+  const kgCol = gp2.sheets['Товари'].rows[0].indexOf('Ціна за 1 кг');
+  gp2.sheets['Товари'].rows.find(r => r[0] === 'SPC-005')[kgCol] = 1000; // ручная правка цены без сброса кэша
+  const r2b = order(gp2, U(2), [{ id: 'SPC-005', g: 100, q: 1 }], 52);
+  const r2c = order(gp2, U(2), [{ id: 'SPC-005', g: 100, q: 1 }], 100);
+  ok(r2b.ok === false && r2b.error === 'changed' && r2c.ok === true && gp2.sheets['Замовлення'].rows.slice(-1)[0][13] === 100, 'цена при заказе — из таблицы (1000 ₴/кг → 100 ₴ за 100 г), а не из кэша: старая сумма с витрины отклонена («changed»), верная принята', [r2b, r2c]);
+  // заказ без остатка («Залишок» пуст) каталог вообще не трогает
+  const gn = mk(); gn.get({ action: 'catalog' }); const inv0 = gn.cache['cat2_inv'];
+  order(gn, U(3), [{ id: 'SPC-004', g: 0, q: 1 }], 45);
+  ok(gn.cache['cat2_inv'] === inv0 && reads(gn, () => gn.get({ action: 'catalog' })).reads === 0, 'заказ товара без «Залишок»: каталог не сбрасывается, следующий запрос 0 чтений');
+  // старый ключ и старые функции
+  g.call('cachePutLarge_', 'zzz', 'a'.repeat(70000), 600);
+  ok(g.call('cacheGetLarge_', 'zzz').length === 70000, 'cachePutLarge_/cacheGetLarge_ (их же использует кэш Нової пошти) работают как раньше');
+}
+
+console.log('Выпуск Б4: срок по часам — конец акции, свежая поставка, тема');
+{
+  const g = createGas(CODE, b4.mkSeed([b4.STATES[8][1], b4.STATES[6][1]])); g.setCacheStrict(true);
+  const tomorrowEnd = Date.UTC(new Date(Date.now() + b4.DAY).getUTCFullYear(), new Date(Date.now() + b4.DAY).getUTCMonth(), new Date(Date.now() + b4.DAY).getUTCDate(), 22);
+  const c = g.get({ action: 'catalog' });
+  const p0 = c.products.find(p => p.id === 'DRY-001');
+  ok(p0.o === 320 && p0.e && c.shop.theme === 'newyear', 'сейчас: акция на DRY-001 идёт (старая цена 320), тема включена');
+  const m = JSON.parse(g.cache['cat2_m']);
+  ok(m.x <= tomorrowEnd && m.x > Date.now(), 'копия не живёт дольше ближайшего конца акции (cat2_m.x ≤ конец дня акции)', [m.x, tomorrowEnd]);
+  ok(g.sandbox.catBoundMs_ === tomorrowEnd, 'сборка запомнила момент конца акции как ближайшую границу', [g.sandbox.catBoundMs_, tomorrowEnd]);
+  g.advance(3 * b4.DAY);
+  const c2 = g.get({ action: 'catalog' });
+  const p1 = c2.products.find(p => p.id === 'DRY-001');
+  ok(p1.o === undefined && p1.k === 320 && p1.b !== 'sale', 'после конца акции цена сама вернулась к обычной (320), без ручного сброса', p1);
+  // тема до завтра
+  const tom = new Date(Date.now() + b4.DAY);
+  const gt = createGas(CODE, b4.mkSeed([s => b4.settings(s, { theme: 'newyear', ny_snow: '1', theme_until: b4.ddmmyyyy(tom) })])); gt.setCacheStrict(true);
+  const ctn = b4.counter(gt);
+  ok(gt.get({ action: 'catalog' }).shop.theme === 'newyear', 'тема «до завтра» сейчас включена');
+  const mt = JSON.parse(gt.cache['cat2_m']);
+  ok(gt.sandbox.catBoundMs_ === Date.UTC(tom.getUTCFullYear(), tom.getUTCMonth(), tom.getUTCDate(), 21) && mt.x <= gt.sandbox.catBoundMs_, 'конец темы запомнен как граница: копия не живёт дольше этого момента');
+  gt.advance(3 * b4.DAY); gt.get({ action: 'catalog' });
+  ok(ctn.n === 2, 'после этой границы каталог собирается заново, а не берётся из кэша');
+  // свежая поставка
+  const gf = createGas(CODE, b4.mkSeed([b4.STATES[8][1]])); gf.setCacheStrict(true);
+  ok(gf.get({ action: 'catalog' }).products.find(p => p.id === 'NUT-002').f === 1, 'свіжа поставка: сейчас метка есть');
+  gf.advance(40 * b4.DAY);
+  ok(gf.get({ action: 'catalog' }).products.find(p => p.id === 'NUT-002').f === undefined, 'через 40 дней (fresh_days = 30) метка снята сама');
+}
+
+console.log('Выпуск Б4: один сборщик, остальные получают прежнюю копию или ждут');
+{
+  const mk = () => { const g = createGas(CODE, b4.mkSeed([])); g.setCacheStrict(true); return g; };
+  // 20 запросов подряд после сброса: одна сборка
+  const g = mk(); const c = b4.counter(g); g.get({ action: 'catalog' }); g.call('clearCatalogCache_');
+  for (let i = 0; i < 20; i++) g.get({ action: 'catalog' });
+  ok(c.n === 2, 'после сброса 20 запросов подряд дают одну пересборку (всего две сборки с первой)', c);
+  // идёт чужая сборка, прежняя копия не старше минуты после изменения: отдаём её, не собираем
+  const g1 = mk(); const c1 = b4.counter(g1);
+  const was = g1.get({ action: 'catalog' });
+  admP(g1, 900, 'admin.product', { id: 'NUT-001', patch: { price: 600 } });
+  g1.cache['cat2_bl'] = Date.now() + ':other';
+  g1.resetIo();
+  const stale = g1.get({ action: 'catalog' });
+  ok(stale.products.find(p => p.id === 'NUT-001').k === was.products.find(p => p.id === 'NUT-001').k && c1.n === 1 && g1.io.reads === 0, 'другой запрос уже собирает: покупатель получает прежнюю копию, листы не читаются, второй сборки нет');
+  g1.advance(61000); g1.cache['cat2_bl'] = Date.now() + ':other';
+  const fresh1 = g1.get({ action: 'catalog' });
+  ok(fresh1.products.find(p => p.id === 'NUT-001').k === 600, 'прежняя копия старше минуты после изменения не отдаётся: запрос ждёт и собирает сам (метка сборщика не снялась)');
+  // внутренние вызовы устаревшую копию не получают
+  const g1b = mk(); g1b.get({ action: 'catalog' }); admP(g1b, 900, 'admin.product', { id: 'NUT-001', patch: { price: 610 } });
+  g1b.cache['cat2_bl'] = Date.now() + ':other';
+  const internal = JSON.parse(g1b.call('getCatalogJson_'));
+  ok(internal.products.find(p => p.id === 'NUT-001').k === 610, 'внутренний вызов getCatalogJson_ (бот, заказ) устаревшую копию не берёт');
+  // нет прежней копии: ждёт, сборщик заканчивает — берём его результат, своей сборки нет
+  const g2 = mk(); const c2 = b4.counter(g2);
+  g2.cache['cat2_bl'] = Date.now() + ':other';
+  let slept = 0;
+  g2.sandbox.Utilities.sleep = () => { slept++; if (slept === 2) { g2.sandbox.catBuildAndStore_(g2.sandbox.CacheService.getScriptCache(), { inv: 0 }, 'miss', false); delete g2.cache['cat2_bl']; } };
+  const w = g2.get({ action: 'catalog' });
+  ok(w.ok === true && c2.n === 1 && slept === 2, 'нет копии: запрос ждёт чужую сборку и берёт её результат (одна сборка на двоих)', { builds: c2.n, slept });
+  // сборщик упал: метка не снялась, ждём не дольше 3 с и собираем сами
+  const g3 = mk(); const c3 = b4.counter(g3); let sl = 0;
+  g3.sandbox.Utilities.sleep = () => { sl++; };
+  g3.cache['cat2_bl'] = Date.now() + ':dead';
+  const d = g3.get({ action: 'catalog' });
+  ok(d.ok === true && c3.n === 1 && sl >= 11 && sl <= 13, 'метка «собираю» от упавшего сборщика: ждём около 3 с и собираем сами', { builds: c3.n, sl });
+  // во время сборки приходит второй запрос (повторный вход): получает прежнюю копию
+  const g4 = mk(); g4.get({ action: 'catalog' }); admP(g4, 900, 'admin.product', { id: 'NUT-001', patch: { price: 620 } });
+  const orig = g4.sandbox.buildCatalog_; let inner = null, builds = 0;
+  g4.sandbox.buildCatalog_ = function (opt) { builds++; if (builds === 1) inner = JSON.parse(g4.sandbox.catalogServe_({ stale: true })); return orig.apply(this, arguments); };
+  const outer = g4.get({ action: 'catalog' });
+  ok(builds === 1 && inner && inner.products.find(p => p.id === 'NUT-001').k === 560 && outer.products.find(p => p.id === 'NUT-001').k === 620, 'параллельный запрос во время сборки: одна сборка, второй получил копию до правки, первый — новую', { builds, inner: inner && inner.products.find(p => p.id === 'NUT-001').k });
+  ok(!g4.cache['cat2_bl'], 'метка «собираю» снимается после сборки');
+  // ошибка сборки: у покупателя остаётся прежняя копия, а не ошибка
+  const g5 = mk(); g5.get({ action: 'catalog' }); admP(g5, 900, 'admin.product', { id: 'NUT-001', patch: { price: 630 } });
+  const keep = g5.sandbox.buildCatalog_; g5.sandbox.buildCatalog_ = () => { throw new Error('таблиця недоступна'); };
+  const e1 = g5.get({ action: 'catalog' });
+  ok(e1.ok === true && e1.products.find(p => p.id === 'NUT-001').k === 560, 'сборка упала: витрина получает прежнюю копию (срок ещё не вышел), а не server_error');
+  g5.clearCache();
+  const e2 = g5.get({ action: 'catalog' });
+  ok(e2.ok === false && e2.error === 'server_error' && !g5.cache['cat2_bl'], 'копии нет и сборка падает: server_error, как раньше; метка снята');
+}
+
+console.log('Выпуск Б4: большие значения (> 100 КБ) режутся на куски, порча копии = пересборка');
+{
+  const g = createGas(CODE, b4.bigSeed()); g.setCacheStrict(true);
+  const c = b4.counter(g);
+  const text = b4.raw(g);
+  const NP = JSON.parse(text).products.length;
+  const meta = JSON.parse(g.cache['cat2_m']);
+  ok(text.length > 100000 && meta.n >= 4 && Object.keys(g.cache).filter(k => /^cat2_\d+$/.test(k)).every(k => g.cache[k].length <= 100000), 'каталог ' + Math.round(text.length / 1024) + ' КБ режется на ' + meta.n + ' кусков, каждый меньше 100 КБ (строгий кэш не отверг)', { len: text.length, n: meta.n });
+  ok(meta.l === text.length && typeof meta.c === 'string' && meta.c.length > 5 && Object.keys(g.cache).filter(k => /^cat2_\d+$/.test(k)).every(k => g.cache[k].indexOf(meta.b + '|') === 0), 'контрольная метка: длина, отпечаток, номер сборки в каждом куске');
+  ok(b4.raw(g) === text && c.n === 1, 'тёплое чтение склеивает куски в тот же текст');
+  const parse = (t) => { try { return JSON.parse(t); } catch (e) { return null; } };
+  const cases = {
+    'кусок укорочен': (gg) => { gg.cache['cat2_1'] = gg.cache['cat2_1'].slice(0, -7); },
+    'кусок пропал': (gg) => { delete gg.cache['cat2_2']; },
+    'кусок другой сборки': (gg) => { gg.cache['cat2_0'] = 'zzzz|' + gg.cache['cat2_0'].split('|').slice(1).join('|'); },
+    'кусок подменён (та же длина)': (gg) => { const v = gg.cache['cat2_1']; gg.cache['cat2_1'] = v.slice(0, 20) + (v[20] === 'x' ? 'y' : 'x') + v.slice(21); },
+    'метка — мусор': (gg) => { gg.cache['cat2_m'] = '{не json'; },
+    'метка без полей': (gg) => { gg.cache['cat2_m'] = JSON.stringify({ b: 'x' }); },
+    'метка: число кусков больше, чем есть': (gg) => { const m = JSON.parse(gg.cache['cat2_m']); m.n += 3; gg.cache['cat2_m'] = JSON.stringify(m); },
+    'метка: чужая длина': (gg) => { const m = JSON.parse(gg.cache['cat2_m']); m.l += 1; gg.cache['cat2_m'] = JSON.stringify(m); },
+  };
+  Object.keys(cases).forEach(name => {
+    const gg = createGas(CODE, b4.bigSeed()); gg.setCacheStrict(true); const cc = b4.counter(gg);
+    gg.get({ action: 'catalog' });
+    cases[name](gg);
+    const t = b4.raw(gg), o = parse(t);
+    ok(o && o.ok === true && o.products.length === NP && cc.n === 2 && b4.norm(t) === b4.norm(text), 'порча: ' + name + ' — ответ целый, одна пересборка, не ошибка', { n: cc.n });
+    ok(b4.raw(gg) === t && cc.n === 2, 'порча: ' + name + ' — после пересборки копия снова целая');
+  });
+  // слишком большой для записи: копии нет, ответ всё равно отдаётся
+  const gb = createGas(CODE, b4.bigSeed()); gb.setCacheStrict(true);
+  gb.sandbox.CacheService = { getScriptCache: () => ({ get: () => null, getAll: () => ({}), put: () => { throw new Error('quota'); }, putAll: () => { throw new Error('quota'); }, remove() {} }) };
+  const tb = gb.call('doGet', { parameter: { action: 'catalog' } }).text;
+  ok(JSON.parse(tb).ok === true, 'кэш отказал в записи: каталог всё равно отдаётся, предупреждение в журнале', gb.sandbox.__warns.slice(-1));
+}
+
+console.log('Выпуск Б4: утечки и необязательный замер PERF_LOG');
+{
+  const g = createGas(CODE, b4.mkSeed(b4.STATES.map(s => s[1]).slice(0, -1))); g.setCacheStrict(true);
+  const logs = b4.logsOf(g);
+  const t = b4.raw(g); g.advance(6 * 60000); b4.raw(g);
+  const cacheText = JSON.stringify(g.cache);
+  const secrets = [g.props.BOT_TOKEN, g.props.WEBHOOK_SECRET, 'СЕКРЕТ-примітка', 'do-smaku', '33%'];
+  ok(secrets.every(s => t.indexOf(s) < 0 && cacheText.indexOf(s) < 0) && !/"Закупка"|"Маржа"|"Націнка"|:999[,}]|:111[,}]|:222[,}]/.test(t), 'ответ каталога и всё в кэше cat2_* без служебных колонок, токена и секрета');
+  ok(logs.length === 0 && !g.sandbox.__warns.concat(g.sandbox.__errors).some(x => /СЕКРЕТ|whsec|TEST_TOKEN/.test(x)), 'без PERF_LOG журнал выполнения молчит');
+  const gp = createGas(CODE, b4.mkSeed(b4.STATES.map(s => s[1]).slice(0, -1))); gp.setCacheStrict(true); gp.props.PERF_LOG = '1';
+  const lp = b4.logsOf(gp);
+  gp.get({ action: 'catalog' });
+  const perf = lp.filter(x => /^PERF catalog/.test(x));
+  ok(perf.length === 1 && /^PERF catalog \S+ \d+ ms \| /.test(perf[0]) && /категорії \d+/.test(perf[0]) && /товари \d+/.test(perf[0]) && /замовлення \d+/.test(perf[0]) && /відгуки \d+/.test(perf[0]) && /рецепти \d+/.test(perf[0]) && /кеш: запис \d+/.test(perf[0]), 'PERF_LOG = 1: одна строка с этапами и миллисекундами', perf);
+  ok(!/Клієнт|Курага|Мигдаль|\+380|@u|Ім\d|https?:/.test(perf[0]) && perf[0].length < 400, 'в строке замера нет данных покупателей, названий товаров и ссылок');
+  const n0 = lp.length; gp.resetOps(); gp.get({ action: 'catalog' });
+  ok(lp.length === n0 && !gp.ops.prop, 'тёплое чтение замер не пишет и Script Properties не читает', gp.ops);
+  const gh = createGas(CODE, b4.mkSeed([])); gh.props.PERF_LOG = '1'; const lh = b4.logsOf(gh); gh.sandbox.perfStart_('admin.x'); gh.sandbox.perfMark_('a'); gh.sandbox.perfEnd_({});
+  ok(lh.length === 1 && /^PERF admin\.x/.test(lh[0]), 'замер админ-панели (perfStart_/perfEnd_) работает как раньше');
+}
+
+console.log('Выпуск Б4: расписание (hourlyJob) собирает каталог, а не покупатель');
+{
+  const g = createGas(CODE, b4.mkSeed([])); g.setCacheStrict(true); const c = b4.counter(g);
+  ok(g.call('catalogWarm_') === 'built' && c.n === 1 && !!g.cache['cat2_m'], 'кэш пуст: расписание собирает каталог');
+  ok(g.call('catalogWarm_') === 'fresh' && c.n === 1, 'каталог свежий: ничего не делает');
+  g.call('clearCatalogCache_');
+  g.resetIo(); g.call('hourlyJob');
+  ok(c.n === 2 && g.io.byName['Товари'] && g.get({ action: 'catalog' }).ok === true, 'hourlyJob после сброса пересобирает каталог');
+  g.resetIo(); g.get({ action: 'catalog' });
+  ok(g.io.reads === 0, 'после работы расписания запрос покупателя читает 0 листов');
+  g.cache['cat2_bl'] = Date.now() + ':other'; g.call('clearCatalogCache_');
+  ok(g.call('catalogWarm_') === 'busy' && c.n === 2, 'если сборку уже ведёт другой запрос, расписание её не дублирует');
+}
+
+console.log('Выпуск Б4: пункты меню webhook');
+{
+  const TOKEN = '123456:TEST_TOKEN_for_local_mock_only';
+  const SECRET = 'tstSecret_0123456789-abcdefghijklmnopqrstuv';
+  const HOST = 'pamir-test.workers.dev';
+  const mkw = (props, info) => {
+    const s = seed(); Object.assign(s.props, { WEBHOOK_SECRET: SECRET, WORKER_URL: 'https://' + HOST + '/' }, props || {});
+    Object.keys(s.props).forEach(k => { if (s.props[k] === null) delete s.props[k]; });
+    const g = createGas(CODE, s);
+    const calls = [];
+    g.setTelegramFail((method, payload) => {
+      calls.push({ method, payload });
+      if (method === 'getWebhookInfo') return info || { ok: true, result: { url: 'https://' + HOST + '/', has_custom_certificate: false, pending_update_count: 3, last_error_date: 1760000000, last_error_message: 'Wrong response from the webhook: 403 Forbidden', max_connections: 40 } };
+      if (method === 'setWebhook') return { ok: true, result: true, description: 'Webhook was set' };
+      return { ok: false, description: 'unexpected ' + method };
+    });
+    const logs = b4.logsOf(g);
+    return { g, calls, logs };
+  };
+  const everything = (w) => w.g.ui.alerts.join('\n') + '\n' + w.logs.join('\n') + '\n' + w.g.sandbox.__warns.join('\n') + '\n' + w.g.sandbox.__errors.join('\n');
+  const clean = (text) => text.indexOf(TOKEN) < 0 && text.indexOf(SECRET) < 0 && text.indexOf('123456:') < 0 && text.indexOf('TEST_TOKEN') < 0 && !/bot\d+:/.test(text);
+  {
+    const w = mkw();
+    w.g.call('onOpen');
+    const titles = w.g.ui.menu.items.map(i => i[0]);
+    ok(titles.includes('Службове: перевстановити webhook') && titles.includes('Службове: перевірити webhook') && w.g.ui.menu.items.find(i => i[0] === 'Службове: перевстановити webhook')[1] === 'menuWebhookReinstall' && w.g.ui.menu.items.find(i => i[0] === 'Службове: перевірити webhook')[1] === 'menuWebhookCheck', 'меню PAMIR: два пункта «Службове: перевстановити / перевірити webhook»', titles.slice(-4));
+    const r = w.g.call('menuWebhookReinstall');
+    const sent = w.g.sent.map(m => m.method);
+    ok(r.ok === true && sent.length === 2 && sent[0] === 'setWebhook' && sent[1] === 'getWebhookInfo', 'перевстановлення: только setWebhook, затем getWebhookInfo', sent);
+    const body = w.g.sent[0].payload;
+    ok(body.url === 'https://' + HOST && body.secret_token === SECRET && Array.isArray(body.allowed_updates) && body.allowed_updates.includes('message') && body.allowed_updates.includes('callback_query') && body.allowed_updates.includes('my_chat_member'), 'в setWebhook: адрес Worker (без хвостового /), secret_token из Script Properties, allowed_updates', Object.keys(body));
+    ok(!('drop_pending_updates' in body) && Object.keys(body).sort().join() === 'allowed_updates,secret_token,url', 'drop_pending_updates не ставится: сообщения не теряются', Object.keys(body));
+    const all = everything(w);
+    ok(clean(all), 'ни токен, ни секрет не попали в окна, журнал, предупреждения и ошибки');
+    const shown = w.g.ui.alerts[w.g.ui.alerts.length - 1];
+    ok(/Webhook встановлено: так/.test(shown) && /Webhook установлен: да/.test(shown) && shown.indexOf(HOST) >= 0 && /збігається з WORKER_URL/.test(shown) && /pending_update_count\): 3/.test(shown) && /Wrong response from the webhook: 403 Forbidden/.test(shown) && /\d\d\.\d\d\.\d{4} \d\d:\d\d/.test(shown), 'итог UA и RU: «Webhook встановлено: так», хост Worker, pending_update_count, последняя ошибка с датой', shown);
+    const ask = w.g.ui.alerts.find(a => /Перевстановити webhook\?/.test(a));
+    ok(ask && ask.indexOf(HOST) >= 0 && /НЕ видаляються/.test(ask) && /НЕ удаляются/.test(ask) && /YES_NO/.test(ask), 'перед вызовом — подтверждение YES/NO с объяснением, что произойдёт (UA и RU)');
+    ok(w.g.triggers.length === 0 && !w.g.sent.some(m => /deleteWebhook|getUpdates|setMyCommands|sendMessage/.test(m.method)), 'никаких deleteWebhook, getUpdates, триггеров опроса');
+  }
+  {
+    const w = mkw(); w.g.ui.answer = 'NO';
+    const r = w.g.call('menuWebhookReinstall');
+    ok(r.ok === false && r.refused === 'cancel' && w.g.sent.length === 0 && w.g.fetched.length === 0 && /Скасовано/.test(r.message), 'ответ «Нет» в подтверждении: ни одного вызова Telegram');
+  }
+  const refusals = {
+    'нет WORKER_URL': [{ WORKER_URL: null }, 'missing', /WORKER_URL/],
+    'нет WEBHOOK_SECRET': [{ WEBHOOK_SECRET: null }, 'missing', /WEBHOOK_SECRET/],
+    'нет BOT_TOKEN': [{ BOT_TOKEN: null }, 'missing', /BOT_TOKEN/],
+    'секрет короче 32': [{ WEBHOOK_SECRET: 'short_secret_value_1234' }, 'secret', /закороткий/],
+    'секрет с запрещёнными знаками': [{ WEBHOOK_SECRET: 'abc def!ghi/jkl+mno=pqr stuvwxyz0123456789' }, 'secret', /недозволені знаки/],
+    'секрет длиннее 256': [{ WEBHOOK_SECRET: 'a'.repeat(257) }, 'secret', /задовгий/],
+    'WORKER_URL не https': [{ WORKER_URL: 'http://' + HOST }, 'worker', /WORKER_URL не підходить/],
+    'WORKER_URL чужой хост': [{ WORKER_URL: 'https://example.com' }, 'worker', /WORKER_URL не підходить/],
+    'WORKER_URL с параметром': [{ WORKER_URL: 'https://' + HOST + '/?a=1' }, 'worker', /WORKER_URL не підходить/],
+    'WORKER_URL оканчивается на /purge': [{ WORKER_URL: 'https://' + HOST + '/purge' }, 'worker', /WORKER_URL не підходить/],
+    'режим опроса (USE_WEBHOOK не true)': [{ USE_WEBHOOK: null }, 'mode', /USE_WEBHOOK/],
+  };
+  Object.keys(refusals).forEach(name => {
+    const w = mkw(refusals[name][0]);
+    const r = w.g.call('menuWebhookReinstall');
+    const all = everything(w);
+    ok(r.ok === false && r.refused === refusals[name][1] && refusals[name][2].test(r.message) && w.g.sent.length === 0 && w.g.fetched.length === 0 && w.calls.length === 0 && !/YES_NO/.test(all), 'отказ без сетевых вызовов: ' + name, { refused: r.refused, sent: w.g.sent.length });
+    ok(clean(all) && (name.indexOf('секрет') < 0 || all.indexOf(refusals[name][0].WEBHOOK_SECRET) < 0), 'отказ «' + name + '»: значения секрета и токена в окне нет');
+  });
+  {
+    const w = mkw(); // нет интерфейса (запуск из редактора)
+    w.g.sandbox.SpreadsheetApp.getUi = () => { throw new Error('no ui'); };
+    const r = w.g.call('webhookReinstall_');
+    ok(r.ok === false && r.refused === 'noui' && w.g.sent.length === 0, 'без окна подтверждения (запуск из редактора) — отказ, вызовов нет');
+  }
+  {
+    // ответ Telegram ok:false, в описании — токен и секрет (на случай «эха»)
+    const w = mkw();
+    w.g.setTelegramFail((method) => method === 'setWebhook' ? { ok: false, error_code: 400, description: 'Bad Request: bad webhook: https://api.telegram.org/bot' + TOKEN + '/setWebhook secret_token=' + SECRET } : { ok: true, result: { url: '', pending_update_count: 0 } });
+    const r = w.g.call('menuWebhookReinstall');
+    const all = everything(w);
+    ok(r.ok === false && /НЕ вдалося/.test(r.message) && /НЕ удался/.test(r.message) && clean(all), 'Telegram ответил ok:false с токеном и секретом в тексте: в окнах и журнале их нет', w.g.ui.alerts.slice(-1));
+    ok(/Webhook встановлено: ні/.test(r.message), 'при пустом url в getWebhookInfo — «Webhook встановлено: ні»');
+  }
+  {
+    // сбой сети: исключение UrlFetchApp содержит адрес с токеном и тело запроса
+    const w = mkw();
+    w.g.sandbox.UrlFetchApp = { fetch(url, o) { throw new Error('Exception: Request failed for https://api.telegram.org returned code 500. url: ' + url + ' payload: ' + (o && o.payload)); }, fetchAll() { throw new Error('x'); } };
+    const r = w.g.call('menuWebhookReinstall');
+    const all = everything(w);
+    ok(r.ok === false && clean(all) && !/secret_token"?\s*[:=]\s*"?tst/.test(all), 'сбой сети: в сообщении нет токена и секрета (safeErr_ вырезает bot<токен> и secret_token)', w.g.ui.alerts.slice(-1)[0].slice(0, 300));
+    const e = w.g.call('safeErr_', new Error('boom {"secret_token":"abcDEF123456","url":"x"} and secret_token=zzzz1234'));
+    ok(!/abcDEF123456|zzzz1234/.test(e) && /secret_token/.test(e), 'safeErr_: значение secret_token в тексте ошибки заменяется на ***', e);
+  }
+  {
+    const w = mkw();
+    const r = w.g.call('menuWebhookCheck');
+    ok(w.g.sent.length === 1 && w.g.sent[0].method === 'getWebhookInfo' && Object.keys(w.g.sent[0].payload).length === 0, 'проверка webhook: только getWebhookInfo, ничего не меняет');
+    ok(/Webhook встановлено: так/.test(r.message) && /WEBHOOK_SECRET: задано, формат підходить/.test(r.message) && r.message.indexOf(HOST) >= 0 && clean(everything(w)), 'проверка: статус, хост, формат секрета (без значения)', r.message);
+    const w2 = mkw({ WEBHOOK_SECRET: 'bad one' });
+    ok(/формат не підходить/.test(w2.g.call('menuWebhookCheck').message), 'проверка: неподходящий формат секрета сообщается, значение не показывается');
+    const w3 = mkw({ BOT_TOKEN: null });
+    const r3 = w3.g.call('menuWebhookCheck');
+    ok(r3.ok === false && w3.g.sent.length === 0 && /BOT_TOKEN/.test(r3.message), 'проверка без токена: понятная ошибка, вызовов нет');
+    const w4 = mkw(null, { ok: false, description: 'Unauthorized ' + TOKEN });
+    const r4 = w4.g.call('menuWebhookCheck');
+    ok(r4.ok === false && clean(r4.message), 'проверка: getWebhookInfo ok:false — токена в окне нет');
+  }
+  {
+    const src = b4.fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Stage9b4.gs'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\/\/ .*$/gm, '');
+    ok(!/startPolling\s*\(|deleteWebhook|getUpdates|drop_pending_updates|console\.(log|warn|error)\([^)]*(token|secret)/i.test(src), 'в Stage9b4.gs нет вызовов startPolling, deleteWebhook, getUpdates, drop_pending_updates и логов токена/секрета');
+    const b4code = b4.fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'Stage9b4.gs'), 'utf8');
+    ok(!/\d{6,}:[A-Za-z0-9_-]{20,}/.test(b4code), 'в коде выпуска нет токеноподобных строк');
+  }
+}
+try { if (b4.tmp) require('fs').rmSync(b4.tmp, { recursive: true, force: true }); } catch (e) { /* не критично */ }
+
+
+console.log('Выпуск Б4, п.3: «Очистити тестові дані перед відкриттям»');
+{
+  const fsx = require('fs');
+  const WORD = 'ОЧИСТИТИ';
+  const TARGETS = ['Замовлення', 'Клієнти', 'Події', 'Статистика', 'Підписки', 'Запрошення', 'Опт-заявки', 'Тестові замовлення (архів)'];
+  const NOT_NAMED = ['Кошики', 'Відгуки', 'Розсилки', 'Оптові клієнти'];
+  const KEEP = ['Товари', 'Категорії', 'Рецепти', 'Синоніми', 'Архів товарів', 'Кеш НП', 'Адміни', 'Точки'];
+  const NOISE = ['ORDER_LAST_NUM', 'CLEAN_TESTDATA_STATE'];
+  const probe = createGas(CODE, seed());
+  const hd = n => probe.sandbox[n].slice();
+  const fill = (head, n, first) => Array.from({ length: n }, (_, i) => head.map((h, j) => (j === 0 ? first(i) : 'д' + i + '_' + j)));
+  function world(opts) {
+    opts = opts || {};
+    const s = seed();
+    const oHead = s.sheets['Замовлення'][0];
+    for (let n = 8; n <= 25; n++) { const r = s.sheets['Замовлення'][1].slice(); r[0] = 'P-' + String(n).padStart(4, '0'); r[3] = String(600 + n); s.sheets['Замовлення'].push(r); }
+    s.sheets['Клієнти'] = [hd('CLIENT_HEAD')].concat(fill(hd('CLIENT_HEAD'), 5, i => String(501 + i)));
+    s.sheets['Події'] = [hd('EVENT_HEADERS')].concat(fill(hd('EVENT_HEADERS'), 40, i => 'e' + i));
+    s.sheets['Статистика'] = [['Оновлено: тест (старі числа)'], ['За 30 днів: замовлень 25'], ['Середній чек: 400'], ['ПО ДНЯХ', 'ТОВАРИ ЗА 30 ДНІВ'], ['Дата', 'Замовлень'], ['01.11.2026', 3], ['02.11.2026', 4]];
+    s.sheets['Підписки'] = [hd('SUB_HEADERS')].concat(fill(hd('SUB_HEADERS'), 3, i => 'п' + i));
+    s.sheets['Запрошення'] = [hd('INVITE_HEAD')].concat(fill(hd('INVITE_HEAD'), 2, i => 'з' + i));
+    s.sheets['Опт-заявки'] = [hd('WH_APP_HEAD')].concat(fill(hd('WH_APP_HEAD'), 2, i => 'W-' + (i + 1)));
+    s.sheets['Тестові замовлення (архів)'] = [oHead.slice()].concat([1, 2, 3].map(n => { const r = s.sheets['Замовлення'][1].slice(); r[0] = 'P-' + String(opts.archiveMax && n === 3 ? opts.archiveMax : n).padStart(4, '0'); return r; }));
+    s.sheets['Кошики'] = [hd('CART_HEAD')].concat(fill(hd('CART_HEAD'), 3, i => String(501 + i)));
+    s.sheets['Відгуки'] = [hd('REVIEW_HEAD')].concat(fill(hd('REVIEW_HEAD'), 2, i => 'R' + i));
+    s.sheets['Розсилки'] = [hd('MAIL_HEAD')].concat(fill(hd('MAIL_HEAD'), 1, i => 'M' + i));
+    s.sheets['Оптові клієнти'] = [hd('WH_CLIENT_HEAD')].concat(fill(hd('WH_CLIENT_HEAD'), 1, i => '77' + i));
+    s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис'], ['min_order', '0', 'x'], ['pay_cash', 'так', 'y'], ['pay_card', 'так', 'z']];
+    s.sheets['Архів товарів'] = [['ID', 'Назва (UA)'], ['NUT-099', 'Фундук']];
+    s.sheets['Рецепти'] = [hd('RECIPE_HEAD')].concat(fill(hd('RECIPE_HEAD'), 1, i => 'rc' + i));
+    s.sheets['Синоніми'] = [['Слово', 'Синоніми'], ['абрикос', 'курага']];
+    s.sheets['Кеш НП'] = [['Ключ', 'Значення'], ['k1', 'v1'], ['k2', 'v2']];
+    s.sheets['Адміни'] = [hd('ADMIN_HEAD'), hd('ADMIN_HEAD').map((h, j) => (j === 0 ? '901' : j === 1 ? 'Менеджер' : j === 3 ? 'admin' : ''))];
+    s.sheets['Журнал'] = [hd('LOG_HEAD')].concat(fill(hd('LOG_HEAD'), 2, i => new Date(2026, 10, 1 + i)));
+    s.sheets['Точки'] = [hd('POINT_HEAD')].concat(fill(hd('POINT_HEAD'), 1, i => 'Точка ' + i));
+    Object.assign(s.props, { WORKER_URL: 'https://pamir-x.example.workers.dev', NP_API_KEY: 'NPKEY-TEST-1', FAST_MODE: '0', DIGEST_LAST: '2026-11-19', NP_TRACK_LAST: '1',
+      ADMIN_INVITES: '[]', DELETED_IDS: 'AAA-1', PRODUCT_ID_MAX: '{"DRY":90}', OWNER_CHAT_ID: '900', ORDER_NUM_FLOOR: '14' });
+    const g = createGas(CODE, s);
+    const folder = g.sandbox.DriveApp.createFolder('PAMIR — резервні копії');
+    g.props.BACKUP_FOLDER_ID = folder.getId();
+    g.folder = folder;
+    g.cache['er_buf'] = '{"x":1}'; g.cache['fb_fail'] = '2'; g.cache['fb_lost'] = '3';
+    g.cache['cl_501'] = '1'; g.cache['cls_501'] = '1'; g.cache['cl_503'] = '1';
+    g.cache['ev_501'] = '3'; g.cache['rid_keep'] = 'z'; g.cache['rv_DRY-039'] = 'z';
+    const cur = Math.floor(Date.now() / 60000);
+    g.cache['fx_m_' + cur] = '1'; g.cache['fx_' + cur + '_7'] = '[]';
+    return g;
+  }
+  const snapS = g => JSON.stringify(Object.keys(g.sheets).sort().map(n => [n, g.sheets[n].rows]));
+  const snapP = (g, skip) => JSON.stringify(Object.keys(g.props).filter(k => !(skip || []).includes(k)).sort().map(k => [k, g.props[k]]));
+  const full = g => snapS(g) + snapP(g);
+  const lr = (g, n) => g.sheets[n]._lr();
+  const run = (g, text, button) => { g.ui.promptAnswer = { button: button || 'OK', text }; g.ui.alerts.length = 0; return g.call('menuCleanTestData'); };
+  const tgC = (g, update) => g.post(Object.assign({ update_id: 90000 + Math.floor(Math.random() * 9999) }, update), { src: 'tg', key: 'whsec' });
+  const secretFree = g => { const all = JSON.stringify([g.ui.alerts, g.ui.prompts, g.sent, g.sandbox.__errors, g.sandbox.__warns]); return !/TEST_TOKEN|NPKEY-TEST|whsec/.test(all); };
+
+  // --- до слова «ОЧИСТИТИ» ничего не пишется
+  {
+    const g = world();
+    const before = full(g);
+    const bad = [['', 'OK'], ['очистити', 'OK'], ['Очистити', 'OK'], ['OЧИCТИТИ', 'OK'], ['ОЧИСТИТИ!', 'OK'], ['ОЧИСТИТИ ОЧИСТИТИ', 'OK'], [WORD, 'CANCEL'], ['ТАК', 'OK'], ['YES', 'OK']];
+    let allOk = true, msgOk = true;
+    bad.forEach(b => { const r = run(g, b[0], b[1]); if (r.ok || !r.cancelled || full(g) !== before) allOk = false; if (!/Нічого не змінено/.test(g.ui.alerts.join())) msgOk = false; });
+    ok(allOk, 'не то слово / латинские двойники / другой регистр / «Скасувати»: ни одной записи (листы и свойства идентичны)');
+    ok(msgOk && g.drive.files.length === 0 && g.sent.length === 0, 'в этих случаях: «Нічого не змінено», копия не делалась, сообщений нет');
+    ok(g.ui.prompts.length === bad.length && /Замовлення. — 25 рядків/.test(g.ui.prompts[0]) && /НЕ буде чіпатися/.test(g.ui.prompts[0]) && /P-0026/.test(g.ui.prompts[0]) && /Кошики. — 3 рядків/.test(g.ui.prompts[0]) && /Відгуки. — 2 рядків/.test(g.ui.prompts[0]), 'окно до ввода слова: список листов с числом строк, что не тронется, «Кошики/Відгуки не очищаются», следующий номер', g.ui.prompts[0]);
+    ok(secretFree(g), 'в окнах нет токенов и ключей');
+  }
+  // --- копия обязательна
+  {
+    const cases = [
+      ['нет BACKUP_FOLDER_ID', g => { delete g.props.BACKUP_FOLDER_ID; }, 'no_folder', /BACKUP_FOLDER_ID/],
+      ['папка не найдена', g => { g.props.BACKUP_FOLDER_ID = 'NO-SUCH'; }, 'bad_folder', /недоступна/],
+      ['папка в корзине', g => { g.folder.trashed = true; }, 'bad_folder', /недоступна/],
+      ['копирование упало', g => { g.drive.failCopy = true; }, 'copy', /Не вдалося зробити копію/],
+      ['копию не удалось открыть', g => { g.drive.failOpen = true; }, 'verify', /перевірити її не вдалося/],
+      ['в копии не хватает строк', g => { g.drive.mutateCopy = s => { s['Замовлення'] = s['Замовлення'].slice(0, 3); }; }, 'mismatch', /не збігається/],
+      ['в копии нет листа', g => { g.drive.mutateCopy = s => { delete s['Події']; }; }, 'mismatch', /Події/]
+    ];
+    cases.forEach(c => {
+      const g = world(); c[1](g);
+      const folders = g.drive.folders.length;
+      const sheetsBefore = snapS(g), propsBefore = snapP(g);
+      const r = run(g, WORD);
+      ok(r.ok === false && r.error === c[2] && c[3].test(r.text) && snapS(g) === sheetsBefore && snapP(g) === propsBefore && g.drive.folders.length === folders, 'копия: ' + c[0] + ' → очистки нет, листы и свойства те же, новая папка не создана, текст понятный', r.error);
+      ok(secretFree(g) && g.sent.length === 0, 'копия: ' + c[0] + ' — секретов нет, админам ничего не ушло');
+    });
+    // после копии в очищаемом листе появились новые строки: копия уже не полная
+    const g = world();
+    g.drive.mutateCopy = () => { g.drive.mutateCopy = null; };
+    const origCopy = g.sandbox.DriveApp.getFileById;
+    g.sandbox.DriveApp.getFileById = id => { const f = origCopy(id); return { makeCopy: (n, fo) => { const x = f.makeCopy(n, fo); g.sheets['Замовлення'].appendRow(['P-0099', new Date(), 'новий', '1']); return x; } }; };
+    const pB = snapP(g);
+    const r = run(g, WORD);
+    ok(r.ok === false && r.error === 'changed' && /нові рядки/.test(r.text) && lr(g, 'Клієнти') === 6 && lr(g, 'Події') === 41 && lr(g, 'Замовлення') === 27 && snapP(g) === pB, 'пока шла копия, пришёл новый заказ: очистки нет (копия неполная), всё цело, свойства не менялись', r);
+  }
+  // --- блокировка занята
+  {
+    const g = world();
+    g.setLockBusy(60000, 0);
+    const sB = snapS(g), pB = snapP(g);
+    const r = run(g, WORD);
+    ok(r.ok === false && r.error === 'busy' && snapS(g) === sB && snapP(g) === pB && /Нічого не змінено/.test(r.text), 'блокировка занята: отказ, листы и свойства не менялись');
+  }
+  // --- успешный путь
+  const G = world();
+  {
+    const g = G;
+    const sheetsBefore = {}; Object.keys(g.sheets).forEach(n => { sheetsBefore[n] = JSON.stringify(g.sheets[n].rows); });
+    const propsBefore = snapP(g, NOISE);
+    const heads = {}; TARGETS.forEach(n => { heads[n] = JSON.stringify(g.sheets[n].rows[0]); });
+    const keptCounts = { 'Кошики': 3, 'Відгуки': 2, 'Розсилки': 1, 'Оптові клієнти': 1 };
+    const r = run(g, '  ' + WORD + '  ');
+    ok(r.ok === true && r.total === 25 + 5 + 40 + 2 + 3 + 2 + 2 + 3, 'слово с пробелами по краям принято; очищено рядков: 82', r.total);
+    ok(TARGETS.filter(n => n !== 'Статистика').every(n => lr(g, n) === 1 && JSON.stringify(g.sheets[n].rows[0]) === heads[n]), 'очищены строки данных, заголовки на месте');
+    ok(lr(g, 'Статистика') <= 5 && !/старі числа|замовлень 25/.test(JSON.stringify(g.sheets['Статистика'].rows)), '«Статистика»: старые итоги и строки данных убраны (лист пересчитан по пустым заказам)', g.sheets['Статистика'].rows);
+    const changedKeep = KEEP.filter(n => JSON.stringify(g.sheets[n].rows) !== sheetsBefore[n]);
+    ok(changedKeep.length === 0, 'не тронуты: Товари, Категорії, Рецепти, Синоніми, Архів товарів, Кеш НП, Адміни, Точки', changedKeep);
+    ok(NOT_NAMED.every(n => lr(g, n) === keptCounts[n] + 1 && JSON.stringify(g.sheets[n].rows) === sheetsBefore[n]), 'не названные владельцем листы (Кошики, Відгуки, Розсилки, Оптові клієнти) не тронуты');
+    const st = g.sheets['Налаштування'].rows;
+    ok(JSON.stringify(st.slice(0, 4)) === JSON.stringify(JSON.parse(sheetsBefore['Налаштування'])) && st.length === 5 && st[4][0] === 'client_data_version' && /^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(st[4][1]) && /Змінюється сама/.test(st[4][2]), '«Налаштування»: прежние строки те же, добавлена только client_data_version с датой и пояснением', st[4]);
+    ok(snapP(g, NOISE) === propsBefore && g.props.ORDER_LAST_NUM === '25' && g.props.CLEAN_TESTDATA_STATE === '', 'Script Properties: изменён только ORDER_LAST_NUM = 25 (и отметка «начато» снята); токены, NP_*, WORKER_URL, ADMIN_*, BACKUP_FOLDER_ID, FAST_MODE, *_LAST на месте');
+    ok(!('er_buf' in g.cache) && !('fb_fail' in g.cache) && !('fb_lost' in g.cache) && !('cl_501' in g.cache) && !('cls_501' in g.cache) && !('cl_503' in g.cache) && !Object.keys(g.cache).some(k => /^fx_/.test(k)), 'кэш: буфер ошибок, fx_-слоты, счётчики fb_, метки клиентов сброшены');
+    ok(g.cache['ev_501'] === '3' && g.cache['rid_keep'] === 'z' && g.cache['rv_DRY-039'] === 'z', 'прочие ключи кэша (лимиты, дубли заказов, отзывы) остались');
+    const f = g.drive.files.filter(x => /^PAMIR — до очищення \d{4}-\d\d-\d\d \d\d:\d\d$/.test(x.name));
+    ok(f.length === 1 && f[0].folder === g.folder && /\/spreadsheets\/d\//.test(r.text) && r.text.indexOf(f[0].name) >= 0 && r.backup === f[0].name, 'копия «PAMIR — до очищення <дата час>» лежит в папке BACKUP_FOLDER_ID, имя и ссылка — в отчёте');
+    ok(f[0].snapshot['Замовлення'].length === 26 && f[0].snapshot['Клієнти'].length === 6 && f[0].snapshot['Події'].length === 41, 'в копии — все данные до очистки');
+    ok(/«Замовлення»: очищено 25 рядків/.test(r.text) && /«Події»: очищено 40 рядків/.test(r.text) && /Не очищено \(не було у списку\): «Кошики» — 3 рядків, «Відгуки» — 2 рядків, «Розсилки» — 1 рядків, «Оптові клієнти» — 1 рядків/.test(r.text) && /Наступне замовлення: P-0026/.test(r.text) && /client_data_version\): \d{4}-/.test(r.text) && /Не чіпали: «Товари»/.test(r.text) && /ORDER_LAST_NUM/.test(r.text), 'отчёт: строки по листам, «Не очищено (не було у списку)», следующий номер, версия данных, что не тронуто, свойства', r.text);
+    ok(secretFree(g) && !/NPKEY|123456:/.test(r.text) && !/Клієнт 50|\+3805011/.test(r.text), 'в отчёте нет ключей, токенов и личных данных');
+    ok(g.fetched.some(x => /\/purge$/.test(x.url) && x.headers['X-Pamir-Key'] === 'whsec'), 'Worker уведомлён (/purge) — витрина сразу получит новую версию');
+    const adm = g.sent.filter(m => m.method === 'sendMessage' && String(m.payload.chat_id) === '900');
+    ok(adm.length === 1 && /очищено/.test(adm[0].payload.text) && /очищены/.test(adm[0].payload.text) && !/\+380|@user|Клієнт/.test(adm[0].payload.text) && g.sent.every(m => ['900', '901'].includes(String(m.payload.chat_id))), 'админам одно сообщение (UA+RU) без личных данных; клиентам ничего не уходит', adm.length);
+    ok(g.sheets['Журнал'].rows.some(x => x[3] === 'Очищення тестових даних' && /до очищення/.test(x[6]) && !/NPKEY|TEST_TOKEN/.test(JSON.stringify(x))), 'запись в «Журнал» об очистке');
+    // номера
+    const sheet = g.sheets['Замовлення'];
+    ok(g.call('nextOrderNumber_', sheet, g.call('orderCols_', sheet)) === 'P-0026', 'после очистки при последнем P-0025 следующий номер P-0026 (не P-0001)');
+    const o = order(g, U(501), [{ id: 'DRY-039', g: 500, q: 1 }], 190);
+    ok(o.ok === true && o.number === 'P-0026' && lr(g, 'Замовлення') === 2 && g.sheets['Замовлення'].rows.find(x => x[0] === 'P-0026'), 'настоящий заказ после очистки получает P-0026 и пишется сразу под заголовком', o);
+    ok(g.props.ORDER_LAST_NUM === '26', 'ORDER_LAST_NUM растёт с каждым заказом');
+    // каталог: shop.cdv
+    const cat = catalog(g);
+    ok(cat.c.shop.cdv === st[4][1] && /^[0-9A-Za-z:_.-]{1,32}$/.test(cat.c.shop.cdv), 'каталог отдаёт shop.cdv = дата очистки', cat.c.shop.cdv);
+    ok(!/NPKEY|СЕКРЕТ-примітка|"Закупка"|whsec|TEST_TOKEN/.test(cat.text), 'утечки в каталоге нет (служебные колонки, ключи)');
+    ok(!('cdv' in catalog(createGas(CODE, seed())).c.shop), 'старый каталог без client_data_version: поля cdv нет');
+    ok(g.call('cdvClean_', 'x<script>"2026-11-21T10:15"; ' + 'a'.repeat(50)).length === 32 && g.call('cdvClean_', 'a b<c>') === 'abc', 'значение для витрины чистится: только цифры, буквы, - : _ . и не больше 32 знаков');
+    // админ-панель настроек: служебная версия не видна и не перезаписывается старой копией формы
+    const sf = g.post({ action: 'admin.settings', initData: g.initData(U(900)) });
+    ok(sf.ok === true && !sf.fields.some(x => x.k === 'client_data_version'), 'в панели настроек client_data_version не показывается');
+    const vals = {}; sf.fields.forEach(x => { vals[x.k] = x.v; });
+    const sv = g.post({ action: 'admin.settings.save', initData: g.initData(U(900)), values: Object.assign({}, vals, { client_data_version: '1999' }) });
+    ok(g.sheets['Налаштування'].rows.filter(x => x[0] === 'client_data_version').length === 1 && catalog(g).c.shop.cdv === st[4][1], 'сохранение настроек из панели не меняет client_data_version', sv.error);
+    // callback по удалённому заказу
+    g.sent.length = 0; g.sandbox.__errors.length = 0;
+    const cb = (id, data, from, lang) => tgC(g, { callback_query: { id, data, from: { id: from || 900, first_name: 'Адм', language_code: lang || 'uk' }, message: { message_id: 7, chat: { id: from || 900 } } } });
+    cb('c1', 'st:P-0010:c'); cb('c2', 'pay:P-0010'); cb('c3', 'rv:P-0010:5', 501, 'uk'); cb('c4', 'rv:P-0010:5', 501, 'ru');
+    const ans = g.sent.filter(m => m.method === 'answerCallbackQuery').map(m => m.payload.text);
+    ok(ans.length === 4 && /^Замовлення не знайдено/.test(ans[0]) && /Заказ не найден/.test(ans[0]) && /^Замовлення не знайдено/.test(ans[1]) && ans[2] === 'Замовлення не знайдено' && ans[3] === 'Заказ не найден', 'кнопки у удалённого заказа (статус, оплата, оценка клиента): «Замовлення не знайдено»', ans);
+    ok(g.sandbox.__errors.length === 0 && !g.sent.some(m => m.method === 'sendMessage' && /P-0010/.test(String(m.payload.text))), 'без исключений, без записи ошибок, клиенту ничего не отправлено');
+    const ad = g.post({ action: 'admin.status', initData: g.initData(U(900)), num: 'P-0010', code: 'c' });
+    const am = g.post({ action: 'admin.message', initData: g.initData(U(900)), num: 'P-0010', text: 'Привіт' });
+    const ap = g.post({ action: 'admin.paid', initData: g.initData(U(900)), num: 'P-0010', state: 'paid' });
+    ok(ad.ok === false && ad.error === 'not_found' && am.error === 'not_found' && ap.error === 'not_found' && g.sandbox.__errors.length === 0, 'админ-панель по удалённому заказу: not_found (не server_error), ошибок в логе нет', [ad.error, am.error, ap.error]);
+    const my = g.post({ action: 'orders.my', initData: g.initData(U(502)), num: 'P-0010' });
+    ok(my.ok === true && my.orders.length === 0 && !my.one, '«Повторити» по удалённому заказу: пустой список без ошибки');
+    // недельная чистка копий не трогает «до очищення»
+    for (let i = 0; i < 11; i++) g.call('backupNow_');
+    const week = g.drive.files.filter(x => /^PAMIR — Товари — копія /.test(x.name) && !x.trashed);
+    const pre = g.drive.files.filter(x => /^PAMIR — до очищення /.test(x.name));
+    ok(week.length === 8 && pre.length === 1 && !pre[0].trashed, 'недельная чистка «хранить 8» копию «до очищення» не удаляет');
+  }
+  // --- повторный запуск
+  {
+    const g = G;
+    g.sandbox.__errors.length = 0;
+    g.sheets['Замовлення'].rows.splice(1); g.sheets['Клієнти'].rows.splice(1); // убираем заказ P-0026 и клиента, которого он завёл: листы снова пустые
+    const filesBefore = g.drive.files.length;
+    g.ui.prompts.length = 0;
+    const before = full(g);
+    const r = run(g, WORD);
+    ok(r.ok === true && r.nothing === true && full(g) === before && g.drive.files.length === filesBefore && /Нема чого очищати/.test(g.ui.alerts.join()) && g.ui.prompts.length === 0, 'повторный запуск на пустых листах: «Нема чого очищати», без копии, без записей, версия данных и номер не меняются');
+    ok(g.props.ORDER_LAST_NUM === '26', 'счётчик номера не сбрасывается (ORDER_LAST_NUM = 26)');
+    const sheet = g.sheets['Замовлення'];
+    ok(g.call('nextOrderNumber_', sheet, g.call('orderCols_', sheet)) === 'P-0027', 'после повторной очистки следующий — P-0027, не P-0001');
+    g.props.CLEAN_TESTDATA_STATE = '{"at":"2026-11-20 10:00"}'; // прошлый запуск не дошёл до конца
+    const r2 = run(g, WORD);
+    ok(r2.ok === true && !r2.nothing && g.props.CLEAN_TESTDATA_STATE === '' && g.props.ORDER_LAST_NUM === '26' && g.sheets['Налаштування'].rows.filter(x => x[0] === 'client_data_version').length === 1, 'после неоконченной очистки повторный запуск доводит дело; номер не падает; строка версии одна');
+  }
+  // --- сбой посреди очистки
+  {
+    const g = world();
+    const sh = g.sheets['Клієнти'], orig = sh.getRange.bind(sh);
+    let boom = true;
+    sh.getRange = (...a) => { const r = orig(...a); const cc = r.clearContent.bind(r); r.clearContent = () => { if (boom) throw new Error('Exception: boom'); return cc(); }; return r; };
+    const r = run(g, WORD);
+    ok(r.ok === false && r.error === 'interrupted' && /Запустіть пункт меню ще раз/.test(r.text) && /до очищення/.test(r.text), 'сбой после очистки первого листа: сообщение «запустите ещё раз», имя копии в тексте');
+    ok(lr(g, 'Замовлення') === 1 && lr(g, 'Клієнти') === 6 && lr(g, 'Події') === 41 && g.props.ORDER_LAST_NUM === '25' && g.props.CLEAN_TESTDATA_STATE !== '', 'после сбоя: заказы очищены, остальное цело, номер сохранён (25), отметка «начато» стоит');
+    ok(g.drive.files.filter(x => /до очищення/.test(x.name)).length === 1 && g.drive.files[0].snapshot['Замовлення'].length === 26, 'данные есть в копии');
+    boom = false;
+    const sheet = g.sheets['Замовлення'];
+    ok(g.call('nextOrderNumber_', sheet, g.call('orderCols_', sheet)) === 'P-0026', 'даже после сбоя новый заказ получил бы P-0026, не P-0001');
+    const r2 = run(g, WORD);
+    ok(r2.ok === true && TARGETS.filter(n => n !== 'Статистика').every(n => lr(g, n) === 1) && g.props.ORDER_LAST_NUM === '25' && g.props.CLEAN_TESTDATA_STATE === '' && /Наступне замовлення: P-0026/.test(r2.text), 'повторный запуск после сбоя: всё очищено, номер P-0026, отметка снята');
+    ok(g.drive.files.filter(x => /до очищення/.test(x.name)).length === 2 && g.sandbox.__errors.every(e => !/TEST_TOKEN|NPKEY/.test(e)), 'обе копии «до очищення» сохранены, в логе ошибок секретов нет');
+  }
+  // --- номер учитывает архив тестовых заказов и старый ORDER_NUM_FLOOR
+  {
+    const g = world({ archiveMax: 30 });
+    const r = run(g, WORD);
+    ok(r.ok === true && g.props.ORDER_LAST_NUM === '30' && /Наступне замовлення: P-0031/.test(r.text), 'максимум берётся и из «Тестові замовлення (архів)» (P-0030 → следующий P-0031)');
+    const g2 = world(); g2.props.ORDER_NUM_FLOOR = '40';
+    const r2 = run(g2, WORD);
+    ok(r2.ok === true && g2.props.ORDER_LAST_NUM === '40' && /P-0041/.test(r2.text) && g2.props.ORDER_NUM_FLOOR === '40', 'и из прежнего ORDER_NUM_FLOOR (40 → P-0041); сам ORDER_NUM_FLOOR не меняется');
+    const g3 = world(); g3.props.ORDER_LAST_NUM = '90';
+    run(g3, WORD);
+    ok(g3.props.ORDER_LAST_NUM === '90', 'сохранённый ORDER_LAST_NUM выше номеров в листе не понижается');
+    const g4 = world(); g4.sheets['Замовлення'].rows[1][0] = 'P-9999'; run(g4, WORD);
+    const sh4 = g4.sheets['Замовлення'];
+    ok(g4.call('nextOrderNumber_', sh4, g4.call('orderCols_', sh4)) === 'P-10000', 'формат номера: P-9999 → P-10000');
+  }
+  // --- свойство обновляется при каждом заказе; без свойства нумерация как раньше
+  {
+    const g = createGas(CODE, seed());
+    const o1 = order(g, U(501), [{ id: 'DRY-039', g: 500, q: 1 }], 190);
+    ok(o1.number === 'P-0008' && g.props.ORDER_LAST_NUM === '8', 'без свойства: нумерация по листу как раньше (P-0008), свойство заводится сразу');
+    g.sheets['Замовлення'].rows.splice(1);
+    const o2 = order(g, U(501), [{ id: 'DRY-039', g: 500, q: 1 }], 190);
+    ok(o2.number === 'P-0009', 'лист опустошён вручную — номер всё равно продолжается (P-0009)');
+  }
+  // --- защита кода
+  {
+    const src = fsx.readFileSync(path.join(__dirname, '..', 'apps-script', 'Stage9b4clean.gs'), 'utf8');
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(!/startPolling|deleteWebhook|getUpdates|deleteProperty|deleteAllProperties|setTrashed|deleteSheet|\.deleteRows?\(|clearContents\(/.test(code), 'в коде очистки нет удаления свойств, листов, файлов, startPolling, deleteWebhook');
+    ok(!/\d{6,}:[A-Za-z0-9_-]{20,}/.test(src) && !/console\.(log|warn|error)\([^)]*(token|secret|NP_API)/i.test(code), 'в коде очистки нет токеноподобных строк и логов с ключами');
+  }
+}
+
+/* ==================================================================================================================== */
+/* Выпуск Б4 · скорость оформления заказа (Stage9b5.gs: замер, одна пачка админам, необязательная очередь)              */
+/* ==================================================================================================================== */
+console.log('Выпуск Б4 · скорость оформления заказа');
+const q7 = (() => {
+  const fs = require('fs'), os = require('os'), cp = require('child_process');
+  const FOP = { FOP_NAME: 'ФОП Тестовий', FOP_IBAN: 'UA' + '1'.repeat(27), FOP_CODE: '1234567890' };
+  const GIFT = { gift_from: '100', gift_text_ua: 'Пакетик кураги 50 г (ua)', gift_text_ru: 'Пакетик кураги 50 г (ru)', gift_note: '1' };
+  const isDate = v => Object.prototype.toString.call(v) === '[object Date]';
+  function world(o) {
+    o = o || {};
+    const s = seed();
+    Object.assign(s.props, { ADMIN_CHAT_IDS: '900,901,902' }, o.props || {});
+    if (o.settings) { s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис']]; Object.keys(o.settings).forEach(k => s.sheets['Налаштування'].push([k, o.settings[k], ''])); }
+    if (o.wh) s.sheets['Оптові клієнти'] = [['Telegram user id', 'Контактна особа', 'Назва', 'Місто', 'Телефон', 'Статус', 'Дата', 'Хто вирішив', 'Заявка'], [String(o.wh), 'К', 'Н', 'Х', '+380501112233', 'активний', '', '', '']];
+    if (o.skip) s.skipFiles = o.skip;
+    return createGas(CODE, s);
+  }
+  let rn = 0;
+  const body = (g, user, extra) => Object.assign({ action: 'order', initData: g.initData(user), items: [{ id: 'DRY-039', g: 500, q: 1 }], total: 190, name: 'Олена', phone: '+380501234567', delivery: 'pickup', pay: 'cash', lang: 'ua', rid: 'rq' + (++rn) }, extra || {});
+  const msgs = g => g.sent.filter(m => m.method === 'sendMessage');
+  const toC = (g, c) => msgs(g).filter(m => String(m.payload.chat_id) === String(c));
+  const chats = g => msgs(g).map(m => String(m.payload.chat_id)).join(',');
+  const rowOf = (g, num) => g.sheets['Замовлення'].rows.find(r => r[0] === num);
+  const svcOf = (g, num) => { const rows = g.sheets['Замовлення'].rows; const r = rowOf(g, num); return r ? JSON.parse(r[rows[0].indexOf('Службове')]) : null; };
+  const setSvc = (g, num, fn) => { const rows = g.sheets['Замовлення'].rows; const i = rows[0].indexOf('Службове'); const r = rowOf(g, num); const s = JSON.parse(r[i]); fn(s); r[i] = JSON.stringify(s); };
+  const cli = (g, uid) => ((g.sheets['Клієнти'] || { rows: [] }).rows.slice(1)).filter(r => r.some(v => String(v) === String(uid))).length;
+  const norm = rows => JSON.stringify(rows.map(r => r.map(v => isDate(v) ? 'D' : v)));
+  const hasNq = (g, num) => !!svcOf(g, num).nq;
+  const forceRun = (g, minAge) => { g.cache.oq = '1'; return g.sandbox.orderQueueRun_(minAge || 0); };
+  const jobSend = g => { g.cache.oq = '1'; g.call('orderNotifyJob'); };
+  const queueWorld = o => { const g = world(o); g.call('menuOrderQueueOn'); return g; };
+  const clear = g => { g.sent.splice(0); };
+  const addManager = g => {
+    g.call('ensureAdminsSheet_'); const sh = g.sheets['Адміни']; const hd = sh.rows[0], row = hd.map(() => '');
+    row[hd.indexOf('Chat id')] = '905'; row[hd.indexOf('Роль')] = 'Менеджер'; row[hd.indexOf('Отримувати сповіщення про замовлення')] = 'так'; row[hd.indexOf('Активний')] = 'так'; sh.appendRow(row);
+  };
+  const lockDepthOk = (g, from) => { let d = 0, bad = 0, writes = 0; g.lockLog.slice(from).forEach(e => { if (e.kind === 'script' && (e.op === 'try' || e.op === 'wait') && e.ok) d++; else if (e.kind === 'script' && e.op === 'release') d--; else if (e.kind === 'sheet' && e.op !== 'read') { writes++; if (d <= 0) bad++; } }); return { bad, writes }; };
+
+  /* ---------- А. очередь выключена: как до Б4 ---------- */
+  console.log('  А. очередь выключена (по умолчанию)');
+  {
+    const g = world(); g.resetOps();
+    const r = g.post(body(g, U(701)));
+    ok(r.ok === true && r.number === 'P-0008', 'А1 заказ с 3 админами: ok и номер', r);
+    ok(g.urlStats.batches === 1 && g.urlStats.telegram === 4 && g.urlStats.trips === 2, 'А1 админам одна пачка (fetchAll), потом клиенту: batches=1, telegram=4, поездок 2', g.urlStats);
+    ok(chats(g) === '900,901,902,701', 'А1 порядок: 900, 901, 902, затем клиент 701', chats(g));
+    const sv = svcOf(g, r.number);
+    ok(Array.isArray(sv.m) && sv.m.map(x => String(x[0])).join() === '900,901,902' && sv.m.every(x => x[1] > 100), 'А1 svc.m: все три админа с id сообщения', sv);
+    ok(!('nq' in sv) && !('gc' in sv) && !('cn' in sv) && !('nx' in sv), 'А1 ключей nq/gc/cn/nx в ячейке нет', Object.keys(sv));
+    ok(cli(g, 701) === 1, 'А1 «Клієнти» отмечен один раз');
+    ok(g.sent.every(m => m.lockHeld === 0), 'А1 Telegram не вызывается под блокировкой заказа');
+  }
+  {
+    const g = world({ props: FOP }); g.resetOps();
+    const r = g.post(body(g, U(702), { pay: 'card' }));
+    const cm = toC(g, 702);
+    ok(r.ok && cm.length === 2 && /прийнято/.test(cm[0].payload.text) && /IBAN/.test(cm[1].payload.text) && cm[1].payload.text.indexOf(FOP.FOP_IBAN) > 0, 'А2 card + ФОП: подтверждение, затем реквизиты отдельным сообщением', cm.map(m => m.payload.text.slice(0, 30)));
+    ok(svcOf(g, r.number).r === 1 && g.urlStats.batches === 1, 'А2 svc.r = 1, админам по-прежнему одна пачка');
+    const g2 = world(); const r2 = g2.post(body(g2, U(703), { pay: 'card' }));
+    ok(r2.ok && toC(g2, 703).length === 1 && svcOf(g2, r2.number).r === undefined, 'А2 ФОП выключен: реквизитов нет, svc.r нет');
+  }
+  {
+    const g = world(); g.setTelegramFail(true);
+    const r = g.post(body(g, U(704)));
+    ok(r.ok === true && r.number === 'P-0008' && !!rowOf(g, 'P-0008'), 'А3 Telegram падает: заказ ok, строка записана, номер выдан', r);
+    ok(svcOf(g, 'P-0008').m === undefined, 'А3 отметок «доставлено» нет');
+    g.setTelegramFail(false);
+  }
+  {
+    const g = world(); const b = body(g, U(705));
+    const r1 = g.post(b); const n0 = g.sheets['Замовлення'].rows.length, s0 = g.sent.length;
+    const r2 = g.post(b);
+    ok(r1.ok && r2.ok && r2.number === r1.number && g.sheets['Замовлення'].rows.length === n0 && g.sent.length === s0, 'А4 повтор того же rid: тот же номер, второй строки и вторых сообщений нет', [r1, r2]);
+    const f = world(); f.setTelegramFail(true); const b2 = body(f, U(706));
+    const a1 = f.post(b2); f.setTelegramFail(false); const sf = f.sent.length; const n1 = f.sheets['Замовлення'].rows.length;
+    const a2 = f.post(b2);
+    ok(a1.ok && a2.ok && a2.number === a1.number && f.sheets['Замовлення'].rows.length === n1 && f.sent.length === sf, 'А4 повтор после упавшей отправки: тот же номер, строки нет, сообщений нет', [a1, a2]);
+  }
+  {
+    const g = world({ props: { ALLOW_TEST_ORDERS: '1' } });
+    const r = g.post(body(g, U(707), { test: true }));
+    ok(r.ok && toC(g, 707).length === 0 && toC(g, 900).length === 1 && cli(g, 707) === 0 && !g.sheets['Клієнти'], 'А5 тестовый заказ (initData + test): клиенту не пишет, «Клієнти» не трогает', chats(g));
+    const g2 = world({ props: { ALLOW_TEST_ORDERS: '1' } });
+    const b2 = body(g2, U(1), {}); delete b2.initData;
+    const r2 = g2.post(b2);
+    ok(r2.ok && chats(g2) === '900,901,902' && !g2.sheets['Клієнти'], 'А5 тестовый заказ без initData: только админам, «Клієнти» нет', chats(g2));
+  }
+  {
+    const g = world();
+    const tbl = () => { const t = g.sheets['Товари'].rows; return { h: t[0], r: t.find(x => x[0] === 'SWT-004') }; };
+    const cc = { n: 0 }; const orig = g.sandbox.clearCatalogCache_;
+    g.sandbox.clearCatalogCache_ = (...a) => { cc.n++; return orig(...a); };
+    const qi = tbl().h.indexOf('Залишок'), si = tbl().h.indexOf('Наявність');
+    const r1 = g.post(body(g, U(708), { items: [{ id: 'SWT-004', g: 0, q: 1 }], total: 65 }));
+    ok(r1.ok && tbl().r[qi] === 2 && tbl().r[si] === 'є' && cc.n === 1, 'А6 «Залишок» 3 → 2, каталог помечен изменённым один раз', [r1, tbl().r[qi], cc.n]);
+    const r2 = g.post(body(g, U(709), { items: [{ id: 'SWT-004', g: 0, q: 2 }], total: 130 }));
+    ok(r2.ok && tbl().r[qi] === 0 && tbl().r[si] === 'немає' && cc.n === 2, 'А6 до нуля → «немає»', [tbl().r[qi], tbl().r[si]]);
+    const before = JSON.stringify(g.sheets['Товари'].rows); cc.n = 0;
+    const r3 = g.post(body(g, U(710)));
+    ok(r3.ok && JSON.stringify(g.sheets['Товари'].rows) === before && cc.n === 0, 'А6 товар без числа в «Залишок» не трогается, каталог не помечается');
+  }
+  {
+    const g = world({ skip: ['Stage9b5.gs'] });
+    ok(typeof g.sandbox.orderNotifySend_ === 'undefined', 'А7 файл Stage9b5.gs не загружен');
+    const r = g.post(body(g, U(711)));
+    ok(r.ok === true && r.number === 'P-0008' && !!rowOf(g, 'P-0008'), 'А7 без Stage9b5.gs заказ записан и вернул ok', r);
+    ok(chats(g) === '900,901,902,711', 'А7 без Stage9b5.gs сообщения всё равно уходят (админам и клиенту)', chats(g));
+    ok(svcOf(g, r.number).m.length === 3 && !g.sandbox.__errors.some(e => /notify/.test(e)), 'А7 svc.m записан, в журнале нет «notify»-ошибки', g.sandbox.__errors);
+    const g2 = world({ skip: ['Stage9b5.gs'], props: FOP }); const r2 = g2.post(body(g2, U(712), { pay: 'card' }));
+    ok(r2.ok && toC(g2, 712).length === 2 && svcOf(g2, r2.number).r === 1, 'А7 без Stage9b5.gs реквизиты ФОП тоже уходят, svc.r = 1');
+    const g3 = world({ skip: ['Stage9b5.gs'] });
+    let threw = false; try { g3.call('hourlyJob'); } catch (e) { threw = true; }
+    ok(!threw, 'А7 hourlyJob без Stage9b5.gs не падает');
+  }
+
+  /* ---------- Б. очередь включена ---------- */
+  console.log('  Б. очередь включена (menuOrderQueueOn)');
+  {
+    const g = world();
+    g.call('menuOrderQueueOn'); g.call('menuOrderQueueOn');
+    ok(g.triggers.filter(t => t === 'orderNotifyJob').length === 1 && g.props.ORDER_QUEUE === '1', 'Б0 один триггер orderNotifyJob (повторное включение не дублирует), ORDER_QUEUE=1', g.triggers);
+  }
+  {
+    const g = queueWorld(); g.resetOps();
+    const r = g.post(body(g, U(721)));
+    ok(r.ok && r.number === 'P-0008', 'Б1 заказ в очереди: ok и номер', r);
+    ok(g.urlStats.telegram === 0 && g.urlStats.trips === 0 && g.sent.length === 0, 'Б1 в самом заказе запросов к Telegram НОЛЬ', g.urlStats);
+    const sv = svcOf(g, r.number);
+    ok(sv.nq && sv.nq.t > 0 && sv.nq.u[0] === '721', 'Б1 в «Службове» есть nq (время, данные для «Клієнти»)', sv);
+    ok(cli(g, 721) === 0, 'Б1 «Клієнти» ещё не тронут');
+    ok(!!g.cache.oq, 'Б1 подсказка «в очереди есть» стоит');
+  }
+  {
+    const g = queueWorld({ props: FOP }); const r = g.post(body(g, U(722), { pay: 'card' })); g.resetOps();
+    const lk = g.lockLog.length;
+    g.call('orderNotifyJob');
+    ok(g.urlStats.batches === 1 && chats(g) === '900,901,902,722,722', 'Б2 job: админам одна пачка, клиенту подтверждение и реквизиты ФОП', [g.urlStats, chats(g)]);
+    const cm = toC(g, 722);
+    ok(/прийнято/.test(cm[0].payload.text) && /IBAN/.test(cm[1].payload.text), 'Б2 реквизиты — после подтверждения');
+    const sv = svcOf(g, r.number);
+    ok(sv.nq === undefined && sv.m.length === 3 && sv.cn === 1 && sv.r === 1 && sv.nx === undefined, 'Б2 nq снят; svc.m (3), cn=1, r=1', sv);
+    ok(cli(g, 722) === 1, 'Б2 «Клієнти» отмечен ровно один раз');
+    forceRun(g); forceRun(g);
+    ok(cli(g, 722) === 1 && msgs(g).length === 5, 'Б2 повторные запуски: «Клієнти» и сообщения без изменений');
+    const ld = lockDepthOk(g, lk);
+    ok(ld.writes > 0 && ld.bad === 0, 'Б12 все записи в таблицу из очереди идут под LockService (записей: ' + ld.writes + ')', ld);
+    ok(g.sent.every(m => m.lockHeld === 0), 'Б12 Telegram из очереди не вызывается под блокировкой');
+  }
+
+  // Б3. тексты из очереди дословно такие же, как в прямом режиме
+  {
+    const cmp = (name, wopt, user, extra, must) => {
+      const a = world(wopt); const ra = a.post(body(a, user, extra));
+      const b = queueWorld(wopt); const rb = b.post(body(b, user, extra)); b.call('orderNotifyJob');
+      const pa = JSON.stringify(msgs(a).map(m => m.payload)), pb = JSON.stringify(msgs(b).map(m => m.payload));
+      const txt = msgs(a).map(m => m.payload.text).join('\n');
+      ok(ra.ok && rb.ok && ra.number === rb.number && JSON.stringify(ra) === JSON.stringify(rb) && msgs(a).length >= 4 && pa === pb, 'Б3 ' + name + ': тексты и кнопки админу и клиенту дословно совпадают', pa === pb ? [ra, rb] : [pa.slice(0, 1200), pb.slice(0, 1200)]);
+      ok((must || []).every(re => re.test(txt)), 'Б3 ' + name + ': в тексте есть ожидаемое', [(must || []).map(String), txt.slice(0, 500)]);
+      const cut = (g, num) => { const h = g.sheets['Замовлення'].rows[0]; return g.sheets['Замовлення'].rows.find(r => r[0] === num).filter((v, i) => h[i] !== 'Дата/час' && h[i] !== 'Службове'); };
+      ok(norm([cut(a, ra.number)]) === norm([cut(b, rb.number)]) && norm((a.sheets['Клієнти'] || { rows: [] }).rows) === norm((b.sheets['Клієнти'] || { rows: [] }).rows), 'Б3 ' + name + ': строка заказа и лист «Клієнти» совпадают');
+    };
+    cmp('первый заказ', {}, U(731), {}, [/Перше замовлення/, /Замовлення P-0008/]);
+    cmp('повторный клиент', {}, U(501), {}, [/Замовлення P-0008/]);
+    cmp('RU + подарок на языке клиента', { settings: GIFT }, U(732), { lang: 'ru', items: [{ id: 'DRY-039', g: 500, q: 1 }, { id: 'NUT-001', g: 250, q: 1 }], total: 330 }, [/Подарок к заказу: Пакетик кураги 50 г \(ru\)/, /Подарунок до замовлення: Пакетик кураги 50 г \(ua\)/]);
+    cmp('подпись к подарку + комментарий', { settings: GIFT }, U(733), { giftNote: 'Для мами', comment: 'Подзвоніть заздалегідь', items: [{ id: 'DRY-039', g: 500, q: 1 }, { id: 'NUT-001', g: 250, q: 1 }], total: 330 }, [/Підпис до подарунка: Для мами/, /Подзвоніть заздалегідь/]);
+    cmp('«якщо немає»', {}, U(734), { ifOut: 'replace' }, [/Якщо немає: Замінити схожим/]);
+    cmp('ОПТ', { wh: 735 }, U(735), { items: [{ id: 'DRY-039', g: 1000, q: 5 }], total: 1600 }, [/ОПТ/, /Разом: 1600/]);
+    cmp('источник src + НП с cityRef + накладений платіж', {}, U(736), { src: 'qr1', delivery: 'np', city: 'Харків', branch: '12', npType: 'branch', pay: 'cod', cityRef: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, [/Харків/]);
+    cmp('НП-курьер, card + ФОП, RU', { props: FOP }, U(737), { delivery: 'np', city: 'Київ', branch: 'вул. Хрещатик 1, кв. 5', npType: 'courier', pay: 'card', lang: 'ru' }, [/Київ/, /Реквизиты для оплаты/]);
+    const g = queueWorld(); const r = g.post(body(g, U(738), { src: 'qr1', delivery: 'np', city: 'Харків', branch: '12', cityRef: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }));
+    const sv = svcOf(g, r.number);
+    ok(sv.nc === 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' && sv.nq.s === 'qr1', 'Б3 cityRef (svc.nc) и источник (nq.s) записаны одной записью заказа', sv);
+    const calls = []; const origT = g.sandbox.touchClient_; g.sandbox.touchClient_ = (...a) => { calls.push(JSON.stringify(a)); return origT(...a); };
+    g.call('orderNotifyJob');
+    const d = world(); const calls2 = []; const origD = d.sandbox.touchClient_; d.sandbox.touchClient_ = (...a) => { calls2.push(JSON.stringify(a)); return origD(...a); };
+    d.post(body(d, U(738), { src: 'qr1', delivery: 'np', city: 'Харків', branch: '12', cityRef: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }));
+    ok(calls.length === 1 && calls2.length === 1 && ((x, y) => x[1] === y[1] && x[2] === y[2] && x[3] === y[3] && String(x[0].id) === String(y[0].id) && x[0].first_name === y[0].first_name && x[0].language_code === y[0].language_code)(JSON.parse(calls[0]), JSON.parse(calls2[0])) && /qr1/.test(calls[0]), 'Б3 в «Клієнти» уходит тот же пользователь, язык и источник qr1, что и в прямом режиме (один вызов)', [calls, calls2]);
+  }
+
+  // Б4. повторные и одновременные запуски
+  {
+    const g = queueWorld(); g.post(body(g, U(741)));
+    jobSend(g); const n1 = msgs(g).length;
+    jobSend(g); jobSend(g); forceRun(g, 0);
+    ok(n1 === 4 && msgs(g).length === 4, 'Б4 второй запуск ничего повторно не шлёт', msgs(g).length);
+    const h = queueWorld(); const r2 = h.post(body(h, U(742)));
+    let nested = false, inner = null;
+    h.setTelegramFail(() => { if (!nested) { nested = true; h.cache.oq = '1'; inner = h.sandbox.orderQueueRun_(0); } return null; });
+    jobSend(h); h.setTelegramFail(false);
+    ok(nested && msgs(h).length === 4 && toC(h, 742).length === 1 && toC(h, 900).length === 1 && svcOf(h, r2.number).m.length === 3, 'Б4 два «одновременных» запуска (второй во время первого): каждому ровно одно сообщение', [msgs(h).length, inner]);
+    ok(inner && inner.done === 0 && inner.left === 1, 'Б4 второй запуск увидел «взят в работу» и ушёл', inner);
+    const k = queueWorld(); const r3 = k.post(body(k, U(743)));
+    setSvc(k, r3.number, s => { s.nq.c = Date.now() + k.sandbox.__shift; });
+    jobSend(k);
+    ok(msgs(k).length === 0 && hasNq(k, r3.number), 'Б4 отметка «взят в работу» удерживает заказ от второго запуска');
+  }
+
+  // Б5. частичный сбой
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(751)));
+    let phase = 1;
+    g.setTelegramFail((m, p) => phase === 1 && String(p.chat_id) === '901' ? { ok: false, error_code: 429, description: 'Too Many Requests' } : phase === 1 && String(p.chat_id) === '902' ? { ok: false, error_code: 403, description: 'Forbidden: bot was blocked' } : null);
+    jobSend(g);
+    let sv = svcOf(g, r.number);
+    ok(sv.m.map(x => String(x[0])).join() === '900' && sv.nx.join() === '902' && sv.cn === 1 && sv.nq && sv.nq.c === 0, 'Б5 900 получил, 901 (429) ждёт, 902 (403) в nx, клиент получил, nq остался', sv);
+    phase = 2; clear(g);
+    jobSend(g);
+    sv = svcOf(g, r.number);
+    ok(chats(g) === '901' && sv.m.length === 2 && sv.nq === undefined && sv.nx.join() === '902', 'Б5 следующий запуск: только 901; 900, 902 и клиенту повторно не шлётся; nq снят', [chats(g), sv]);
+    clear(g); jobSend(g);
+    ok(msgs(g).length === 0, 'Б5 админ с 403 больше не тревожится');
+    g.setTelegramFail(false);
+    const h = queueWorld(); const r2 = h.post(body(h, U(752)));
+    let net = true; h.setTelegramFail((m, p) => net && String(p.chat_id) === '900' ? { ok: false, description: 'network' } : null);
+    jobSend(h); const s1 = svcOf(h, r2.number);
+    net = false; clear(h); jobSend(h);
+    ok(s1.nq && !s1.m.some(x => String(x[0]) === '900') && chats(h) === '900' && svcOf(h, r2.number).nq === undefined, 'Б5 сбой сети: админ получил со следующего запуска, остальные не продублированы', [chats(h), s1]);
+    h.setTelegramFail(false);
+    const c = queueWorld({ props: FOP }); const r3 = c.post(body(c, U(753), { pay: 'card' }));
+    c.setTelegramFail((m, p) => String(p.chat_id) === '753' ? { ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' } : null);
+    jobSend(c);
+    const s3 = svcOf(c, r3.number);
+    ok(s3.cn === 2 && s3.nq === undefined && s3.r === undefined && toC(c, 753).length === 1, 'Б5 клиент заблокировал бота: cn=2, реквизиты не шлются, nq снят', s3);
+    clear(c); jobSend(c); forceRun(c);
+    ok(msgs(c).length === 0, 'Б5 заблокировавшему клиенту повторов нет');
+    c.setTelegramFail(false);
+  }
+
+  // Б6. упавший запуск и OQ_MAX_TRIES
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(761)));
+    addManager(g);
+    setSvc(g, r.number, s => { s.nq.c = Date.now() + g.sandbox.__shift; s.nq.a = 1; });
+    jobSend(g); ok(msgs(g).length === 0, 'Б6 пока «взят в работу» (< OQ_CLAIM_MS) — не трогается');
+    g.advance(g.sandbox.OQ_CLAIM_MS + 1000); jobSend(g);
+    ok(msgs(g).length === 5 && toC(g, 905).length === 1 && svcOf(g, r.number).nq === undefined, 'Б6 после OQ_CLAIM_MS заказ берётся снова и уходит (3 админа + менеджер + клиент)', chats(g));
+    const h = queueWorld(); const r2 = h.post(body(h, U(762), { name: 'Секретне Імя', phone: '+380509998877' }));
+    addManager(h);
+    const origFind = h.sandbox.findOrder_; h.sandbox.findOrder_ = () => { throw new Error('boom'); };
+    const MAX = h.sandbox.OQ_MAX_TRIES;
+    for (let i = 0; i < MAX; i++) jobSend(h);
+    let sv = svcOf(h, r2.number);
+    const alarm1 = msgs(h).slice();
+    ok(sv.nq && sv.nq.a === MAX && sv.nq.c === 0, 'Б6 исключение в середине: запуск не падает, попытки считаются (' + MAX + '), «взят в работу» снимается', sv.nq);
+    ok(alarm1.length === 3 && chats(h) === '900,901,902' && sv.nal === 1, 'Б6 после OQ_MAX_TRIES быстрых попыток: одна тревога только владельцу и админам с ролью «Адмін» (не менеджеру), заказ остаётся в очереди', [chats(h), sv]);
+    ok(alarm1.every(m => /P-0008/.test(m.payload.text) && /Швидке оформлення замовлень/.test(m.payload.text) === false && !/Секретне|380509998877|762|Олена/.test(m.payload.text)), 'Б6 в тексте тревоги только номер заказа, без имени и телефона');
+    clear(h); jobSend(h); forceRun(h);
+    sv = svcOf(h, r2.number);
+    ok(msgs(h).length === 0 && sv.nq && sv.nq.a === MAX, 'Б6 следующие запуски в течение 10 минут заказ не трогают (редкие повторы), тревога не повторяется', sv.nq);
+    // Telegram ожил через час: сообщение дошло, без дублей
+    h.sandbox.findOrder_ = origFind;
+    h.advance(60 * 60000); jobSend(h); jobSend(h); forceRun(h);
+    sv = svcOf(h, r2.number);
+    ok(sv.nq === undefined && sv.m.length === 4 && toC(h, 762).length === 1 && [900, 901, 902, 905].every(c => toC(h, c).filter(m => /P-0008/.test(m.payload.text) && m.payload.reply_markup).length === 1) && msgs(h).length === 5, 'Б6 Telegram ожил через час: сообщение дошло всем ровно один раз (3 админа + менеджер + клиент), nq снят', [chats(h), sv]);
+  }
+  {
+    // редкие попытки: каждые 10 минут, не чаще
+    const g = queueWorld(); const r = g.post(body(g, U(763)));
+    let tries = 0; const orig = g.sandbox.findOrder_; g.sandbox.findOrder_ = (num) => { if (num === 'P-0008') { tries++; throw new Error('boom'); } return orig(num); };
+    const MAX = g.sandbox.OQ_MAX_TRIES;
+    for (let i = 0; i < MAX; i++) jobSend(g);
+    ok(tries === MAX, 'Б6 5 быстрых попыток — по одной на каждый запуск', tries);
+    for (let i = 0; i < 9; i++) { g.advance(60000); jobSend(g); }
+    ok(tries === MAX, 'Б6 в первые 9 минут после этого попыток нет', tries);
+    g.advance(2 * 60000); jobSend(g);
+    ok(tries === MAX + 1, 'Б6 через 10 минут — одна редкая попытка', tries);
+    for (let i = 0; i < 9; i++) { g.advance(60000); jobSend(g); }
+    ok(tries === MAX + 1, 'Б6 и снова пауза 10 минут', tries);
+    // зависший заказ не мешает остальным
+    const r2 = g.post(body(g, U(764))); clear(g);
+    jobSend(g);
+    ok(toC(g, 764).length === 1 && svcOf(g, r2.number).nq === undefined && svcOf(g, r.number).nq, 'Б6 зависший заказ не блокирует остальные: новый заказ уходит сразу', chats(g));
+    // 24 часа: сдаёмся
+    g.advance(24 * 3600000); jobSend(g);
+    const sv = svcOf(g, r.number);
+    ok(sv.nq === undefined && sv.nz === 1, 'Б6 через 24 часа после заказа окончательно сдался: nq снят, nz=1', sv);
+    clear(g); jobSend(g); forceRun(g);
+    ok(msgs(g).length === 0, 'Б6 после сдачи ничего не шлётся');
+    g.sandbox.findOrder_ = orig;
+  }
+  {
+    // тревога не дошла (Telegram недоступен) — nal не ставится, повторяется при следующей редкой попытке, пока не уйдёт
+    const g = queueWorld(); const r = g.post(body(g, U(765)));
+    let alarmsOk = false;
+    g.setTelegramFail((m, p) => (p.reply_markup || (!alarmsOk && /^Увага/.test(p.text))) ? { ok: false, description: 'network' } : null);
+    for (let i = 0; i < 5; i++) jobSend(g);
+    const alarmTexts = () => msgs(g).filter(m => /^Увага/.test(m.payload.text));
+    ok(svcOf(g, r.number).nal === undefined && alarmTexts().length === 3, 'Б6 тревога не дошла: отметка nal не ставится (попытка тревоги была)', [alarmTexts().length, svcOf(g, r.number)]);
+    alarmsOk = true; g.advance(11 * 60000); jobSend(g);
+    ok(svcOf(g, r.number).nal === 1 && alarmTexts().length === 6, 'Б6 при следующей редкой попытке тревога повторена и дошла (nal=1)', alarmTexts().length);
+    g.advance(11 * 60000); jobSend(g); g.advance(11 * 60000); jobSend(g);
+    ok(alarmTexts().length === 6, 'Б6 после успешной доставки тревога больше не дублируется', alarmTexts().length);
+    g.setTelegramFail(false);
+  }
+  {
+    // 10-минутная тревога «админы не получили» и тревога «не вдалося надіслати» — вместе одна
+    const g = queueWorld(); const r = g.post(body(g, U(766)));
+    g.setTelegramFail((m, p) => p.reply_markup ? { ok: false, description: 'network' } : null);
+    jobSend(g); g.advance(11 * 60000); jobSend(g);
+    const n1 = msgs(g).filter(m => /^Увага/.test(m.payload.text)).length;
+    for (let i = 0; i < 6; i++) jobSend(g);
+    ok(n1 === 3 && msgs(g).filter(m => /^Увага/.test(m.payload.text)).length === 3 && svcOf(g, r.number).nal === 1, 'Б6 поздняя тревога и тревога «после попыток» не накладываются: всего одна на главного админа', n1);
+    g.setTelegramFail(false);
+  }
+  {
+    // тексты тревоги называют пункт меню так же, как меню
+    const g = queueWorld(); const r = g.post(body(g, U(767)));
+    g.setTelegramFail((m, p) => p.reply_markup ? { ok: false, description: 'network' } : null);
+    jobSend(g); g.advance(11 * 60000); jobSend(g);
+    const t = msgs(g).find(m => /^Увага/.test(m.payload.text)).payload.text;
+    const items = []; g.call('onOpen'); const mi = g.ui.menu.items.map(i => i[0]);
+    ok(/«Швидке оформлення замовлень: увімкнути»/.test(t) && mi.indexOf('Швидке оформлення замовлень: увімкнути') >= 0 && /Увага/.test(t) && /Внимание/.test(t), 'Б6 тексты тревоги UA+RU называют пункт меню как он назван в меню PAMIR', [t, mi]);
+    g.setTelegramFail(false);
+  }
+
+  // Б13. очередь ни разу не включали — страховка и триггер выходят сразу
+  {
+    const g = world(); g.post(body(g, U(7101))); g.clearCache();
+    const r0 = JSON.stringify(g.props);
+    ['hourlyJob', 'mailJob', 'flushJob', 'orderNotifyJob', 'orderQueueSweep_'].forEach(fn => {
+      g.advance(10 * 60000); g.clearCache(); g.resetIo(); g.resetOps();
+      g.call(fn);
+      if (fn === 'orderNotifyJob' || fn === 'orderQueueSweep_') ok((g.io.byName['Замовлення'] || { reads: 0 }).reads === 0 && (g.ops.cache || 0) === 0, 'Б13 ' + fn + ' без свойства ORDER_QUEUE: ни чтения «Замовлення», ни кэша', [g.io.byName['Замовлення'], g.ops.cache]);
+      else ok(true, 'Б13 ' + fn + ' не падает');
+    });
+    // три задания: ни одного чтения листа «Замовлення» из очереди — считаем вызовом самой страховки
+    const names = [];
+    const orig = g.sandbox.orderQueueRun_; g.sandbox.orderQueueRun_ = (...a) => { names.push('run'); return orig(...a); };
+    ['hourlyJob', 'mailJob', 'flushJob'].forEach(fn => { g.advance(10 * 60000); g.clearCache(); g.call(fn); });
+    ok(names.length === 0, 'Б13 hourlyJob, mailJob, flushJob без свойства: очередь не просматривается ни разу', names);
+    g.sandbox.orderQueueRun_ = orig;
+    g.props.ORDER_QUEUE = '0';
+    const h = world({ props: { ORDER_QUEUE: '0' } }); h.cache.oq = '1';
+    let called = 0; const o2 = h.sandbox.orderQueueRun_; h.sandbox.orderQueueRun_ = (...a) => { called++; return o2(...a); };
+    h.call('flushJob');
+    ok(called === 1, 'Б13 при ORDER_QUEUE = «0» (выключили) страховка продолжает работать', called);
+  }
+
+  // Б14. отметки не записались (блокировка занята) — повтор записи, без повторной отправки
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(7111)));
+    let first = true;
+    g.setTelegramFail(() => { if (first) { first = false; g.setLockBusy(20000, 0); } return null; });
+    jobSend(g);
+    g.setLockBusy(0, 0); g.setTelegramFail(false); g.advance(g.sandbox.OQ_CLAIM_MS + 1000);
+    ok(msgs(g).length === 4 && svcOf(g, r.number).nq && svcOf(g, r.number).m === undefined, 'Б14 блокировка занята во время записи отметок: письма ушли, отметок в ячейке нет, заказ остаётся в очереди', [msgs(g).length, svcOf(g, r.number)]);
+    ok(g.sandbox.__errors.some(e => /отметки отправки не записаны/.test(e) && /P-0008/.test(e)) && !g.sandbox.__errors.some(e => /7111|Олена|380501234567/.test(e)), 'Б14 в журнале запись об этом (только номер заказа, без личных данных)');
+    ok(!!g.cache['oqd_P-0008'], 'Б14 отметки сохранены в кэше (oqd_) до следующего запуска');
+    clear(g); jobSend(g);
+    const sv = svcOf(g, r.number);
+    ok(msgs(g).length === 0 && sv.m.length === 3 && sv.cn === 1 && sv.nq === undefined && !g.cache['oqd_P-0008'], 'Б14 следующий запуск дописал отметки из кэша и никому не послал повторно, nq снят', [chats(g), sv]);
+    // кэш потерян — остаточный риск: повторная отправка тем, у кого нет отметки
+    const h = queueWorld(); const rh = h.post(body(h, U(7112)));
+    let f2 = true; h.setTelegramFail(() => { if (f2) { f2 = false; h.setLockBusy(20000, 0); } return null; });
+    jobSend(h); h.setLockBusy(0, 0); h.setTelegramFail(false); h.advance(h.sandbox.OQ_CLAIM_MS + 1000);
+    delete h.cache['oqd_P-0008']; clear(h); jobSend(h);
+    ok(msgs(h).length === 4 && svcOf(h, rh.number).nq === undefined, 'Б14 остаточный риск: кэш вытеснен — получатели без отметки получают второй раз (4 сообщения), больше не повторяется', msgs(h).length);
+  }
+
+  // Б15. tgAll_: fetchAll бросает исключение — фактическое поведение
+  {
+    const mkThrow = (g, afterSend) => { const U0 = g.sandbox.UrlFetchApp; const orig = U0.fetchAll; U0.fetchAll = reqs => { if (afterSend) orig(reqs); throw new Error('fetchAll boom'); }; };
+    [[false, 'до отправки'], [true, 'после отправки']].forEach(([after, label]) => {
+      const g = world(); mkThrow(g, after);
+      const r = g.post(body(g, U(7121)));
+      const sv = svcOf(g, r.number);
+      const perAdmin = [900, 901, 902].map(c => toC(g, c).length);
+      console.log('    tgAll_ (fetchAll бросает ' + label + '), прямой режим: сообщений на админа ' + perAdmin.join('/') + ', в svc.m ' + (sv.m || []).length + ' записей (id ' + (sv.m || []).map(x => x[1]).join(',') + ')');
+      ok(r.ok && perAdmin.every(n => n === (after ? 2 : 1)) && sv.m.length === 3, 'Б15 прямой режим, fetchAll бросает ' + label + ': каждый админ получает ' + (after ? '2 сообщения (дубль)' : '1 сообщение') + ', в svc.m по одной записи на админа', [perAdmin, sv.m]);
+      const q = queueWorld(); mkThrow(q, after);
+      const rq = q.post(body(q, U(7122))); jobSend(q);
+      const sq = svcOf(q, rq.number); const pq = [900, 901, 902].map(c => toC(q, c).length);
+      console.log('    tgAll_ (fetchAll бросает ' + label + '), очередь: сообщений на админа ' + pq.join('/') + ', в svc.m ' + (sq.m || []).length + ' записей');
+      ok(pq.every(n => n === (after ? 2 : 1)) && sq.m.length === 3 && sq.nq === undefined, 'Б15 очередь, fetchAll бросает ' + label + ': то же поведение, повторов следующим запуском нет', [pq, sq]);
+    });
+  }
+
+  // Б16. окно просмотра очереди — OQ_SCAN_ROWS = 100 последних строк
+  {
+    const mkRows = (g, n) => { const sh = g.sheets['Замовлення']; const w = sh.rows[0].length; for (let i = 0; i < n; i++) { const row = Array(w).fill(''); row[0] = 'X-' + i; sh.rows.push(row); } };
+    const g = queueWorld(); const r = g.post(body(g, U(7131))); mkRows(g, 99); jobSend(g);
+    ok(toC(g, 7131).length === 1, 'Б16 заказ с nq и ещё 99 строк после него — в окне просмотра, уходит');
+    const h = queueWorld(); const r2 = h.post(body(h, U(7132))); mkRows(h, 100); jobSend(h);
+    ok(toC(h, 7132).length === 0 && hasNq(h, r2.number), 'Б16 заказ с nq и 100 строк после него — вне окна (OQ_SCAN_ROWS = ' + h.sandbox.OQ_SCAN_ROWS + '): очередь его не видит', msgs(h).length);
+  }
+
+  // Б7. админы не получили > 10 минут
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(771)));
+    g.setTelegramFail((m, p) => p.reply_markup ? { ok: false, description: 'network' } : null);
+    jobSend(g); clear(g);
+    g.advance(11 * 60000);
+    jobSend(g); jobSend(g); jobSend(g);
+    const alarms = toC(g, 900).filter(m => /^Увага/.test(m.payload.text));
+    ok(alarms.length === 1 && /P-0008/.test(alarms[0].payload.text) && toC(g, 901).filter(m => /^Увага/.test(m.payload.text)).length === 1, 'Б7 админы не получили > 10 минут: одна тревога на человека, не повторяется (3 запуска)', alarms.length);
+    g.setTelegramFail(false); jobSend(g);
+    ok(svcOf(g, r.number).m.length === 3 && svcOf(g, r.number).nq === undefined, 'Б7 после починки сообщения доходят');
+  }
+
+  // Б8. триггер умер
+  {
+    const g = world(); g.call('menuOrderQueueOn'); g.clearCache(); g.resetOps();
+    const r = g.post(body(g, U(781)));
+    const sv = svcOf(g, r.number);
+    ok(r.ok && g.urlStats.batches === 1 && chats(g) === '900,901,902,781' && sv.nq === undefined && sv.m.length === 3, 'Б8 нет метки oq_hb: заказ шлёт сообщения сам, как в режиме А', [chats(g), sv]);
+    g.call('orderNotifyJob');
+    const r2 = g.post(body(g, U(782)));
+    ok(svcOf(g, r2.number).nq && !!g.cache.oq_hb, 'Б8 триггер ожил (oq_hb есть) — снова очередь');
+  }
+
+  // Б9. страховка
+  {
+    ['hourlyJob', 'mailJob', 'flushJob'].forEach((fn, i) => {
+      const g = queueWorld(); const r = g.post(body(g, U(791 + i)));
+      const mine = () => msgs(g).filter(m => /P-0008/.test(m.payload.text)).length;
+      g.call(fn);
+      ok(mine() === 0 && hasNq(g, r.number), 'Б9 ' + fn + ': заказ моложе 2 минут не трогается');
+      g.advance(g.sandbox.OQ_STALE_MS + 5000); g.call(fn);
+      ok(mine() === 4 && !hasNq(g, r.number), 'Б9 ' + fn + ': заказ старше 2 минут досылается (3 админа + клиент)', mine());
+    });
+  }
+
+  // Б10. выключение
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(801))); const r1 = g.post(body(g, U(802)));
+    g.call('menuOrderQueueOff');
+    ok(g.triggers.filter(t => t === 'orderNotifyJob').length === 0 && g.props.ORDER_QUEUE === '0', 'Б10 триггер снят, ORDER_QUEUE=0');
+    ok(!hasNq(g, r.number) && !hasNq(g, r1.number) && toC(g, 801).length === 1 && toC(g, 802).length === 1 && toC(g, 900).length === 2, 'Б10 очередь дослана сразу (оба заказа)', chats(g));
+    clear(g); g.resetOps();
+    const r2 = g.post(body(g, U(803)));
+    ok(r2.ok && g.urlStats.batches === 1 && !hasNq(g, r2.number) && toC(g, 803).length === 1, 'Б10 новые заказы идут прямым путём');
+    ok(g.ui.alerts.some(a => /Швидке оформлення вимкнено/.test(a)), 'Б10 владелец получает пояснение (UA/RU)');
+  }
+
+  // Б11. строки удалены / сдвинуты
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(811)));
+    g.sheets['Замовлення'].rows.splice(2, 1); // удалили строку выше
+    jobSend(g);
+    ok(chats(g) === '900,901,902,811' && /P-0008/.test(msgs(g)[0].payload.text) && svcOf(g, r.number).nq === undefined && svcOf(g, r.number).m.length === 3, 'Б11 удалена строка выше: сообщения по правильному заказу, отметки в нужной строке', chats(g));
+    const h = queueWorld(); const ra = h.post(body(h, U(812))); h.post(body(h, U(813), { items: [{ id: 'NUT-001', g: 250, q: 1 }], total: 140 }));
+    h.sheets['Замовлення'].rows.splice(h.sheets['Замовлення'].rows.findIndex(x => x[0] === ra.number), 1); // удалили первый заказ очереди вручную
+    let threw = false; try { jobSend(h); } catch (e) { threw = true; }
+    ok(!threw && toC(h, 813).length === 1 && toC(h, 812).length === 0 && /P-0009/.test(toC(h, 900)[0].payload.text), 'Б11 строку заказа удалили вручную: запуск не падает, второй заказ уходит', chats(h));
+    const k = queueWorld(); const rk = k.post(body(k, U(814)));
+    const sh = k.sheets['Замовлення']; const col = k.call('orderCols_', sh);
+    const res = k.call('orderSvcUpdate_', sh, col, rk.number, 3, cur => { cur.zz = 1; return true; }); // подсказка строки устарела
+    ok(res && res.row === sh.rows.findIndex(x => x[0] === rk.number) + 1 && svcOf(k, rk.number).zz === 1 && JSON.stringify(sh.rows[2]).indexOf('"zz"') < 0, 'Б11 устаревшая подсказка строки: запись идёт в строку заказа по номеру', res && res.row);
+  }
+
+  /* ---------- В. замер ---------- */
+  console.log('  В. замер PERF_LOG');
+  {
+    const run = (props, mode) => {
+      const g = mode === 'queue' ? queueWorld({ props }) : world({ props }); const lines = [];
+      g.sandbox.console.log = (...a) => { lines.push(a.join(' ')); };
+      const r = g.post(body(g, U(7777777), { name: 'Приватне Імя', phone: '+380670001122', comment: 'Мій секретний коментар', delivery: 'np', city: 'Дніпро', branch: '77' }));
+      return { g, lines, r };
+    };
+    const a = run({ PERF_LOG: '1' }), b = run({});
+    const mine = a.lines.filter(l => /^PERF order /.test(l));
+    ok(mine.length === 1, 'В1 PERF_LOG=1: одна строка «PERF order …» на заказ', a.lines);
+    const re = /^PERF order (direct|queued) \d+ ms \| ([a-z:_]+ \d+)( \| [a-z:_]+ \d+)*( \| ([a-z_]+=\d+)( [a-z_]+=\d+)*)?$/;
+    ok(re.test(mine[0]), 'В1 в строке только названия этапов и числа', mine[0]);
+    const all = a.lines.join('\n');
+    ok(!/Приватне|Імя|0670001122|Дніпро|секретн|7777777|initData|TEST_TOKEN|123456:|hash=|900|Курага/.test(all), 'В1 нет имени, телефона, адреса, комментария, id, initData, токена', all);
+    ok(b.lines.filter(l => /^PERF/.test(l)).length === 0, 'В2 без PERF_LOG ничего не пишется');
+    ok(JSON.stringify(a.r) === JSON.stringify(b.r) && a.r.ok, 'В3 PERF_LOG не меняет ответ заказа', [a.r, b.r]);
+    const c = run({ PERF_LOG: '1' }, 'queue'); const cm = c.lines.filter(l => /^PERF order /.test(l));
+    ok(cm.length === 1 && /^PERF order queued /.test(cm[0]) && re.test(cm[0]), 'В4 в режиме очереди: одна строка «PERF order queued …»', cm);
+    c.g.call('orderNotifyJob');
+    ok(c.lines.filter(l => /^PERF order-job /.test(l)).length === 1 && !/Приватне|0670001122|7777777/.test(c.lines.join('\n')), 'В5 запуск очереди: одна строка «PERF order-job …», без личных данных', c.lines.filter(l => /^PERF/.test(l)));
+    ok(c.r.ok && JSON.stringify(c.r) === JSON.stringify(a.r), 'В6 ответ заказа в очереди и без неё одинаков (номер, подарки)', [c.r, a.r]);
+  }
+
+  /* ---------- Г. цифры ---------- */
+  console.log('  Г. цифры на один заказ с 3 админами');
+  {
+    const measure = (g, fn) => { g.resetOps(); g.resetIo(); fn(); return { telegram: g.urlStats.telegram, trips: g.urlStats.trips, batches: g.urlStats.batches, writes: g.io.writes, flush: g.ops.flush || 0 }; };
+    let oldDir = null;
+    try {
+      const root = path.join(__dirname, '..');
+      oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pamir-old-b4o-'));
+      cp.execSync('git ls-tree --name-only 41fdc50 apps-script/', { cwd: root }).toString().split(/\r?\n/).filter(n => /\.gs$/.test(n)).forEach(n => {
+        fs.writeFileSync(path.join(oldDir, path.basename(n)), cp.execSync('git show 41fdc50:' + n, { cwd: root, maxBuffer: 64 * 1024 * 1024 }));
+      });
+    } catch (e) { oldDir = null; }
+    const mk = (queue, old) => { const s = seed(); s.props.ADMIN_CHAT_IDS = '900,901,902'; const g = createGas(old ? path.join(oldDir, 'Code.gs') : CODE, s); if (queue) g.call('menuOrderQueueOn'); return g; };
+    const out = {};
+    if (oldDir) { const g = mk(false, true); out.old = measure(g, () => { g.post(body(g, U(901))); }); }
+    const gd = mk(false); out.direct = measure(gd, () => { gd.post(body(gd, U(902))); });
+    const gq = mk(true);
+    out.queueOrder = measure(gq, () => { gq.post(body(gq, U(903))); });
+    out.queueJob = measure(gq, () => { gq.call('orderNotifyJob'); });
+    const line = (n, s) => '    ' + n + ': Telegram ' + s.telegram + ', поездок в сеть ' + s.trips + ', fetchAll ' + s.batches + ', записей в лист ' + s.writes + ', flush ' + s.flush;
+    console.log('  ЦИФРЫ (заказ, 3 админа + клиент):');
+    if (out.old) console.log(line('до Б4 (41fdc50)', out.old));
+    console.log(line('сейчас, прямой', out.direct));
+    console.log(line('очередь, сам заказ', out.queueOrder));
+    console.log(line('очередь, запуск триггера (в фоне)', out.queueJob));
+    ok(!out.old || (out.old.telegram === 4 && out.old.trips === 4), 'Г до Б4: по одному запросу на админа и клиента (4 запроса, 4 поездки)', out.old);
+    ok(out.direct.telegram === 4 && out.direct.trips === 2 && out.queueOrder.telegram === 0 && out.queueOrder.trips === 0, 'Г сейчас: прямой — 4 запроса в 2 поездки; очередь — 0 запросов в заказе', out);
+    ok(!out.old || out.direct.flush <= out.old.flush, 'Г вызовов flush на заказ не больше, чем до Б4', [out.old && out.old.flush, out.direct.flush]);
+  }
+})();
+
+/* ==================================================================================================================== */
+/* Выпуск Б4 · текст комиссии наложенного платежа в настройках (cod_note_ua / cod_note_ru)                              */
+/* ==================================================================================================================== */
+console.log('Выпуск Б4 · текст комиссии наложенного платежа в настройках');
+{
+  const NB = ' ';
+  const UA1 = 'Нова пошта бере комісію за накладений платіж — зазвичай 20' + NB + '₴ + 2' + NB + '% від суми.';
+  const UA2 = 'Оплата на рахунок ФОП — без цієї комісії.';
+  const RU1 = 'Новая почта берёт комиссию за наложенный платёж — обычно 20' + NB + '₴ + 2' + NB + '% от суммы.';
+  const RU2 = 'Оплата на счёт ФОП — без этой комиссии.';
+  const FOP = { FOP_NAME: 'ФОП Тестовий', FOP_IBAN: 'UA' + '1'.repeat(27), FOP_CODE: '1234567890' };
+  const mk = (props, rows) => {
+    const s = seed();
+    Object.assign(s.props, props || {});
+    if (rows) s.sheets['Налаштування'] = [['Ключ', 'Значення', 'Опис']].concat(rows.map(r => [r[0], r[1], '']));
+    return createGas(CODE, s);
+  };
+  const shop = g => { g.clearCache(); return g.get({ action: 'catalog' }).shop; };
+
+  {
+    const s = shop(mk(FOP));
+    ok(s.codNote && s.codNote.ua === UA1 + ' ' + UA2 && s.codNote.ru === RU1 + ' ' + RU2, 'ключей нет, ФОП доступен (card и cod): обе фразы UA и RU дословно, с неразрывными пробелами', s.codNote);
+    ok(s.codNote.ua.indexOf('20' + NB + '₴') > 0 && s.codNote.ua.indexOf('2' + NB + '%') > 0 && s.codNote.ru.indexOf('20' + NB + '₴') > 0, 'NBSP между «20» и «₴», «2» и «%»');
+    ok(s.fop === 1, 'ФОП включён (shop.fop = 1)');
+  }
+  {
+    const s = shop(mk());
+    ok(s.codNote && s.codNote.ua === UA1 && s.codNote.ru === RU1 && !s.fop, 'ключей нет, ФОП выключен: только первая фраза', s.codNote);
+    const s2 = shop(mk(FOP, [['pay_card', 'ні']]));
+    ok(s2.fop === 1 && !s2.pay.includes('card') && s2.codNote.ua === UA1 && s2.codNote.ru === RU1, 'ключей нет, ФОП включён, но способа «card» нет: только первая фраза', [s2.pay, s2.codNote]);
+    const s3 = shop(mk({ FOP_NAME: 'ФОП', FOP_IBAN: 'UA12', FOP_CODE: '1' }));
+    ok(s3.codNote.ua === UA1 && s3.codNote.ru === RU1, 'ФОП с неверным IBAN (не включён): только первая фраза');
+  }
+  {
+    const s = shop(mk(FOP, [['pay_cod', 'ні']]));
+    ok(s.codNote === undefined && !('codNote' in s), 'наложенный платёж выключен в магазине: поля codNote нет', s.pay);
+    const s2 = shop(mk(FOP, [['pay_cod', 'ні'], ['cod_note_ua', 'Текст'], ['cod_note_ru', 'Текст']]));
+    ok(!('codNote' in s2), 'и заданный текст при выключенном наложенном платеже не отдаётся');
+  }
+  {
+    const long = 'Д'.repeat(400);
+    const s = shop(mk(FOP, [['cod_note_ua', '   Свій текст UA   '], ['cod_note_ru', long]]));
+    ok(s.codNote.ua === 'Свій текст UA' && s.codNote.ru === 'Д'.repeat(300) && Object.keys(s.codNote).join() === 'ua,ru', 'ключ есть с текстом: ровно он (обрезка пробелов, предел 300 знаков), условной фразы нет', [s.codNote.ua, s.codNote.ru.length]);
+    const s2 = shop(mk(FOP, [['cod_note_ua', 'A <b>"x"</b> & \'y\' </script>'], ['cod_note_ru', 'Строка\nс переносом\tи табом']]));
+    ok(s2.codNote.ua === 'A <b>"x"</b> & \'y\' </script>' && s2.codNote.ru === 'Строка\nс переносом и табом', 'HTML-символы и кавычки отдаются как есть (JSON цел, экранирует витрина); перенос строки сохраняется (как у соседних текстовых настроек), таб становится пробелом', s2.codNote);
+    const raw = (() => { const g = mk(FOP, [['cod_note_ua', '<img src=x onerror=1>']]); g.clearCache(); return g.call('doGet', { parameter: { action: 'catalog' } }).text; })();
+    ok(JSON.parse(raw).shop.codNote.ua === '<img src=x onerror=1>', 'ответ каталога — валидный JSON с этим текстом');
+  }
+  {
+    const s = shop(mk(FOP, [['cod_note_ua', '']]));
+    ok(s.codNote.ua === undefined && s.codNote.ru === RU1 + ' ' + RU2 && Object.keys(s.codNote).join() === 'ru', 'ключ UA есть и пуст — UA нет; RU (ключа нет) — по умолчанию', s.codNote);
+    const s2 = shop(mk(FOP, [['cod_note_ua', '  '], ['cod_note_ru', '']]));
+    ok(!('codNote' in s2), 'оба пусты: поля shop.codNote нет вовсе', s2.codNote);
+    const s3 = shop(mk(FOP, [['cod_note_ua', 'Тільки UA'], ['cod_note_ru', '']]));
+    ok(JSON.stringify(s3.codNote) === JSON.stringify({ ua: 'Тільки UA' }), 'только UA задан, RU пуст: в объекте только ua', s3.codNote);
+    const s4 = shop(mk(FOP, [['cod_note_ru', 'Только RU'], ['cod_note_ua', '']]));
+    ok(JSON.stringify(s4.codNote) === JSON.stringify({ ru: 'Только RU' }), 'только RU задан: только ru');
+  }
+  {
+    // два одинаковых ключа: действует последний (как у остальных настроек)
+    const s = shop(mk(FOP, [['cod_note_ua', 'Первый'], ['cod_note_ua', 'Последний'], ['cod_note_ru', 'R']]));
+    ok(s.codNote.ua === 'Последний', 'при двух одинаковых ключах действует последний, как у других настроек');
+  }
+  {
+    // пункт меню
+    const g = mk(FOP);
+    g.call('onOpen');
+    ok(g.ui.menu.items.some(i => i[0] === 'Налаштування: додати текст про комісію накладеного платежу' && i[1] === 'menuCodNoteSetup'), 'пункт меню PAMIR «Налаштування: додати текст про комісію накладеного платежу»');
+    const before = g.get({ action: 'catalog' }).shop.codNote; // кэш каталога прогрет
+    const res = g.call('menuCodNoteSetup');
+    const rows = g.sheets['Налаштування'].rows;
+    const ua = rows.find(r => r[0] === 'cod_note_ua'), ru = rows.find(r => r[0] === 'cod_note_ru');
+    ok(res.added.join() === 'cod_note_ua,cod_note_ru' && ua[1] === UA1 + ' ' + UA2 && ru[1] === RU1 + ' ' + RU2 && rows[0].join() === 'Ключ,Значення,Опис', 'пункт меню создаёт лист и обе строки с полным текстом (обе фразы, NBSP)', rows);
+    ok(g.get({ action: 'catalog' }).shop.codNote.ua === UA1 + ' ' + UA2 && before.ua === UA1 + ' ' + UA2, 'каталог из кэша после пункта меню без ручного сброса отдаёт актуальное');
+    // владелец изменил — повторное нажатие не перезаписывает
+    ua[1] = 'Мій текст'; ru[1] = '';
+    const res2 = g.call('menuCodNoteSetup');
+    ok(res2.added.length === 0 && ua[1] === 'Мій текст' && ru[1] === '' && rows.filter(r => r[0] === 'cod_note_ua').length === 1, 'повторное нажатие: изменённые и пустые значения не перезаписываются, строки не дублируются', rows);
+    // ручная правка в таблице доходит до витрины (onEdit помечает каталог)
+    g.get({ action: 'catalog' });
+    ua[1] = 'Правка в таблице';
+    g.call('onEdit', { range: { getSheet: () => ({ getName: () => 'Налаштування' }) } });
+    ok(g.get({ action: 'catalog' }).shop.codNote.ua === 'Правка в таблице', 'ручная правка настройки в таблице (onEdit) доходит до витрины так же, как другие настройки');
+    // частично: одна строка есть, другой нет
+    const h = mk(FOP, [['cod_note_ru', 'Вручную']]);
+    const r3 = h.call('menuCodNoteSetup');
+    ok(r3.added.join() === 'cod_note_ua' && h.sheets['Налаштування'].rows.find(r => r[0] === 'cod_note_ru')[1] === 'Вручную', 'добавляется только недостающий ключ, существующий не трогается');
+    // панель настроек не затирает строки cod_note_*
+    const p = mk(FOP, [['cod_note_ua', 'Не затирать'], ['cod_note_ru', '']]);
+    const sv = p.call('saveSettings_', { min_order: '100' });
+    const prow = p.sheets['Налаштування'].rows;
+    ok(sv.ok && prow.filter(r => r[0] === 'cod_note_ua').length === 1 && prow.find(r => r[0] === 'cod_note_ua')[1] === 'Не затирать' && prow.filter(r => r[0] === 'cod_note_ru').length === 1, 'сохранение настроек из админ-панели сохраняет строки cod_note_* (и их значения)', prow.filter(r => /cod_note/.test(r[0])));
+    ok(!JSON.stringify(sv.fields).includes('cod_note'), 'в админ-панель эти ключи не попадают (панель их не знает)');
+    // служебное в ответ не попадает
+    const text = JSON.stringify(shop(mk(FOP)));
+    ok(!/СЕКРЕТ|1234567890|TEST_TOKEN|UA1{27}/.test(text), 'в ответе каталога нет реквизитов ФОП и служебных данных');
+  }
+}
+
 console.log('\n' + pass + ' ok, ' + fail + ' fail');
 process.exit(fail ? 1 : 0);

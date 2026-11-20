@@ -426,7 +426,8 @@
 
   var store = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* хранилище недоступно */ } }
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* хранилище недоступно */ } },
+    del: function (k) { try { localStorage.removeItem(k); } catch (e) { /* хранилище недоступно */ } }
   };
 
   /** Ключ попытки заказа живёт в хранилище устройства до ответа сервера (сервер помнит его 6 часов). */
@@ -640,10 +641,11 @@
     var box = staleBox = { ctrl: null, own: false };
     fetchCatalog(catalogUrl(), 10000, box).then(function (data) {
       if (box.own || gen !== catGen || staleBox !== box) return;
+      var cleared = cdvApply(data.shop);
       var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
       var old = state.catalog ? JSON.stringify({ c: state.catalog.categories, p: state.catalog.products, s: state.catalog.shop }) : '';
       store.set(CACHE_KEY, JSON.stringify({ url: cfg.API_URL, data: data }));
-      if (fresh === old) return;
+      if (fresh === old && !cleared) return;
       var y = window.scrollY || 0;
       var openId = state.sheet ? state.sheet.id : '', before = openId && state.catalog && state.catalog.byId[openId] ? JSON.stringify(state.catalog.byId[openId]) : '';
       if (state.sheet) {
@@ -658,6 +660,65 @@
         if ((window.scrollY || 0) !== y) window.scrollTo(0, y);
       }
     }).catch(function () { /* страховка не сработала — покупатель видит каталог от Worker */ });
+  }
+
+  /**
+   * Версия данных покупателя (shop.cdv, необязательная строка). Очистка нужна ОДИН раз на покупателя, а не на устройство, поэтому версия хранится
+   * и на телефоне (localStorage 'pamir_cdv'), и в Telegram CloudStorage (ключ 'cdv'). Схема:
+   *  - на телефоне та же версия, нет shop.cdv (старый бэкенд) или решение уже принято в этой сессии — ничего;
+   *  - облака нет — как раньше: версия на телефоне не совпала, стираем данные на телефоне и в памяти (один раз за сессию, cdvStarted);
+   *  - облако есть — сначала читаем 'cdv' (до 3 с): та же версия, телефон без метки — новое устройство, ничего не стираем (корзина, форма, «Обране» приедут из облака);
+   *    та же версия, на телефоне старая — стираем только локальное и заново берём данные из облака; в облаке нет метки или другая версия — полная очистка
+   *    (телефон, память, removeItems) и запись 'cdv' в облако; ошибка или тишина облака — как без облака, но облако не трогаем (вслепую не стираем);
+   *  - cdvDone ставится в момент очистки с облаком/без него: поздние ответы cloud getItem после этого отбрасываются (читатели проверяют cdvDone); без очистки он пуст — ответы принимаются.
+   * Язык, тема, did, кэш каталога, паузы Новой почты, админские настройки не трогаем. Берём только из свежего ответа сервера.
+   * Возвращает true, если очистка уже сделана синхронно (вызывающий перерисует экран); при чтении облака очистка идёт позже и перерисовывает экран сама.
+   */
+  var CDV_KEY = 'pamir_cdv', cdvDone = false, cdvStarted = '';
+  function cdvWipe(v, opt) {
+    if (!opt.keepLoads) cdvDone = v; // поздние ответы облака не вернут старое
+    [CART_KEY, FORM_KEY, RID_KEY, FAV_KEY, SEEN_KEY, SEARCH_KEY, SUBS_KEY, NOTICE_KEY].forEach(function (k) { store.del(k); });
+    if (opt.cloud) {
+      try {
+        if (cloudOk() && tg.CloudStorage.removeItems) tg.CloudStorage.removeItems(['cart', 'form', 'fav', 'seen', 'notice'], function () {});
+        if (cloudOk()) tg.CloudStorage.setItem('cdv', v, function () {});
+      } catch (e) { /* облако недоступно */ }
+    }
+    try { clearTimeout(cartSync.timer); } catch (e) { /* таймера нет */ }
+    state.cart = { t: 0, i: [] };
+    state.form = { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', giftNote: '', npType: 'branch', point: '', ifOut: 'call', cityRef: '', cityRefFor: '' };
+    if (tgUser) state.form.name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').slice(0, 60);
+    state.rid = '';
+    favs = []; seen = []; searches = []; subs = [];
+    noticeSeen.local = ''; noticeSeen.cloud = ''; noticeSeen.session = ''; noticeSeen.cloudReady = true;
+    store.set(CDV_KEY, v);
+    if (state.view === 'cart' || state.view === 'checkout') state.view = 'catalog'; // корзина пуста — оформлять нечего
+  }
+  function cdvApply(shop) {
+    var v = shop && typeof shop.cdv === 'string' ? shop.cdv.trim().slice(0, 40) : '';
+    if (!v || v === store.get(CDV_KEY) || cdvStarted === v) return false;
+    cdvStarted = v; // даже если хранилище сломано — в этой сессии решение принимается один раз
+    var hadLocal = !!store.get(CDV_KEY);
+    var canRead = false;
+    try { canRead = !!(cloudOk() && tg.CloudStorage.getItem); } catch (e) { canRead = false; }
+    if (!canRead) { cdvWipe(v, { cloud: false }); return true; }
+    var settled = false, tm = null;
+    var decide = function (err, val) {
+      if (settled) return;
+      settled = true; clearTimeout(tm);
+      if (err) cdvWipe(v, { cloud: false });                     // облако не ответило как надо: как без облака, облако не стираем
+      else if (val === v) {
+        if (!hadLocal) { store.set(CDV_KEY, v); return; }         // новое устройство того же покупателя: ничего не стираем
+        cdvWipe(v, { cloud: false, keepLoads: true });            // на телефоне была старая версия, в облаке уже новая: чистим только телефон
+        loadCart(); loadLists(); loadFormCloud();                 // и заново берём данные из облака
+      } else cdvWipe(v, { cloud: true });                        // первая очистка покупателя: везде и метка в облако
+      try { renderAll(); } catch (e) { /* экран ещё не готов */ }
+    };
+    try {
+      tg.CloudStorage.getItem('cdv', function (err, val) { decide(err, typeof val === 'string' ? val : ''); });
+      tm = setTimeout(function () { decide(new Error('timeout')); }, 3000);
+    } catch (e) { decide(e); }
+    return false;
   }
 
   function loadCatalog(direct) {
@@ -681,12 +742,13 @@
       .then(function (data) {
         if (gen !== catGen) return; // за это время началась более новая загрузка
         if (state.offline) { state.offline = false; renderBanner(); }
+        var cleared = cdvApply(data.shop);
         var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
         var old = state.catalog
           ? JSON.stringify({ c: state.catalog.categories, p: state.catalog.products, s: state.catalog.shop })
           : '';
         if (cfg.API_URL) store.set(CACHE_KEY, JSON.stringify({ url: cfg.API_URL, data: data }));
-        if (fresh !== old) {
+        if (fresh !== old || cleared) {
           setCatalog(data);
           renderAll();
         }
@@ -745,7 +807,7 @@
     // Новый телефон: избранное и просмотренное приезжают из Telegram, если здесь ещё пусто.
     try {
       tg.CloudStorage.getItems(['fav', 'seen'], function (err, values) {
-        if (err || !values) return;
+        if (err || !values || cdvDone) return;
         var changed = false;
         function take(cloudKey, max) {
           try {
@@ -1169,7 +1231,7 @@
 
   function loadNoticeFlag() {
     function done(value) {
-      if (noticeSeen.cloudReady) return;
+      if (noticeSeen.cloudReady || cdvDone) return;
       noticeSeen.cloud = typeof value === 'string' ? value : '';
       noticeSeen.cloudReady = true;
       renderBanner();
@@ -2000,7 +2062,7 @@
     if (!cloudOk()) return;
     try {
       tg.CloudStorage.getItem('cart', function (err, value) {
-        var cloud = err ? null : parseCart(value);
+        var cloud = err || cdvDone ? null : parseCart(value);
         // Берём копию из Telegram, только если она новее той, что на телефоне.
         if (cloud && cloud.t > state.cart.t) {
           state.cart = cloud;
@@ -2508,7 +2570,8 @@
 
       '<fieldset class="group"><legend class="label">' + esc(t('payment')) + '</legend><div class="opts opts--col">' +
       payMethods().map(function (k) { return option('pay', k, '', payName(k)); }).join('') + '</div>' +
-      '<p class="info info__muted" id="cardNote">' + esc(t(shopInfo().fop ? 'payCardNoteFop' : 'payCardNote')) + '</p></fieldset>' +
+      '<p class="info info__muted" id="cardNote">' + esc(t(shopInfo().fop ? 'payCardNoteFop' : 'payCardNote')) + '</p>' +
+      '<p class="info info__muted" id="codNote" hidden></p></fieldset>' +
 
       '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
       '<textarea class="input input--area" id="f-comment" name="comment" rows="3" maxlength="300" placeholder="' + esc(t('commentPh')) + '">' + esc(f.comment) + '</textarea></div>' +
@@ -2537,6 +2600,19 @@
       saveForm();
     }
     document.getElementById('cardNote').hidden = state.form.pay !== 'card';
+    // Комиссия Новой почты за наложенный платёж: только текст, сумму заказа не меняет. Текст приходит с сервера (shop.codNote = { ua, ru }, необязательно): для RU при пустом ru берётся ua; нет текста (в том числе у старого бэкенда) — строки нет.
+    var codNote = document.getElementById('codNote');
+    if (codNote) {
+      var showCod = np && state.form.pay === 'cod';
+      var cn = shopInfo().codNote, text = '';
+      if (showCod && cn && typeof cn === 'object') {
+        text = typeof cn[state.lang] === 'string' ? cn[state.lang].trim() : '';
+        if (!text && state.lang === 'ru' && typeof cn.ua === 'string') text = cn.ua.trim();
+        text = text.slice(0, 300);
+      }
+      codNote.textContent = text; // только textContent: разметка из настроек не исполняется
+      codNote.hidden = !text;
+    }
     npCostSync();
   }
 
@@ -4652,6 +4728,45 @@
       return res;
     });
   }
+  /* --- справочник Новой почты через Worker (config NP_URL): города и список отделений города. Без initData и данных покупателя — только q или city.
+   *  Любой сбой Worker (nodata, не 200, не JSON, ok:false, таймаут, сеть, старый Worker с 404) — тот же запрос уходит в Apps Script, а Worker 10 минут не дёргаем.
+   *  Отдельная метка от общей паузы 'pamir_nppause_v1' (та — про лимит Нової пошти и касается только Apps Script). ok:true с пустым списком — настоящий ответ. --- */
+  var NP_WORKER_TIMEOUT = 4000;
+  var npWorkerUntil = Number(ssGet('pamir_npworker_v1')) || 0;
+  function npWorkerBase() {
+    var u = String(cfg.NP_URL || '').replace(/\/+$/, '');
+    return /^https?:\/\//.test(u) ? u : '';
+  }
+  function npWorkerOn() { return !!npWorkerBase() && Date.now() >= npWorkerUntil; }
+  function npWorkerFail() {
+    npWorkerUntil = Date.now() + NP_PAUSE_MS;
+    ssSet('pamir_npworker_v1', String(npWorkerUntil));
+  }
+  /** Общая пауза Apps Script не должна глушить поля, пока работает Worker. */
+  function npBlocked() { return npPaused() && !npWorkerOn(); }
+  function npWorkerGet(path) {
+    return new Promise(function (resolve, reject) {
+      var done = false, ctl = null;
+      try { ctl = window.AbortController ? new AbortController() : null; } catch (e) { ctl = null; }
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        try { if (ctl) ctl.abort(); } catch (e) { /* уже закончено */ }
+        reject(new Error('timeout'));
+      }, NP_WORKER_TIMEOUT);
+      fetch(npWorkerBase() + path, ctl ? { signal: ctl.signal } : undefined)
+        .then(function (r) { if (r.status !== 200) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (v) {
+          if (done) return; done = true; clearTimeout(timer);
+          if (v && v.ok === true && Array.isArray(v.list)) resolve(v); else reject(new Error('np_worker_bad'));
+        }, function (e) { if (done) return; done = true; clearTimeout(timer); reject(e); });
+    });
+  }
+  /** Worker (если включён), иначе или при сбое — Apps Script через npGet (там своя пауза и счёт ошибок). */
+  function npListGet(workerPath, appsQuery, appsLimit) {
+    if (!npWorkerOn()) return npGet(appsQuery, appsLimit);
+    return npWorkerGet(workerPath).catch(function () { npWorkerFail(); return npGet(appsQuery, appsLimit); });
+  }
   /** Ref города Новой почты для текста города city: выбран из подсказки (np.ref), совпадает с ранее выбранным или восстановлен из сохранённой формы; введён руками — пусто. */
   function npRefNow(city) {
     if (np.ref && NP_UUID.test(np.ref)) return np.ref;
@@ -4814,7 +4929,7 @@
       return;
     }
     np.ref = ''; npBusy('whBusy', false); suggShow('whSugg', [], ''); npCostSync();
-    if (q.length < NP_MIN || npPaused()) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
+    if (q.length < NP_MIN || npBlocked()) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
     if (np.cities[key]) { npBusy('cityBusy', false); suggShow('citySugg', np.cities[key], 'np-city'); return; }
     npBusy('cityBusy', true);
     np.timer = setTimeout(function () { npCityFetch(q, seq, false, false); }, NP_DEBOUNCE);
@@ -4822,11 +4937,11 @@
   var npCityFail = {}; // текст -> до какого момента его не запрашиваем (ошибка не из-за лимита: только этот текст)
   function npCityFetch(q, seq, pick, chip, retried) {
     var key = npKey(q);
-    if (npPaused() || Date.now() < (npCityFail[key] || 0)) { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } return; }
+    if (npBlocked() || Date.now() < (npCityFail[key] || 0)) { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } return; }
     if (np.flight) { np.queued = { q: q, seq: seq, pick: pick, chip: chip }; return; } // один запрос в пути: новый ждёт его конца
     np.flight = key;
     var finish = function () { np.flight = ''; npCityNext(); };
-    npGet('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
+    npListGet('/cities?q=' + encodeURIComponent(q), 'action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
       var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
       if (list) np.cities[key] = list;
       if (!list && res && res.ok === false && res.error === 'busy' && !(Number(res.retryAfter) > 0) && !retried) { // с retryAfter — общая пауза (npGet), повтор не нужен; такой же запрос уже идёт: один повтор через ~2,5 с, если текст не менялся
@@ -4846,7 +4961,7 @@
   /** Запрос, дожидавшийся конца предыдущего: уходит, только если он всё ещё актуален и ответа нет в кэше. */
   function npCityNext() {
     var n = np.queued; np.queued = null;
-    if (!n || n.seq !== np.seq || npPaused()) { if (n && n.seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); } return; }
+    if (!n || n.seq !== np.seq || npBlocked()) { if (n && n.seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); } return; }
     var list = np.cities[npKey(n.q)];
     if (list) { np.resolving = false; npBusy('cityBusy', false); npCityShow(list, n.pick, n.q, n.chip); return; }
     npCityFetch(n.q, n.seq, n.pick, n.chip);
@@ -4868,7 +4983,7 @@
     if (!npOn() || np.ref || q.length < NP_MIN) return;
     var known = npKnownRef(q);
     if (known) { np.ref = known; npBusy('cityPick', false); npBusy('cityBusy', false); suggShow('citySugg', [], ''); readForm(); npCostSync(); npLoadWh(); return; } // уже выбранный город: запроса нет
-    if (npPaused()) return;
+    if (npBlocked()) return;
     var seq = ++np.seq, key = npKey(q);
     if (np.cities[key]) { npBusy('cityBusy', false); npCityShow(np.cities[key], true, q, chip); return; }
     npBusy('cityBusy', true);
@@ -4895,7 +5010,7 @@
     if (!npOn() || !ref) return;
     var st = np.wh[ref], retryMs = Number(window.__NP_RETRY_MS) || NP_PAUSE_MS;
     // Список — один раз на город за сессию. Прошлая попытка не удалась: повторяем при следующем фокусе поля, не раньше чем через 10 минут.
-    if (npPaused() && (st === undefined || st === 'old' || st === 'err')) return; // пауза: не грузим, поле работает вручную
+    if (npBlocked() && (st === undefined || st === 'old' || st === 'err')) return; // пауза: не грузим, поле работает вручную
     if (st === 'err' && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined; // ошибка списка этого города: не раньше чем через 10 минут
     if (st === 'old' && !np.whPending[ref] && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined;
     if (st === undefined) {
@@ -4914,7 +5029,7 @@
   }
   /** Запрос списка отделений города. busy — одна повторная попытка через ~5 с; прочие ошибки — этот город 10 минут не запрашиваем. Запасной np.wh при ошибке НП не включаем. */
   function npWhAll(ref, retried) {
-    npGet('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
+    npListGet('/warehouses?city=' + encodeURIComponent(ref), 'action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
       np.whPending[ref] = false;
       var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
         .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
@@ -5211,7 +5326,7 @@
     if (!cloudOk() || state.form.phone) return;
     try {
       tg.CloudStorage.getItem('form', function (err, value) {
-        if (err || !value || state.form.phone) return;
+        if (err || !value || state.form.phone || cdvDone) return;
         try { applyForm(JSON.parse(value)); } catch (e) { return; }
         if (state.view === 'checkout') renderPage();
       });

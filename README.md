@@ -449,6 +449,14 @@ node tests/e2e.js
 
 Снимки экранов тесты складывают в `%TEMP%\pamir-shots`. «Старый бэкенд» в тестах — `Code.gs` из ветки `main` (другую ветку задаёт `OLD_BACKEND_REF`).
 
+## Что сейчас выпущено (на 20.11.2026)
+
+- Б2 — версия 20 Apps Script, выпущена 19.11.2026 (PR #11).
+- Б3 — версия 21 Apps Script, выпущена 20.11.2026 (PR #12); витрина `?v=28`.
+- Cloudflare Worker `pamir-bot` — версия `cb12f2ea`, KV `PAMIR_KV` привязан; каталог витрины идёт через Worker.
+- Script Property `WORKER_URL` задан, триггер `hourlyJob` включён.
+- Текущее состояние и что в работе — `docs/STAGE9_STATUS.md`.
+
 ## Этап 9, выпуск Б3 (ветка `stage9b5-release`)
 
 Отчёт, шаги выпуска и проверки на телефоне — в `docs/STAGE9_REPORT_B3.md`.

@@ -13,6 +13,7 @@ class Range {
   constructor(sheet, r, c, nr, nc) { this.s = sheet; this.r = r; this.c = c; this.nr = nr; this.nc = nc; }
   getValues() {
     this.s._op('read');
+    this.s._io('read', this.nr * this.nc);
     const out = [];
     for (let i = 0; i < this.nr; i++) {
       const row = [];
@@ -27,10 +28,11 @@ class Range {
   }
   setValues(values) {
     this.s._op('write');
+    this.s._io('write', values.length * ((values[0] || []).length));
     values.forEach((row, i) => row.forEach((v, j) => this.s._set(this.r + i, this.c + j, v)));
     return this;
   }
-  setValue(v) { this.s._op('write'); this.s._set(this.r, this.c, v); return this; }
+  setValue(v) { this.s._op('write'); this.s._io('write', 1); this.s._set(this.r, this.c, v); return this; }
   getFormula() { return ''; }
   getFormulas() { const out = []; for (let i = 0; i < this.nr; i++) { const row = []; for (let j = 0; j < this.nc; j++) row.push(''); out.push(row); } return out; }
   clearContent() { this.s._op('write'); for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) { const row = this.s.rows[this.r - 1 + i]; if (row && this.c - 1 + j < row.length) row[this.c - 1 + j] = ''; } return this; }
@@ -39,16 +41,19 @@ class Range {
 }
 
 class Sheet {
-  constructor(name, rows, ops, trace) { this.name = name; this.rows = rows || []; this.ops = ops || null; this.trace = trace || null; }
+  constructor(name, rows, ops, trace, io) { this.name = name; this.rows = rows || []; this.ops = ops || null; this.trace = trace || null; this.io = io || null; }
+  // io — счётчик обращений КОДА к листам (getLastRow/getLastColumn/getValues и число прочитанных ячеек): по нему тесты считают «обращения к таблице» на запрос
+  _io(kind, cells) { if (!this.io) return; const b = this.io.byName[this.name] || (this.io.byName[this.name] = { reads: 0, cells: 0, writes: 0, lastRow: 0, lastCol: 0 }); if (kind === 'read') { this.io.reads++; this.io.cells += cells; b.reads++; b.cells += cells; } else if (kind === 'write') { this.io.writes++; b.writes++; } else if (kind === 'lastRow') { this.io.lastRow++; b.lastRow++; } else if (kind === 'lastCol') { this.io.lastCol++; b.lastCol++; } }
   // trace — общий журнал (lockLog): записи листа попадают в него как { kind: 'sheet', op, sheet }, чтобы видеть порядок «блокировка → запись»
   _op(kind) { if (this.ops) this.ops[kind] = (this.ops[kind] || 0) + 1; if (this.trace && kind !== 'read') this.trace.push({ kind: 'sheet', op: kind, sheet: this.name }); }
   // Размер листа как в настоящих Таблицах: maxC/maxR (по умолчанию — «достаточно», без предела). Запись за пределы бросает ошибку.
+  getName() { return this.name; }
   getMaxColumns() { return this.maxC === undefined ? Infinity : this.maxC; }
   getMaxRows() { return this.maxR === undefined ? Infinity : this.maxR; }
   insertColumnsAfter(pos, n) { this._op('write'); if (this.maxC !== undefined) this.maxC = Math.max(this.maxC, pos + n); }
   insertRowsAfter(pos, n) { this._op('write'); if (this.maxR !== undefined) this.maxR = Math.max(this.maxR, pos + n); }
   // «Тесный» лист: ровно по ширине заголовков и по числу заполненных строк
-  tighten() { this.maxC = this.getLastColumn(); this.maxR = Math.max(1, this.getLastRow()); return this; }
+  tighten() { this.maxC = this._lc(); this.maxR = Math.max(1, this._lr()); return this; }
   _set(r, c, v) {
     if (this.maxC !== undefined && c > this.maxC) throw new Error('Exception: The coordinates of the range are outside the dimensions of the sheet (column ' + c + ' > ' + this.maxC + ')');
     if (this.maxR !== undefined && r > this.maxR) throw new Error('Exception: The coordinates of the range are outside the dimensions of the sheet (row ' + r + ' > ' + this.maxR + ')');
@@ -56,22 +61,25 @@ class Sheet {
     const row = this.rows[r - 1];
     while (row.length < c) row.push('');
     row[c - 1] = normCell(v);
-    const width = this.getLastColumn();
+    const width = this._lc();
     this.rows.forEach(x => { while (x.length < width) x.push(''); });
   }
-  getLastRow() {
+  _lr() {
     for (let i = this.rows.length; i > 0; i--) if (this.rows[i - 1].some(v => v !== '')) return i;
     return 0;
   }
-  getLastColumn() { return this.rows.reduce((m, r) => Math.max(m, r.length), 0); }
-  getDataRange() { return new Range(this, 1, 1, Math.max(1, this.getLastRow()), Math.max(1, this.getLastColumn())); }
+  _lc() { return this.rows.reduce((m, r) => Math.max(m, r.length), 0); }
+  getLastRow() { this._io('lastRow'); return this._lr(); }
+  getLastColumn() { this._io('lastCol'); return this._lc(); }
+  getDataRange() { return new Range(this, 1, 1, Math.max(1, this._lr()), Math.max(1, this._lc())); }
   getRange(r, c, nr, nc) {
     if (typeof r === 'string') return new Range(this, 1, 1, 0, 0);
     return new Range(this, r, c, nr === undefined ? 1 : nr, nc === undefined ? 1 : nc);
   }
   appendRow(row) {
     this._op('append');
-    const at = this.getLastRow() + 1;
+    this._io('write', row.length);
+    const at = this._lr() + 1;
     if (this.maxR !== undefined && at > this.maxR) this.maxR = at; // appendRow сам добавляет строку, как в Таблицах
     row.forEach((v, j) => this._set(at, j + 1, v));
     return this;
@@ -98,8 +106,10 @@ function createGas(codePath, seed) {
   const ops = {};
   const op = (kind, n) => { ops[kind] = (ops[kind] || 0) + (n || 1); };
   const lockLog = [];
+  // io — обращения кода к листам (без внутренних вызовов стенда): getSheetByName, getLastRow, getLastColumn, getValues и число ячеек
+  const io = { sheetByName: 0, lastRow: 0, lastCol: 0, reads: 0, cells: 0, writes: 0, byName: {} };
   const sheets = {};
-  Object.keys(seed.sheets).forEach(name => { sheets[name] = new Sheet(name, seed.sheets[name].map(r => r.slice()), ops, lockLog); });
+  Object.keys(seed.sheets).forEach(name => { sheets[name] = new Sheet(name, seed.sheets[name].map(r => r.slice()), ops, lockLog, io); });
   const props = Object.assign({}, seed.props);
   const cache = {};
   // Строгий режим CacheService (по умолчанию выключен, чтобы не менять старые тесты): сроки хранения считаются по часам стенда (advance),
@@ -125,11 +135,13 @@ function createGas(codePath, seed) {
   const lockWaited = { script: 0, doc: 0, user: 0 };
   const fetched = []; // запросы не к Telegram: { url, method, headers, payload }
   const fetchCfg = { fail: false, code: 200 };
+  // Счётчик UrlFetch по адресатам (выпуск Б4, п.7): requests — все запросы, trips — «поездки в сеть» (fetchAll считается одной), batches — число fetchAll
+  const urlStats = { telegram: 0, worker: 0, np: 0, batches: 0, trips: 0 };
   const drive = { folders: [], files: [], seq: 0 };
   function newFile(name, folder, src) {
     drive.clock = (drive.clock || Date.now()) + 60000; // каждая следующая копия «создана» на минуту позже
     return { id: 'FILE-' + (++drive.seq), name, folder, trashed: false, created: new Date(drive.clock), src,
-      getName() { return this.name; }, getDateCreated() { return this.created; }, setTrashed(v) { this.trashed = !!v; return this; } };
+      getName() { return this.name; }, getId() { return this.id; }, getUrl() { return 'https://docs.google.com/spreadsheets/d/' + this.id + '/edit'; }, getDateCreated() { return this.created; }, setTrashed(v) { this.trashed = !!v; return this; } };
   }
   const held = { script: 0, doc: 0, user: 0 }; // сколько блокировок сейчас удерживается (для проверки «не внутри блокировки»)
   function mkLock(kind) {
@@ -142,21 +154,32 @@ function createGas(codePath, seed) {
   }
 
   const ss = {
-    getSheetByName: n => sheets[n] || null,
-    insertSheet: n => { sheets[n] = new Sheet(n, [], ops, lockLog); return sheets[n]; },
+    getSheetByName: n => { io.sheetByName++; return sheets[n] || null; },
+    insertSheet: n => { sheets[n] = new Sheet(n, [], ops, lockLog, io); return sheets[n]; },
     getSpreadsheetTimeZone: () => 'Europe/Kiev',
     getId: () => 'SS-ID-1',
+    getName: () => 'PAMIR — Товари',
+    getUrl: () => 'https://docs.google.com/spreadsheets/d/SS-ID-1/edit',
+    getSheets: () => Object.keys(sheets).map(k => sheets[k]),
     // «Создать копию»: стенд запоминает имя и снимок всех листов на момент копии
     copy: name => { copies.push({ name, sheets: JSON.parse(JSON.stringify(Object.fromEntries(Object.keys(sheets).map(k => [k, sheets[k].rows])))) }); return {}; }
   };
   const copies = [];
-  const ui = { alerts: [], answer: 'YES', ButtonSet: { YES_NO: 'YES_NO' }, Button: { YES: 'YES', NO: 'NO' },
+  // prompt: ui.promptAnswer = { button: 'OK'|'CANCEL', text } — что «ввёл» владелец; ui.prompts — что ему показали
+  const ui = { alerts: [], prompts: [], promptAnswer: { button: 'OK', text: '' }, answer: 'YES', ButtonSet: { YES_NO: 'YES_NO', OK_CANCEL: 'OK_CANCEL' }, Button: { YES: 'YES', NO: 'NO', OK: 'OK', CANCEL: 'CANCEL' },
+    prompt(title, text) { ui.prompts.push(title + ' | ' + text); const a = ui.promptAnswer; return { getSelectedButton: () => a.button, getResponseText: () => a.text }; },
     alert(...a) { ui.alerts.push(a.join(' | ')); return ui.answer; },
     createMenu: () => { const m = { items: [], addItem: (t, fn) => { m.items.push([t, fn]); return m; }, addSeparator: () => m, addSubMenu: sub => { m.items.push(['>', sub]); return m; }, addToUi() { ui.menu = m; } }; return m; } };
   const sandbox = {
     console: { log() {}, warn(...a) { sandbox.__warns.push(a.join(' ')); }, error(...a) { sandbox.__errors.push(a.join(' ')); } },
     __errors: [], __warns: [],
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ui },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ui,
+      openById: id => { // открыть копию, сделанную makeCopy: лист за листом по снимку на момент копии
+        const f = drive.files.find(x => x.id === id);
+        if (!f || !f.snapshot || drive.failOpen) throw new Error('Exception: Unexpected error while getting the method or property openById');
+        const sh = {}; Object.keys(f.snapshot).forEach(n => { sh[n] = new Sheet(n, f.snapshot[n].map(r => r.slice())); });
+        return { getId: () => id, getName: () => f.name, getUrl: () => f.getUrl(), getSheets: () => Object.keys(sh).map(k => sh[k]), getSheetByName: n => sh[n] || null };
+      } },
     CacheService: { getScriptCache: () => ({
       get: k => { op('cache'); return alive(k) ? cache[k] : null; },
       put: (k, v, ttl) => { op('cache'); putOne(k, v, ttl); },
@@ -168,7 +191,8 @@ function createGas(codePath, seed) {
     PropertiesService: { getScriptProperties: () => ({
       getProperty: k => { op('prop'); return k in props ? props[k] : null; },
       getProperties: () => { op('prop'); return Object.assign({}, props); },
-      setProperty: (k, v) => { op('prop'); props[k] = String(v); }
+      setProperty: (k, v) => { op('prop'); props[k] = String(v); },
+      deleteProperty: k => { op('prop'); delete props[k]; }
     }) },
     LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => (lockCfg.docNull ? null : mkLock('doc')), getUserLock: () => (lockCfg.userNull ? null : mkLock('user')) },
     Utilities: {
@@ -183,7 +207,9 @@ function createGas(codePath, seed) {
       base64Decode: s => Array.from(Buffer.from(s, 'base64')),
       getUuid: () => crypto.randomUUID()
     },
-    UrlFetchApp: { fetchAll: reqs => { op('tgBatch'); return reqs.map(r => sandbox.UrlFetchApp.fetch(r.url, r, true)); }, fetch: (url, opts, batched) => {
+    UrlFetchApp: { fetchAll: reqs => { op('tgBatch'); urlStats.batches++; urlStats.trips++; return reqs.map(r => sandbox.UrlFetchApp.fetch(r.url, r, true)); }, fetch: (url, opts, batched) => {
+      urlStats[/api\.telegram\.org/.test(url) ? 'telegram' : /novaposhta/.test(url) ? 'np' : 'worker']++;
+      if (!batched) urlStats.trips++;
       if (!/api.telegram.org|novaposhta/.test(url)) { // Worker и прочее: запоминаем, Telegram не трогаем
         fetched.push({ lockHeld: held.script + held.doc, followRedirects: opts && opts.followRedirects, url, method: opts && opts.method, headers: (opts && opts.headers) || {}, payload: opts && opts.payload });
         if (fetchCfg.fail) throw new Error('fetch failed: ' + url + ' ' + JSON.stringify((opts && opts.headers) || {}));
@@ -211,7 +237,14 @@ function createGas(codePath, seed) {
       getFoldersByName: name => { const l = drive.folders.filter(x => x.name === name); let i = 0; return { hasNext: () => i < l.length, next: () => l[i++] }; },
       createFolder: name => { const f = { id: 'FOLDER-' + (++drive.seq), name, trashed: false, getId() { return this.id; }, isTrashed() { return this.trashed; },
         getFiles() { const l = drive.files.filter(x => x.folder === this && !x.trashed); let i = 0; return { hasNext: () => i < l.length, next: () => l[i++] }; } }; drive.folders.push(f); return f; },
-      getFileById: id => ({ makeCopy: (name, folder) => { drive.files.push(newFile(name, folder, id)); return drive.files[drive.files.length - 1]; } })
+      getFileById: id => ({ makeCopy: (name, folder) => {
+        if (drive.failCopy) throw new Error('Exception: Service error: Drive');
+        const f = newFile(name, folder, id);
+        if (id === 'SS-ID-1') { // снимок листов на момент копии; drive.mutateCopy(snapshot) — испортить копию (тест «проверка не сошлась»)
+          f.snapshot = JSON.parse(JSON.stringify(Object.fromEntries(Object.keys(sheets).map(k => [k, sheets[k].rows]))));
+          if (typeof drive.mutateCopy === 'function') drive.mutateCopy(f.snapshot);
+        }
+        drive.files.push(f); return f; } })
     }
   };
   vm.createContext(sandbox);
@@ -228,7 +261,7 @@ function createGas(codePath, seed) {
   function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; } if (typeof propsMemo_ !== "undefined") { propsMemo_ = null; logBuffer_ = null; perf_ = null; pointsMemo_ = null; } if (typeof whMapMemo_ !== "undefined") { whMapMemo_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
 
   return {
-    sandbox, sheets, props, cache, sent, triggers, ops, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
+    sandbox, sheets, props, cache, sent, triggers, ops, io, urlStats, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
     setLockBusy(scriptMs, docMs) { lockCfg.script = scriptMs || 0; lockCfg.doc = docMs || 0; },
     setDocLockNull(v) { lockCfg.docNull = !!v; },
     setUserLockBusy(ms) { lockCfg.user = ms || 0; },
@@ -236,7 +269,9 @@ function createGas(codePath, seed) {
     /** Сдвиг часов внутри Code.gs (Date.now) вперёд на ms: «прошла минута». */
     advance(ms) { sandbox.__shift = (sandbox.__shift || 0) + ms; },
     setFetch(fail, code) { fetchCfg.fail = !!fail; fetchCfg.code = code || 200; },
-    resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); },
+    resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); Object.keys(urlStats).forEach(k => { urlStats[k] = 0; }); },
+    /** Обнулить счётчик обращений к листам (g.io). */
+    resetIo() { io.sheetByName = io.lastRow = io.lastCol = io.reads = io.cells = io.writes = 0; io.byName = {}; },
     setTelegramFail(v) { failTelegram = v; },
     clearCache() { Object.keys(cache).forEach(k => { delete cache[k]; delete cacheExp[k]; }); },
     setCacheStrict(v) { cacheStrict = !!v; },
