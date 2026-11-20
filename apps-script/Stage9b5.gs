@@ -19,7 +19,9 @@
  */
 
 var OQ_HB_SEC = 300;         // метка «триггер жив»: триггер обновляет её каждую минуту; нет метки — заказ отправляет сообщения сам
-var OQ_MAX_TRIES = 5;        // попыток отправки одного заказа очередью; потом — тревога главным админам
+var OQ_MAX_TRIES = 5;        // быстрых попыток (каждый запуск) на заказ; потом — одна тревога главным админам и редкие повторы
+var OQ_SLOW_MS = 600000;     // после OQ_MAX_TRIES быстрых попыток заказ повторяется не чаще раза в это время
+var OQ_GIVEUP_MS = 86400000; // с момента заказа столько повторяем; потом окончательно сдаёмся (nz)
 var OQ_CLAIM_MS = 180000;    // «заказ взят в работу» — столько защищает от второго запуска; упавший запуск через это время можно повторить
 var OQ_STALE_MS = 120000;    // страховка (hourlyJob, flushJob, mailJob) берёт только заказы старше этого
 var OQ_ALARM_MS = 600000;    // админы не получили сообщение дольше этого — одна тревога главным админам
@@ -125,6 +127,56 @@ function orderSvcApply_(ctx, delta) {
 }
 
 /**
+ * Запись отметок в режиме запуска очереди с проверкой результата. Не вышло (блокировку не взяли за 15 с) — одна повторная запись;
+ * опять не вышло — в журнал (только номер заказа), отметки в память текущего запуска и в кэш (oqd_<номер>, 6 часов), заказ остаётся
+ * в очереди (pending). Следующий запуск сначала дописывает отметки из кэша, поэтому тем, кому уже ушло, повторно не шлёт.
+ * Остаточный риск: если и кэш вытеснен (или не записался) до следующего запуска, получатели без отметки получат сообщение второй раз.
+ * Обычный запрос (job = false) пишет как раньше.
+ */
+function orderSvcApplyJob_(ctx, delta, out) {
+  if (!ctx.job) return orderSvcApply_(ctx, delta);
+  if (orderSvcApply_(ctx, delta) || orderSvcApply_(ctx, delta)) return true;
+  console.error('order queue ' + ctx.o.num + ': отметки отправки не записаны (блокировка занята), заказ остаётся в очереди');
+  out.pending = true;
+  var svc = ctx.svc;
+  if (delta.m && delta.m.length) svc.m = (Array.isArray(svc.m) ? svc.m : []).concat(delta.m);
+  if (delta.nx && delta.nx.length) svc.nx = (Array.isArray(svc.nx) ? svc.nx : []).concat(delta.nx);
+  if (delta.cn) svc.cn = delta.cn;
+  if (delta.r) svc.r = 1;
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = 'oqd_' + ctx.o.num;
+    var prev = {};
+    try { prev = JSON.parse(cache.get(key) || '{}') || {}; } catch (e0) { prev = {}; }
+    if (delta.m && delta.m.length) prev.m = (prev.m || []).concat(delta.m);
+    if (delta.nx && delta.nx.length) prev.nx = (prev.nx || []).concat(delta.nx);
+    if (delta.cn) prev.cn = delta.cn;
+    if (delta.r) prev.r = 1;
+    cache.put(key, JSON.stringify(prev), 21600);
+  } catch (e1) { /* остаточный риск описан выше */ }
+  return false;
+}
+
+/** Отметки, которые прошлый запуск не смог записать (кэш oqd_): дописываем их до отправки. */
+function orderSvcCarry_(ctx, out) {
+  var cache = CacheService.getScriptCache();
+  var key = 'oqd_' + ctx.o.num;
+  var raw = cache.get(key);
+  if (!raw) return;
+  var d;
+  try { d = JSON.parse(raw); } catch (e) { cache.remove(key); return; }
+  if (!d) { cache.remove(key); return; }
+  var saved = orderSvcApply_(ctx, { m: d.m || [], nx: d.nx || [], cn: d.cn || 0, r: d.r || 0 });
+  if (saved) { cache.remove(key); return; }
+  var svc = ctx.svc; // записать не вышло: хотя бы в этом запуске не шлём повторно
+  if (d.m && d.m.length) svc.m = (Array.isArray(svc.m) ? svc.m : []).concat(d.m);
+  if (d.nx && d.nx.length) svc.nx = (Array.isArray(svc.nx) ? svc.nx : []).concat(d.nx);
+  if (d.cn) svc.cn = d.cn;
+  if (d.r) svc.r = 1;
+  out.pending = true;
+}
+
+/**
  * Сообщения о заказе: админы (одной пачкой), клиент, реквизиты ФОП. Каждому — не больше одного раза: у админа отметка в svc.m,
  * у клиента svc.cn (1 — получил, 2 — недоступен), у реквизитов svc.r. Возвращает { pending, targets }: pending — что-то ушло не всем
  * из-за временной ошибки (сеть, 429, 5xx), стоит повторить. Постоянная ошибка (400/403) повтором не лечится и в pending не попадает.
@@ -135,6 +187,7 @@ function orderNotifySend_(token, props, ctx) {
   var svc = ctx.svc;
   var job = !!ctx.job;
   var out = { pending: false, targets: 0 };
+  if (job) { orderSvcCarry_(ctx, out); svc = ctx.svc; }
   var isTest = String(o.source).indexOf('test') >= 0;
   var have = {}, gone = {};
   (Array.isArray(svc.m) ? svc.m : []).forEach(function (t) { have[String(t[0])] = true; });
@@ -160,7 +213,7 @@ function orderNotifySend_(token, props, ctx) {
         if (orderTgPermanent_(res)) dx.push(todo[i]); else out.pending = true;
       }
     });
-    if (dm.length || (job && dx.length)) { orderSvcApply_(ctx, { m: dm, nx: dx }); ordPerfCount_('write', 1); }
+    if (dm.length || (job && dx.length)) { orderSvcApplyJob_(ctx, { m: dm, nx: dx }, out); ordPerfCount_('write', 1); }
     ordPerfMark_('admins:svc');
     svc = ctx.svc;
   }
@@ -173,7 +226,7 @@ function orderNotifySend_(token, props, ctx) {
       if (cres && cres.ok) cn = 1;
       else if (orderTgPermanent_(cres)) cn = 2;
       else out.pending = true;
-      if (cn && job) { orderSvcApply_(ctx, { cn: cn }); ordPerfCount_('write', 1); svc = ctx.svc; }
+      if (cn && job) { orderSvcApplyJob_(ctx, { cn: cn }, out); ordPerfCount_('write', 1); svc = ctx.svc; }
     }
     // реквизиты ФОП — отдельным сообщением после подтверждения: его сбой подтверждение не трогает.
     // Очередь шлёт их, только когда подтверждение уже ушло (порядок сообщений клиенту сохраняется).
@@ -183,7 +236,7 @@ function orderNotifySend_(token, props, ctx) {
         if (fop.on) {
           var fres = tg_(token, 'sendMessage', { chat_id: o.uid, text: fopRequisitesText_(o, fop), parse_mode: 'HTML', disable_web_page_preview: true });
           ordPerfCount_('tg', 1);
-          if (fres && fres.ok) { orderSvcApply_(ctx, { r: 1 }); ordPerfCount_('write', 1); } // отметка «реквизиты отправлены»
+          if (fres && fres.ok) { orderSvcApplyJob_(ctx, { r: 1 }, out); ordPerfCount_('write', 1); } // отметка «реквизиты отправлены»
           else if (!orderTgPermanent_(fres)) out.pending = true;
           ordPerfMark_('fop');
         }
@@ -227,6 +280,7 @@ function orderSvcUpdate_(sheet, col, num, rowHint, fn) {
 /** Триггер раз в минуту (ставит пункт меню). Метка «жив» нужна заказам: нет метки — они шлют сообщения сами. */
 function orderNotifyJob() {
   try {
+    if (orderQueueNever_()) return; // очередь ни разу не включали: ни таблицы, ни кэша
     if (scriptProps_().getProperty('ORDER_QUEUE') === '1') CacheService.getScriptCache().put('oq_hb', '1', OQ_HB_SEC);
     orderQueueRun_(0);
   } catch (err) {
@@ -234,9 +288,15 @@ function orderNotifyJob() {
   }
 }
 
+/** Свойство ORDER_QUEUE не задано вовсе — очередь никогда не включали (при «0» она выключена, но страховка досылает остатки). */
+function orderQueueNever_() {
+  var v = scriptProps_().getProperty('ORDER_QUEUE');
+  return v === null || v === undefined || v === '';
+}
+
 /** Страховка для hourlyJob / flushJob / mailJob: заказы, которые лежат в очереди дольше двух минут. Ошибки наружу не выходят. */
 function orderQueueSweep_() {
-  try { return orderQueueRun_(OQ_STALE_MS); } catch (err) { console.error('order queue sweep: ' + safeErr_(err, true)); return null; }
+  try { if (orderQueueNever_()) return null; return orderQueueRun_(OQ_STALE_MS); } catch (err) { console.error('order queue sweep: ' + safeErr_(err, true)); return null; }
 }
 
 /**
@@ -268,7 +328,7 @@ function orderQueueRun_(minAge) {
         var s;
         try { s = JSON.parse(raw); } catch (err) { return; }
         var num = cell_(row, col.num);
-        if (s && s.nq && num) pend.push({ num: num, row: r0 + i, t: Number(s.nq.t) || 0 });
+        if (s && s.nq && num) pend.push({ num: num, row: r0 + i, t: Number(s.nq.t) || 0, a: Number(s.nq.a) || 0, l: Number(s.nq.l) || 0 });
       });
     }
   }
@@ -280,11 +340,13 @@ function orderQueueRun_(minAge) {
   pend.forEach(function (p) {
     if (handled >= OQ_MAX_PER_RUN || Date.now() - started > OQ_RUN_BUDGET_MS) { res.left++; return; }
     if (minAge && Date.now() - p.t < minAge) { res.left++; return; }
+    if (p.a >= OQ_MAX_TRIES && p.l && Date.now() - p.l < OQ_SLOW_MS) { res.left++; return; } // «зависший» заказ повторяется редко: не занимает место в запуске и не задерживает остальные
     handled++;
     var r;
     try { r = orderQueueOne_(token, props, sheet, col, p); } catch (err2) {
       console.error('order queue ' + p.num + ': ' + safeErr_(err2, true));
       orderQueueRelease_(sheet, col, p);
+      try { orderQueueAfterFail_(token, props, sheet, col, p); } catch (err3) { /* тревога повторится при следующей попытке */ }
       r = { left: true };
     }
     if (r.left) res.left++; else res.done++;
@@ -306,39 +368,67 @@ function orderQueueAlarmIds_(props) {
 }
 
 /** Тревога без персональных данных: только номер заказа и минуты. */
-function orderQueueAlarm_(token, props, num, minutes, gaveUp) {
-  var ua = gaveUp
-    ? 'Увага: повідомлення про замовлення ' + num + ' не вдалося надіслати після кількох спроб. Відкрийте таблицю «Замовлення» і перевірте замовлення вручну.'
-    : 'Увага: про замовлення ' + num + ' адміністратори не отримали повідомлення вже ' + minutes + ' хв. Перевірте, чи працює тригер (меню PAMIR → «Швидке оформлення»), і подивіться таблицю «Замовлення».';
-  var ru = gaveUp
-    ? 'Внимание: сообщение о заказе ' + num + ' не удалось отправить после нескольких попыток. Откройте таблицу «Замовлення» и проверьте заказ вручную.'
-    : 'Внимание: о заказе ' + num + ' администраторы не получили сообщение уже ' + minutes + ' мин. Проверьте, работает ли триггер (меню PAMIR → «Швидке оформлення»), и посмотрите таблицу «Замовлення».';
-  orderQueueAlarmIds_(props).forEach(function (id) { tg_(token, 'sendMessage', { chat_id: id, text: ua + '\n\n' + ru }); });
+function orderQueueAlarm_(token, props, num, minutes, kind) {
+  var ua, ru;
+  if (kind === 'final') {
+    ua = 'Увага: повідомлення про замовлення ' + num + ' так і не вдалося надіслати за добу. Відкрийте таблицю «Замовлення» і перевірте замовлення вручну.';
+    ru = 'Внимание: сообщение о заказе ' + num + ' так и не удалось отправить за сутки. Откройте таблицу «Замовлення» и проверьте заказ вручную.';
+  } else if (kind === 'retry') {
+    ua = 'Увага: повідомлення про замовлення ' + num + ' не вдалося надіслати після кількох спроб. Бот ще пробуватиме раз на 10 хвилин до доби. Відкрийте таблицю «Замовлення» і перевірте замовлення вручну.';
+    ru = 'Внимание: сообщение о заказе ' + num + ' не удалось отправить после нескольких попыток. Бот будет пробовать раз в 10 минут в течение суток. Откройте таблицу «Замовлення» и проверьте заказ вручную.';
+  } else {
+    ua = 'Увага: про замовлення ' + num + ' адміністратори не отримали повідомлення вже ' + minutes + ' хв. Перевірте, чи працює тригер (меню PAMIR → «Швидке оформлення замовлень: увімкнути»), і подивіться таблицю «Замовлення».';
+    ru = 'Внимание: о заказе ' + num + ' администраторы не получили сообщение уже ' + minutes + ' мин. Проверьте, работает ли триггер (меню PAMIR → «Швидке оформлення замовлень: увімкнути»), и посмотрите таблицу «Замовлення».';
+  }
+  var delivered = 0;
+  orderQueueAlarmIds_(props).forEach(function (id) {
+    var r = tg_(token, 'sendMessage', { chat_id: id, text: ua + '\n\n' + ru });
+    if (r && r.ok) delivered++;
+  });
+  return delivered; // 0 — тревога не дошла никому: отметка nal не ставится, тревога повторится
+}
+
+/** Шлёт тревогу и ставит отметку nal только если она дошла хотя бы одному главному админу. */
+function orderQueueAlarmSend_(token, props, sheet, col, p, rowHint, minutes, kind) {
+  var n = orderQueueAlarm_(token, props, p.num, minutes, kind);
+  if (n > 0) {
+    var upd = function (cur) { if (cur.nal) return false; cur.nal = 1; return true; };
+    if (!orderSvcUpdate_(sheet, col, p.num, rowHint, upd)) orderSvcUpdate_(sheet, col, p.num, rowHint, upd);
+  }
+  return n;
+}
+
+/** После неудачной попытки: быстрые попытки кончились, а тревоги ещё не было — одна тревога (повторится при следующей редкой попытке, пока не дойдёт). */
+function orderQueueAfterFail_(token, props, sheet, col, p) {
+  var need = false;
+  var r = orderSvcUpdate_(sheet, col, p.num, p.row, function (cur) { need = !!(cur.nq && (Number(cur.nq.a) || 0) >= OQ_MAX_TRIES && !cur.nal); return false; });
+  if (r && need) orderQueueAlarmSend_(token, props, sheet, col, p, r.row, 0, 'retry');
 }
 
 /** Один заказ из очереди. Возвращает { left: true }, если что-то осталось (повторится следующим запуском). */
 function orderQueueOne_(token, props, sheet, col, p) {
   var now = Date.now();
-  var needTouch = false, lateMin = 0, giveUp = false, alreadyDone = false, busy = false;
+  var needTouch = false, needAlarm = false, lateMin = 0, giveUp = false, alreadyDone = false, busy = false;
   // 1. «Взять в работу» под блокировкой: два запуска не отправят один заказ дважды.
   var claim = orderSvcUpdate_(sheet, col, p.num, p.row, function (cur) {
     var q = cur.nq;
     if (!q) { alreadyDone = true; return false; }
     if (q.c && now - q.c < OQ_CLAIM_MS) { busy = true; return false; }
+    if (now - Number(q.t || now) > OQ_GIVEUP_MS) { delete cur.nq; cur.nz = 1; giveUp = true; needAlarm = !cur.nal; return true; } // сутки прошли — окончательно
     q.a = (Number(q.a) || 0) + 1; // попытка считается с начала: упавший запуск не даёт повторять бесконечно
-    if (q.a > OQ_MAX_TRIES) { delete cur.nq; cur.nz = 1; cur.nal = 1; giveUp = true; return true; }
     q.c = now;
+    q.l = now; // время последней попытки: после OQ_MAX_TRIES быстрых попыток следующая — не раньше OQ_SLOW_MS
     if (q.u && !q.tc) { q.tc = 1; needTouch = true; } // отметка клиента — не больше одного раза
     var noAdminYet = !(Array.isArray(cur.m) && cur.m.length);
-    if (!cur.nal && noAdminYet && now - Number(q.t || now) > OQ_ALARM_MS) { cur.nal = 1; lateMin = Math.round((now - q.t) / 60000); }
+    if (!cur.nal && noAdminYet && now - Number(q.t || now) > OQ_ALARM_MS) lateMin = Math.round((now - q.t) / 60000); // nal ставится после доставки тревоги
     return true;
   });
   if (!claim) return { left: true }; // нет блокировки или строки — попробует следующий запуск
   if (alreadyDone) return { left: false };
   if (busy) return { left: true };
   if (giveUp) {
-    orderQueueAlarm_(token, props, p.num, 0, true);
-    console.error('order queue: ' + p.num + ' — отправка не удалась после ' + OQ_MAX_TRIES + ' попыток');
+    if (needAlarm) orderQueueAlarm_(token, props, p.num, 0, 'final');
+    console.error('order queue: ' + p.num + ' — отправка не удалась за сутки, заказ снят с очереди');
     return { left: false };
   }
   var q0 = claim.svc.nq || {};
@@ -353,7 +443,7 @@ function orderQueueOne_(token, props, sheet, col, p) {
     touchClient_({ id: q0.u[0], first_name: q0.u[1], last_name: q0.u[2], language_code: q0.u[3] }, o.lang, true, q0.s || '');
     ordPerfMark_('touch');
   }
-  if (lateMin) { try { orderQueueAlarm_(token, props, p.num, lateMin, false); } catch (errA) { console.error('order queue alarm: ' + safeErr_(errA)); } }
+  if (lateMin) { try { orderQueueAlarmSend_(token, props, found.sheet, found.col, p, found.rowIndex, lateMin, 'late'); } catch (errA) { console.error('order queue alarm: ' + safeErr_(errA)); } }
   var ctx = { o: o, svc: claim.svc, sheet: found.sheet, col: found.col, rowIndex: found.rowIndex, job: true };
   var r = orderNotifySend_(token, props, ctx);
   // 2. Итог: всё ушло — пометка снимается; иначе «взят в работу» снимается, следующий запуск повторит только недостающее.
@@ -366,6 +456,7 @@ function orderQueueOne_(token, props, sheet, col, p) {
   });
   if (!fin) left = true; // пометку снять не удалось — следующий запуск проверит (отправленным повторно не пошлёт: есть отметки получателей)
   ordPerfMark_('done');
+  if (left) { try { orderQueueAfterFail_(token, props, found.sheet, found.col, { num: p.num, row: ctx.rowIndex }); } catch (errB) { /* повторится */ } }
   return { left: left };
 }
 

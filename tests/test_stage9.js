@@ -4092,14 +4092,148 @@ const q7 = (() => {
     const MAX = h.sandbox.OQ_MAX_TRIES;
     for (let i = 0; i < MAX; i++) jobSend(h);
     let sv = svcOf(h, r2.number);
-    ok(msgs(h).length === 0 && sv.nq && sv.nq.a === MAX && sv.nq.c === 0, 'Б6 исключение в середине: запуск не падает, попытки считаются (' + MAX + '), «взят в работу» снимается', sv.nq);
-    jobSend(h);
-    sv = svcOf(h, r2.number);
-    ok(sv.nq === undefined && msgs(h).length === 3 && chats(h) === '900,901,902', 'Б6 после OQ_MAX_TRIES: тревога только владельцу и админам с ролью «Адмін» (не менеджеру), nq снят', [chats(h), sv]);
-    ok(msgs(h).every(m => /P-0008/.test(m.payload.text) && !/Секретне|380509998877|762|Олена/.test(m.payload.text)), 'Б6 в тексте тревоги только номер заказа, без имени и телефона');
+    const alarm1 = msgs(h).slice();
+    ok(sv.nq && sv.nq.a === MAX && sv.nq.c === 0, 'Б6 исключение в середине: запуск не падает, попытки считаются (' + MAX + '), «взят в работу» снимается', sv.nq);
+    ok(alarm1.length === 3 && chats(h) === '900,901,902' && sv.nal === 1, 'Б6 после OQ_MAX_TRIES быстрых попыток: одна тревога только владельцу и админам с ролью «Адмін» (не менеджеру), заказ остаётся в очереди', [chats(h), sv]);
+    ok(alarm1.every(m => /P-0008/.test(m.payload.text) && /Швидке оформлення замовлень/.test(m.payload.text) === false && !/Секретне|380509998877|762|Олена/.test(m.payload.text)), 'Б6 в тексте тревоги только номер заказа, без имени и телефона');
     clear(h); jobSend(h); forceRun(h);
-    ok(msgs(h).length === 0, 'Б6 после сдачи тревога не повторяется');
+    sv = svcOf(h, r2.number);
+    ok(msgs(h).length === 0 && sv.nq && sv.nq.a === MAX, 'Б6 следующие запуски в течение 10 минут заказ не трогают (редкие повторы), тревога не повторяется', sv.nq);
+    // Telegram ожил через час: сообщение дошло, без дублей
     h.sandbox.findOrder_ = origFind;
+    h.advance(60 * 60000); jobSend(h); jobSend(h); forceRun(h);
+    sv = svcOf(h, r2.number);
+    ok(sv.nq === undefined && sv.m.length === 4 && toC(h, 762).length === 1 && [900, 901, 902, 905].every(c => toC(h, c).filter(m => /P-0008/.test(m.payload.text) && m.payload.reply_markup).length === 1) && msgs(h).length === 5, 'Б6 Telegram ожил через час: сообщение дошло всем ровно один раз (3 админа + менеджер + клиент), nq снят', [chats(h), sv]);
+  }
+  {
+    // редкие попытки: каждые 10 минут, не чаще
+    const g = queueWorld(); const r = g.post(body(g, U(763)));
+    let tries = 0; const orig = g.sandbox.findOrder_; g.sandbox.findOrder_ = (num) => { if (num === 'P-0008') { tries++; throw new Error('boom'); } return orig(num); };
+    const MAX = g.sandbox.OQ_MAX_TRIES;
+    for (let i = 0; i < MAX; i++) jobSend(g);
+    ok(tries === MAX, 'Б6 5 быстрых попыток — по одной на каждый запуск', tries);
+    for (let i = 0; i < 9; i++) { g.advance(60000); jobSend(g); }
+    ok(tries === MAX, 'Б6 в первые 9 минут после этого попыток нет', tries);
+    g.advance(2 * 60000); jobSend(g);
+    ok(tries === MAX + 1, 'Б6 через 10 минут — одна редкая попытка', tries);
+    for (let i = 0; i < 9; i++) { g.advance(60000); jobSend(g); }
+    ok(tries === MAX + 1, 'Б6 и снова пауза 10 минут', tries);
+    // зависший заказ не мешает остальным
+    const r2 = g.post(body(g, U(764))); clear(g);
+    jobSend(g);
+    ok(toC(g, 764).length === 1 && svcOf(g, r2.number).nq === undefined && svcOf(g, r.number).nq, 'Б6 зависший заказ не блокирует остальные: новый заказ уходит сразу', chats(g));
+    // 24 часа: сдаёмся
+    g.advance(24 * 3600000); jobSend(g);
+    const sv = svcOf(g, r.number);
+    ok(sv.nq === undefined && sv.nz === 1, 'Б6 через 24 часа после заказа окончательно сдался: nq снят, nz=1', sv);
+    clear(g); jobSend(g); forceRun(g);
+    ok(msgs(g).length === 0, 'Б6 после сдачи ничего не шлётся');
+    g.sandbox.findOrder_ = orig;
+  }
+  {
+    // тревога не дошла (Telegram недоступен) — nal не ставится, повторяется при следующей редкой попытке, пока не уйдёт
+    const g = queueWorld(); const r = g.post(body(g, U(765)));
+    let alarmsOk = false;
+    g.setTelegramFail((m, p) => (p.reply_markup || (!alarmsOk && /^Увага/.test(p.text))) ? { ok: false, description: 'network' } : null);
+    for (let i = 0; i < 5; i++) jobSend(g);
+    const alarmTexts = () => msgs(g).filter(m => /^Увага/.test(m.payload.text));
+    ok(svcOf(g, r.number).nal === undefined && alarmTexts().length === 3, 'Б6 тревога не дошла: отметка nal не ставится (попытка тревоги была)', [alarmTexts().length, svcOf(g, r.number)]);
+    alarmsOk = true; g.advance(11 * 60000); jobSend(g);
+    ok(svcOf(g, r.number).nal === 1 && alarmTexts().length === 6, 'Б6 при следующей редкой попытке тревога повторена и дошла (nal=1)', alarmTexts().length);
+    g.advance(11 * 60000); jobSend(g); g.advance(11 * 60000); jobSend(g);
+    ok(alarmTexts().length === 6, 'Б6 после успешной доставки тревога больше не дублируется', alarmTexts().length);
+    g.setTelegramFail(false);
+  }
+  {
+    // 10-минутная тревога «админы не получили» и тревога «не вдалося надіслати» — вместе одна
+    const g = queueWorld(); const r = g.post(body(g, U(766)));
+    g.setTelegramFail((m, p) => p.reply_markup ? { ok: false, description: 'network' } : null);
+    jobSend(g); g.advance(11 * 60000); jobSend(g);
+    const n1 = msgs(g).filter(m => /^Увага/.test(m.payload.text)).length;
+    for (let i = 0; i < 6; i++) jobSend(g);
+    ok(n1 === 3 && msgs(g).filter(m => /^Увага/.test(m.payload.text)).length === 3 && svcOf(g, r.number).nal === 1, 'Б6 поздняя тревога и тревога «после попыток» не накладываются: всего одна на главного админа', n1);
+    g.setTelegramFail(false);
+  }
+  {
+    // тексты тревоги называют пункт меню так же, как меню
+    const g = queueWorld(); const r = g.post(body(g, U(767)));
+    g.setTelegramFail((m, p) => p.reply_markup ? { ok: false, description: 'network' } : null);
+    jobSend(g); g.advance(11 * 60000); jobSend(g);
+    const t = msgs(g).find(m => /^Увага/.test(m.payload.text)).payload.text;
+    const items = []; g.call('onOpen'); const mi = g.ui.menu.items.map(i => i[0]);
+    ok(/«Швидке оформлення замовлень: увімкнути»/.test(t) && mi.indexOf('Швидке оформлення замовлень: увімкнути') >= 0 && /Увага/.test(t) && /Внимание/.test(t), 'Б6 тексты тревоги UA+RU называют пункт меню как он назван в меню PAMIR', [t, mi]);
+    g.setTelegramFail(false);
+  }
+
+  // Б13. очередь ни разу не включали — страховка и триггер выходят сразу
+  {
+    const g = world(); g.post(body(g, U(7101))); g.clearCache();
+    const r0 = JSON.stringify(g.props);
+    ['hourlyJob', 'mailJob', 'flushJob', 'orderNotifyJob', 'orderQueueSweep_'].forEach(fn => {
+      g.advance(10 * 60000); g.clearCache(); g.resetIo(); g.resetOps();
+      g.call(fn);
+      if (fn === 'orderNotifyJob' || fn === 'orderQueueSweep_') ok((g.io.byName['Замовлення'] || { reads: 0 }).reads === 0 && (g.ops.cache || 0) === 0, 'Б13 ' + fn + ' без свойства ORDER_QUEUE: ни чтения «Замовлення», ни кэша', [g.io.byName['Замовлення'], g.ops.cache]);
+      else ok(true, 'Б13 ' + fn + ' не падает');
+    });
+    // три задания: ни одного чтения листа «Замовлення» из очереди — считаем вызовом самой страховки
+    const names = [];
+    const orig = g.sandbox.orderQueueRun_; g.sandbox.orderQueueRun_ = (...a) => { names.push('run'); return orig(...a); };
+    ['hourlyJob', 'mailJob', 'flushJob'].forEach(fn => { g.advance(10 * 60000); g.clearCache(); g.call(fn); });
+    ok(names.length === 0, 'Б13 hourlyJob, mailJob, flushJob без свойства: очередь не просматривается ни разу', names);
+    g.sandbox.orderQueueRun_ = orig;
+    g.props.ORDER_QUEUE = '0';
+    const h = world({ props: { ORDER_QUEUE: '0' } }); h.cache.oq = '1';
+    let called = 0; const o2 = h.sandbox.orderQueueRun_; h.sandbox.orderQueueRun_ = (...a) => { called++; return o2(...a); };
+    h.call('flushJob');
+    ok(called === 1, 'Б13 при ORDER_QUEUE = «0» (выключили) страховка продолжает работать', called);
+  }
+
+  // Б14. отметки не записались (блокировка занята) — повтор записи, без повторной отправки
+  {
+    const g = queueWorld(); const r = g.post(body(g, U(7111)));
+    let first = true;
+    g.setTelegramFail(() => { if (first) { first = false; g.setLockBusy(20000, 0); } return null; });
+    jobSend(g);
+    g.setLockBusy(0, 0); g.setTelegramFail(false); g.advance(g.sandbox.OQ_CLAIM_MS + 1000);
+    ok(msgs(g).length === 4 && svcOf(g, r.number).nq && svcOf(g, r.number).m === undefined, 'Б14 блокировка занята во время записи отметок: письма ушли, отметок в ячейке нет, заказ остаётся в очереди', [msgs(g).length, svcOf(g, r.number)]);
+    ok(g.sandbox.__errors.some(e => /отметки отправки не записаны/.test(e) && /P-0008/.test(e)) && !g.sandbox.__errors.some(e => /7111|Олена|380501234567/.test(e)), 'Б14 в журнале запись об этом (только номер заказа, без личных данных)');
+    ok(!!g.cache['oqd_P-0008'], 'Б14 отметки сохранены в кэше (oqd_) до следующего запуска');
+    clear(g); jobSend(g);
+    const sv = svcOf(g, r.number);
+    ok(msgs(g).length === 0 && sv.m.length === 3 && sv.cn === 1 && sv.nq === undefined && !g.cache['oqd_P-0008'], 'Б14 следующий запуск дописал отметки из кэша и никому не послал повторно, nq снят', [chats(g), sv]);
+    // кэш потерян — остаточный риск: повторная отправка тем, у кого нет отметки
+    const h = queueWorld(); const rh = h.post(body(h, U(7112)));
+    let f2 = true; h.setTelegramFail(() => { if (f2) { f2 = false; h.setLockBusy(20000, 0); } return null; });
+    jobSend(h); h.setLockBusy(0, 0); h.setTelegramFail(false); h.advance(h.sandbox.OQ_CLAIM_MS + 1000);
+    delete h.cache['oqd_P-0008']; clear(h); jobSend(h);
+    ok(msgs(h).length === 4 && svcOf(h, rh.number).nq === undefined, 'Б14 остаточный риск: кэш вытеснен — получатели без отметки получают второй раз (4 сообщения), больше не повторяется', msgs(h).length);
+  }
+
+  // Б15. tgAll_: fetchAll бросает исключение — фактическое поведение
+  {
+    const mkThrow = (g, afterSend) => { const U0 = g.sandbox.UrlFetchApp; const orig = U0.fetchAll; U0.fetchAll = reqs => { if (afterSend) orig(reqs); throw new Error('fetchAll boom'); }; };
+    [[false, 'до отправки'], [true, 'после отправки']].forEach(([after, label]) => {
+      const g = world(); mkThrow(g, after);
+      const r = g.post(body(g, U(7121)));
+      const sv = svcOf(g, r.number);
+      const perAdmin = [900, 901, 902].map(c => toC(g, c).length);
+      console.log('    tgAll_ (fetchAll бросает ' + label + '), прямой режим: сообщений на админа ' + perAdmin.join('/') + ', в svc.m ' + (sv.m || []).length + ' записей (id ' + (sv.m || []).map(x => x[1]).join(',') + ')');
+      ok(r.ok && perAdmin.every(n => n === (after ? 2 : 1)) && sv.m.length === 3, 'Б15 прямой режим, fetchAll бросает ' + label + ': каждый админ получает ' + (after ? '2 сообщения (дубль)' : '1 сообщение') + ', в svc.m по одной записи на админа', [perAdmin, sv.m]);
+      const q = queueWorld(); mkThrow(q, after);
+      const rq = q.post(body(q, U(7122))); jobSend(q);
+      const sq = svcOf(q, rq.number); const pq = [900, 901, 902].map(c => toC(q, c).length);
+      console.log('    tgAll_ (fetchAll бросает ' + label + '), очередь: сообщений на админа ' + pq.join('/') + ', в svc.m ' + (sq.m || []).length + ' записей');
+      ok(pq.every(n => n === (after ? 2 : 1)) && sq.m.length === 3 && sq.nq === undefined, 'Б15 очередь, fetchAll бросает ' + label + ': то же поведение, повторов следующим запуском нет', [pq, sq]);
+    });
+  }
+
+  // Б16. окно просмотра очереди — OQ_SCAN_ROWS = 100 последних строк
+  {
+    const mkRows = (g, n) => { const sh = g.sheets['Замовлення']; const w = sh.rows[0].length; for (let i = 0; i < n; i++) { const row = Array(w).fill(''); row[0] = 'X-' + i; sh.rows.push(row); } };
+    const g = queueWorld(); const r = g.post(body(g, U(7131))); mkRows(g, 99); jobSend(g);
+    ok(toC(g, 7131).length === 1, 'Б16 заказ с nq и ещё 99 строк после него — в окне просмотра, уходит');
+    const h = queueWorld(); const r2 = h.post(body(h, U(7132))); mkRows(h, 100); jobSend(h);
+    ok(toC(h, 7132).length === 0 && hasNq(h, r2.number), 'Б16 заказ с nq и 100 строк после него — вне окна (OQ_SCAN_ROWS = ' + h.sandbox.OQ_SCAN_ROWS + '): очередь его не видит', msgs(h).length);
   }
 
   // Б7. админы не получили > 10 минут
