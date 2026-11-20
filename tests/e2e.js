@@ -5648,8 +5648,9 @@ const smallTargets = page => page.evaluate(() => {
   console.log('Выпуск Б4 · наложенный платёж: строка о комиссии Новой почты; очистка данных покупателя по shop.cdv');
   {
     const NBSP = ' ';
-    const UA1 = 'Нова пошта бере за накладений платіж 20' + NBSP + '₴ + 2' + NBSP + '% від суми.', UA2 = ' Оплата на рахунок ФОП — без цієї комісії.';
-    const RU1 = 'Новая почта берёт за наложенный платёж 20' + NBSP + '₴ + 2' + NBSP + '% от суммы.', RU2 = ' Оплата на счёт ФОП — без этой комиссии.';
+    // Текст приходит с сервера (shop.codNote); в e2e задаётся подменой shop в ответе каталога, независимо от готовности бэкенда. Формулировки владельца:
+    const UA_T = 'Нова пошта бере комісію за накладений платіж — зазвичай 20' + NBSP + '₴ + 2' + NBSP + '% від суми. Оплата на рахунок ФОП — без цієї комісії.';
+    const RU_T = 'Новая почта берёт комиссию за наложенный платёж — обычно 20' + NBSP + '₴ + 2' + NBSP + '% от суммы. Оплата на счёт ФОП — без этой комиссии.';
     const REF = '11111111-1111-1111-1111-111111111111';
     const patch = (st, fn) => { const orig = st.gas.get; st.gas.get = q => { const r = orig(q); if (q.action === 'catalog' && r && r.shop) fn(r.shop); return r; }; };
     const stubNp = async page => {
@@ -5684,7 +5685,7 @@ const smallTargets = page => page.evaluate(() => {
 
     // --- а) с ФОП и способом «на счёт»: обе фразы; UA светлая ---
     const stA = await start(8995, undefined, withPhotos);
-    patch(stA, s => { s.np = true; s.npp = 1; s.fop = 1; s.pay = ['cash', 'card', 'cod']; });
+    patch(stA, s => { s.np = true; s.npp = 1; s.fop = 1; s.pay = ['cash', 'card', 'cod']; s.codNote = { ua: UA_T, ru: RU_T }; });
     const a = await toCheckout(stA, 951, { start: 'DRY-039' });
     ok(await a.page.locator('#codNote').count() === 1 && await noteVisible(a.page) === '', 'наложенный платёж: пока он не выбран (самовывоз) — строки нет');
     await a.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
@@ -5692,7 +5693,7 @@ const smallTargets = page => page.evaluate(() => {
     const sum0 = await sumText(a.page);
     await pickCity(a.page);
     await a.page.locator('[data-opt="pay-cod"]').click();
-    ok(await noteVisible(a.page) === UA1 + UA2, 'UA: при наложенном платеже строка дословно (обе фразы, неразрывные пробелы в «20 ₴» и «2 %»)', await noteVisible(a.page));
+    ok(await noteVisible(a.page) === UA_T, 'UA: при наложенном платеже строка дословно как прислал сервер (неразрывные пробелы в «20 ₴» и «2 %»)', await noteVisible(a.page));
     ok(await sumText(a.page) === sum0 && sum0 !== '', 'сумма заказа при выборе наложенного платежа не изменилась', [sum0, await sumText(a.page)]);
     await a.page.waitForSelector('.js-npcost:not([hidden])', { timeout: 5000 }).catch(() => {});
     ok(await noOverflow(a.page) && (await smallTargets(a.page)).length === 0, '360 px: без горизонтальной прокрутки, кнопки и поля ≥ 44 px', await smallTargets(a.page));
@@ -5705,7 +5706,7 @@ const smallTargets = page => page.evaluate(() => {
     await a.page.locator('[data-opt="pay-cash"]').click();
     ok(await noteVisible(a.page) === '', 'переключили на «при отриманні»: строки нет');
     await a.page.locator('[data-opt="pay-cod"]').click();
-    ok(await noteVisible(a.page) === UA1 + UA2, 'вернули наложенный платёж: строка снова есть');
+    ok(await noteVisible(a.page) === UA_T, 'вернули наложенный платёж: строка снова есть');
     await a.page.locator('.opt', { hasText: 'Самовивіз' }).first().click();
     ok(await noteVisible(a.page) === '' && await a.page.locator('[data-opt="pay-cod"]').isHidden(), 'самовывоз: наложенного платежа нет и строки нет');
     await a.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
@@ -5718,7 +5719,7 @@ const smallTargets = page => page.evaluate(() => {
     await a.page.waitForSelector('.line');
     await a.page.evaluate(() => window.__tg.main.cb());
     await a.page.waitForSelector('#form');
-    ok(await a.page.locator('input[name="pay"][value="cod"]').isChecked() && await noteVisible(a.page) === UA1 + UA2, 'после перезагрузки сохранённая форма с наложенным платежом сразу показывает строку', await noteVisible(a.page));
+    ok(await a.page.locator('input[name="pay"][value="cod"]').isChecked() && await noteVisible(a.page) === UA_T, 'после перезагрузки сохранённая форма с наложенным платежом сразу показывает строку', await noteVisible(a.page));
     // заказ: на сервер уходит прежнее тело (pay=cod, без новых полей)
     await a.page.fill('#f-phone', '0501234567');
     await a.page.fill('#f-branch', 'Відділення 12');
@@ -5734,28 +5735,80 @@ const smallTargets = page => page.evaluate(() => {
     await r.page.locator('.opt', { hasText: 'Новая почта' }).first().click();
     await pickCity(r.page);
     await r.page.locator('[data-opt="pay-cod"]').click();
-    ok(await noteVisible(r.page) === RU1 + RU2, 'RU: строка дословно (обе фразы)', await noteVisible(r.page));
+    ok(await noteVisible(r.page) === RU_T, 'RU: строка дословно как прислал сервер', await noteVisible(r.page));
     ok(await noOverflow(r.page), 'RU, тёмная тема: без горизонтальной прокрутки');
     await r.page.waitForSelector('.js-npcost:not([hidden])', { timeout: 5000 }).catch(() => {});
     await r.page.locator('#codNote').scrollIntoViewIfNeeded();
     await r.page.screenshot({ path: OUT + '/b4-cod-ru-dark.png', fullPage: true });
     await r.page.context().close(); stA.server.close();
 
-    // --- в) вторая фраза зависит от доступности оплаты на счёт ФОП ---
+    // --- в) показывается ровно то, что прислал сервер (решение про ФОП — на бэкенде) ---
+    let cn;
     const stB = await start(8996, undefined, withPhotos);
-    patch(stB, s => { s.np = true; s.fop = 1; s.pay = ['cash', 'cod']; });
-    const b = await toCheckout(stB, 953);
-    await b.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
-    await b.page.locator('[data-opt="pay-cod"]').click();
-    ok(await noteVisible(b.page) === UA1, 'ФОП есть, но способа «на рахунок» нет в списке: только первая фраза', await noteVisible(b.page));
-    await b.page.context().close(); stB.server.close();
-    const stC = await start(8997, undefined, withPhotos);
-    patch(stC, s => { s.np = true; s.pay = ['cash', 'card', 'cod']; });
-    const c = await toCheckout(stC, 954);
-    await c.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
-    await c.page.locator('[data-opt="pay-cod"]').click();
-    ok(await noteVisible(c.page) === UA1, 'нет флага ФОП (перевод на обычную карту): только первая фраза', await noteVisible(c.page));
-    await c.page.context().close(); stC.server.close();
+    patch(stB, s => { s.np = true; s.fop = 1; s.pay = ['cash', 'cod']; if (cn !== undefined) s.codNote = cn; else delete s.codNote; /* поля нет — как у старого бэкенда, даже если настоящий Code.gs его уже присылает */ });
+    const showCase = async (uid, note, lc) => {
+      cn = note;
+      const x = await toCheckout(stB, uid, lc ? { lc } : undefined);
+      await x.page.locator('.opt', { hasText: lc === 'ru' ? 'Новая почта' : 'Нова пошта' }).first().click();
+      await x.page.locator('[data-opt="pay-cod"]').click();
+      return x;
+    };
+    {
+      const x = await showCase(953, { ua: 'Свій текст із налаштувань. ФОП тут ні до чого.' });
+      ok(await noteVisible(x.page) === 'Свій текст із налаштувань. ФОП тут ні до чого.', 'свой текст из настроек показан как есть (ФОП в настройках есть, а в тексте нет — витрина ничего не добавляет)', await noteVisible(x.page));
+      await x.page.context().close();
+    }
+    {
+      const evil = '<b>жирно</b> & "лапки" \'одинарні\' <img src=x onerror=alert(1)>';
+      const x = await showCase(954, { ua: evil });
+      const dom = await x.page.evaluate(() => { const n = document.getElementById('codNote'); return { t: n.textContent, kids: n.children.length, html: n.innerHTML }; });
+      ok(await noteVisible(x.page) === evil && dom.kids === 0 && /&lt;b&gt;/.test(dom.html) && await count(x.page, '#codNote b, #codNote img') === 0 && x.errors.length === 0, 'текст с <b>&"\' показан буквально, тегов в DOM нет', dom);
+      await x.page.context().close();
+    }
+    {
+      const x = await showCase(956, { ua: 'я'.repeat(400) });
+      ok((await noteVisible(x.page)).length === 300, 'длинный текст обрезан на витрине до 300 символов', (await noteVisible(x.page)).length);
+      await x.page.context().close();
+    }
+    for (const [name, note, lc, want] of [
+      ['поля нет', undefined, undefined, ''],
+      ['пустой объект', {}, undefined, ''],
+      ['пустые строки', { ua: '', ru: '  ' }, 'ru', ''],
+      ['только ua при языке ru — берётся ua', { ua: 'Тільки український' }, 'ru', 'Тільки український'],
+      ['только ru при языке ua — строки нет', { ru: 'Только русский' }, undefined, ''],
+      ['не объект (строка)', 'просто строка', undefined, ''],
+      ['ru есть при языке ru — берётся ru', { ua: 'Український', ru: 'Русский' }, 'ru', 'Русский']
+    ]) {
+      const x = await showCase(957, note, lc);
+      ok(await noteVisible(x.page) === want && x.errors.length === 0, 'shop.codNote: ' + name, [await noteVisible(x.page), x.errors]);
+      await x.page.context().close();
+    }
+    { // смена языка в профиле: вернувшись в оформление, видим текст на новом языке (экран перерисовывается целиком, как для соседних текстов из shop)
+      cn = { ua: 'Український текст', ru: 'Русский текст' };
+      const x = await toCheckout(stB, 958);
+      await x.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
+      await x.page.locator('[data-opt="pay-cod"]').click();
+      const before = await noteVisible(x.page);
+      await x.page.evaluate(() => window.__tg.back.cb()); // из оформления назад (корзина), затем в профиль
+      await x.page.waitForSelector('.tabbar [data-go="orders"]', { state: 'visible' });
+      await x.page.click('.tabbar [data-go="orders"]');
+      await x.page.locator('.merow [data-lang="ru"]').click();
+      await x.page.click('.tabbar [data-go="cart"]'); await x.page.waitForSelector('.line');
+      await x.page.evaluate(() => window.__tg.main.cb()); await x.page.waitForSelector('#form');
+      ok(before === 'Український текст' && await x.page.locator('input[name="pay"][value="cod"]').isChecked() && await noteVisible(x.page) === 'Русский текст' && x.errors.length === 0, 'смена языка: строка о комиссии на новом языке без перезагрузки', [before, await noteVisible(x.page)]);
+      await x.page.context().close();
+    }
+    {
+      cn = { ua: UA_T };
+      const x = await showCase(959, { ua: UA_T });
+      const b0 = await x.page.evaluate(() => Array.from(document.querySelectorAll('.js-sum')).map(n => n.textContent).join('|'));
+      await x.page.locator('[data-opt="pay-cash"]').click();
+      ok(await noteVisible(x.page) === '', 'сервер прислал текст, но выбрана оплата «при отриманні» — строки нет');
+      await x.page.locator('[data-opt="pay-cod"]').click();
+      ok(await noteVisible(x.page) === UA_T && await sumText(x.page) === b0, 'текст сервера: сумма заказа не меняется');
+      await x.page.context().close();
+    }
+    stB.server.close();
     const stD = await start(8998, undefined, withPhotos); // shop без np/pay/fop (как у старого бэкенда)
     const d = await toCheckout(stD, 955);
     ok(await d.page.locator('#codNote').count() === 1 && await noteVisible(d.page) === '' && d.errors.length === 0, 'бэкенд без настроек: оформление открывается, строки нет, ошибок в консоли нет', d.errors);

@@ -377,12 +377,10 @@
   var I18N_A = {
     ua: { noticeClose: 'Закрити повідомлення', jar: 'Баночка {n} г', featureAll: 'Наша курага',
       payCardFop: 'Переказ на рахунок ФОП (IBAN)', payCardNoteFop: 'Реквізити надішлемо в Telegram одразу після оформлення.',
-      npSearching: 'Шукаю…', npPickCity: 'Оберіть місто зі списку',
-      codNote: 'Нова пошта бере за накладений платіж 20 ₴ + 2 % від суми.', codNoteFop: 'Оплата на рахунок ФОП — без цієї комісії.' },
+      npSearching: 'Шукаю…', npPickCity: 'Оберіть місто зі списку' },
     ru: { noticeClose: 'Закрыть уведомление', jar: 'Баночка {n} г', featureAll: 'Наша курага',
       payCardFop: 'Перевод на счёт ФОП (IBAN)', payCardNoteFop: 'Реквизиты пришлём в Telegram сразу после оформления.',
-      npSearching: 'Ищу…', npPickCity: 'Выберите город из списка',
-      codNote: 'Новая почта берёт за наложенный платёж 20 ₴ + 2 % от суммы.', codNoteFop: 'Оплата на счёт ФОП — без этой комиссии.' }
+      npSearching: 'Ищу…', npPickCity: 'Выберите город из списка' }
   };
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_A[lang]).forEach(function (k) { I18N[lang][k] = I18N_A[lang][k]; });
@@ -2602,12 +2600,18 @@
       saveForm();
     }
     document.getElementById('cardNote').hidden = state.form.pay !== 'card';
-    // Комиссия Новой почты за наложенный платёж: только текст, сумму заказа не меняет. Вторая фраза — если оплата на счёт ФОП доступна в этом заказе.
+    // Комиссия Новой почты за наложенный платёж: только текст, сумму заказа не меняет. Текст приходит с сервера (shop.codNote = { ua, ru }, необязательно): для RU при пустом ru берётся ua; нет текста (в том числе у старого бэкенда) — строки нет.
     var codNote = document.getElementById('codNote');
     if (codNote) {
       var showCod = np && state.form.pay === 'cod';
-      if (showCod) codNote.textContent = t('codNote') + (shopInfo().fop && payMethods().indexOf('card') >= 0 ? ' ' + t('codNoteFop') : '');
-      codNote.hidden = !showCod;
+      var cn = shopInfo().codNote, text = '';
+      if (showCod && cn && typeof cn === 'object') {
+        text = typeof cn[state.lang] === 'string' ? cn[state.lang].trim() : '';
+        if (!text && state.lang === 'ru' && typeof cn.ua === 'string') text = cn.ua.trim();
+        text = text.slice(0, 300);
+      }
+      codNote.textContent = text; // только textContent: разметка из настроек не исполняется
+      codNote.hidden = !text;
     }
     npCostSync();
   }
