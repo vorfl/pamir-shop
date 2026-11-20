@@ -77,6 +77,7 @@ class Sheet {
     return this;
   }
   setFrozenRows() {}
+  hideSheet() { this.hidden = true; return this; }
   hideColumns() {}
   clearContents() { this.rows = []; }
   deleteRows(start, n) { this._op('write'); this.rows.splice(start - 1, n); }
@@ -101,14 +102,27 @@ function createGas(codePath, seed) {
   Object.keys(seed.sheets).forEach(name => { sheets[name] = new Sheet(name, seed.sheets[name].map(r => r.slice()), ops, lockLog); });
   const props = Object.assign({}, seed.props);
   const cache = {};
+  // Строгий режим CacheService (по умолчанию выключен, чтобы не менять старые тесты): сроки хранения считаются по часам стенда (advance),
+  // потолок срока 6 часов, значение не больше 100 КБ. Включается g.setCacheStrict(true).
+  const cacheExp = {};
+  let cacheStrict = false;
+  const nowMs = () => Date.now() + (sandbox.__shift || 0);
+  const alive = k => { if (!cacheStrict) return k in cache; if (k in cache && cacheExp[k] !== undefined && cacheExp[k] <= nowMs()) { delete cache[k]; delete cacheExp[k]; } return k in cache; };
+  const putOne = (k, v, ttl) => {
+    if (cacheStrict) {
+      if (String(v).length > 100000) throw new Error('Exception: Argument too large: value');
+      cacheExp[k] = nowMs() + Math.min(ttl || 600, 21600) * 1000;
+    }
+    cache[k] = String(v);
+  };
   const sent = []; // всё, что бэкенд отправил в Telegram
   const triggers = [];
   let msgId = 100;
   let failTelegram = false;
   // Выпуск 9Б: «блокировка занята N мс» (script/doc), журнал обращений к блокировкам, не-Telegram запросы (Worker), Drive.
   // Стенд НЕ воспроизводит настоящую конкуренцию Google: busy — условное время, которое запрос ждал бы; реального ожидания нет.
-  const lockCfg = { script: 0, doc: 0, docNull: false }; // docNull: LockService.getDocumentLock() возвращает null (так бывает в веб-приложении)
-  const lockWaited = { script: 0, doc: 0 };
+  const lockCfg = { script: 0, doc: 0, user: 0, docNull: false, userNull: false }; // docNull: LockService.getDocumentLock() возвращает null (так бывает в веб-приложении)
+  const lockWaited = { script: 0, doc: 0, user: 0 };
   const fetched = []; // запросы не к Telegram: { url, method, headers, payload }
   const fetchCfg = { fail: false, code: 200 };
   const drive = { folders: [], files: [], seq: 0 };
@@ -117,7 +131,7 @@ function createGas(codePath, seed) {
     return { id: 'FILE-' + (++drive.seq), name, folder, trashed: false, created: new Date(drive.clock), src,
       getName() { return this.name; }, getDateCreated() { return this.created; }, setTrashed(v) { this.trashed = !!v; return this; } };
   }
-  const held = { script: 0, doc: 0 }; // сколько блокировок сейчас удерживается (для проверки «не внутри блокировки»)
+  const held = { script: 0, doc: 0, user: 0 }; // сколько блокировок сейчас удерживается (для проверки «не внутри блокировки»)
   function mkLock(kind) {
     const rec = (opn, ms, okk) => { lockLog.push({ kind, op: opn, ms, ok: okk }); if (okk) held[kind]++; if (okk && lockCfg[kind] > 0 && lockCfg[kind] !== Infinity) lockWaited[kind] += lockCfg[kind]; return okk; };
     return {
@@ -144,19 +158,19 @@ function createGas(codePath, seed) {
     __errors: [], __warns: [],
     SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ui },
     CacheService: { getScriptCache: () => ({
-      get: k => { op('cache'); return k in cache ? cache[k] : null; },
-      put: (k, v) => { op('cache'); cache[k] = String(v); },
-      putAll: o => { op('cache'); Object.keys(o).forEach(k => { cache[k] = String(o[k]); }); },
-      getAll: keys => { op('cache'); const o = {}; keys.forEach(k => { if (k in cache) o[k] = cache[k]; }); return o; },
-      remove: k => { op('cache'); delete cache[k]; },
-      removeAll: keys => { op('cache'); keys.forEach(k => { delete cache[k]; }); }
+      get: k => { op('cache'); return alive(k) ? cache[k] : null; },
+      put: (k, v, ttl) => { op('cache'); putOne(k, v, ttl); },
+      putAll: (o, ttl) => { op('cache'); Object.keys(o).forEach(k => { putOne(k, o[k], ttl); }); },
+      getAll: keys => { op('cache'); const o = {}; keys.forEach(k => { if (alive(k)) o[k] = cache[k]; }); return o; },
+      remove: k => { op('cache'); delete cache[k]; delete cacheExp[k]; },
+      removeAll: keys => { op('cache'); keys.forEach(k => { delete cache[k]; delete cacheExp[k]; }); }
     }) },
     PropertiesService: { getScriptProperties: () => ({
       getProperty: k => { op('prop'); return k in props ? props[k] : null; },
       getProperties: () => { op('prop'); return Object.assign({}, props); },
       setProperty: (k, v) => { op('prop'); props[k] = String(v); }
     }) },
-    LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => (lockCfg.docNull ? null : mkLock('doc')) },
+    LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => (lockCfg.docNull ? null : mkLock('doc')), getUserLock: () => (lockCfg.userNull ? null : mkLock('user')) },
     Utilities: {
       newBlob: (data) => ({ getBytes: () => (typeof data === 'string' ? Array.from(Buffer.from(data, 'utf8')) : data) }),
       computeHmacSha256Signature: (value, key) => {
@@ -182,6 +196,7 @@ function createGas(codePath, seed) {
       // failTelegram: true — любой вызов падает; функция (method, payload) → свой ответ Telegram или null (обычный успех)
       const custom = typeof failTelegram === 'function' ? failTelegram(method, payload) : null;
       const body = custom || (failTelegram && typeof failTelegram !== 'function' ? { ok: false, description: 'mock failure' } : { ok: true, result: { message_id: ++msgId, username: 'pamir_test_bot' } });
+      if (body && body.__http) { const code = body.__http, text = body.__text === undefined ? '' : String(body.__text); return { getResponseCode: () => code, getContentText: () => text }; } // ответ НП с нестандартным HTTP-кодом
       return { getContentText: () => JSON.stringify(body) };
     } },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ text, setMimeType() { return this; } }) },
@@ -216,12 +231,15 @@ function createGas(codePath, seed) {
     sandbox, sheets, props, cache, sent, triggers, ops, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
     setLockBusy(scriptMs, docMs) { lockCfg.script = scriptMs || 0; lockCfg.doc = docMs || 0; },
     setDocLockNull(v) { lockCfg.docNull = !!v; },
+    setUserLockBusy(ms) { lockCfg.user = ms || 0; },
+    setUserLockNull(v) { lockCfg.userNull = !!v; },
     /** Сдвиг часов внутри Code.gs (Date.now) вперёд на ms: «прошла минута». */
     advance(ms) { sandbox.__shift = (sandbox.__shift || 0) + ms; },
     setFetch(fail, code) { fetchCfg.fail = !!fail; fetchCfg.code = code || 200; },
     resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); },
     setTelegramFail(v) { failTelegram = v; },
-    clearCache() { Object.keys(cache).forEach(k => { delete cache[k]; }); },
+    clearCache() { Object.keys(cache).forEach(k => { delete cache[k]; delete cacheExp[k]; }); },
+    setCacheStrict(v) { cacheStrict = !!v; },
     get(query) { resetMemo(); return JSON.parse(sandbox.doGet({ parameter: query }).text); },
     post(body, parameter) {
       resetMemo();

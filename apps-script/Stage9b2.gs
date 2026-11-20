@@ -653,8 +653,8 @@ function s9b2StepIfOut_(ss) {
  *   Вводит владелец:  NP_SENDER_PHONE (380XXXXXXXXX, с «+», «0…», пробелами — всё равно),
  *                     NP_SENDER_WAREHOUSE (номер отделения, например 34), NP_SENDER_CITY_NAME (необязательно, по умолчанию «Харків»).
  *   Ручное переопределение (необязательно; заданное используется без запросов к API): NP_SENDER_CITY, NP_SENDER_ADDRESS, NP_SENDER_REF, NP_SENDER_CONTACT.
- *   Служебные (пишет код): NP_SENDER_CACHE (Ref-ы и отпечаток входных значений, не секрет), NP_ALERT_LAST, NP_TRACK_LAST.
- * Ref города, отделения, контрагента и контакта находятся через API и кэшируются (CacheService 6 ч + NP_SENDER_CACHE 30 дней).
+ *   Служебные (пишет код): NP_SENDER_CACHE (Ref-ы и отпечаток входных значений, не секрет), NP_ALERT_LAST, NP_LIMIT_ALERT_LAST (тревога о лимите НП), NP_LIMIT_HITS (метки срабатываний паузы за сутки), NP_TRACK_LAST, NP_PAUSE_UNTIL (пауза после «To many requests»), NP_SENDER_RETRY (повтор неудачной попытки: 1 ч → 6 ч → 24 ч).
+ * Ref города, отделения, контрагента и контакта находятся через API и кэшируются (CacheService 6 ч + NP_SENDER_CACHE 7 дней).
  * Сетевых запросов в каталоге и в админ-панели нет: отправитель разрешается в hourlyJob (npSenderJob_) и из меню «Етап 9Б2: перевірити Нову пошту».
  * Нет ключа или данных — всё как раньше: нет полей shop.npp, orders.npTtn, действий и сообщений.
  *
@@ -665,7 +665,7 @@ function s9b2StepIfOut_(ss) {
 
 var NP_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var NP_SENDER_PROPS = ['NP_SENDER_REF', 'NP_SENDER_CONTACT', 'NP_SENDER_CITY', 'NP_SENDER_ADDRESS', 'NP_SENDER_PHONE'];
-var NP_PRICE_TTL = 4 * 3600;        // кэш стоимости, секунды
+var NP_PRICE_TTL = 24 * 3600;       // кэш стоимости, секунды (быстрый слой 6 ч + лист «Кеш НП», Stage9b3.gs)
 var NP_PRICE_MAX_PER_HOUR = 150;    // свои вызовы np.price в час (общий лимит 600 — ещё и у подсказок городов и отделений)
 var NP_W_MIN_G = 100, NP_W_MAX_G = 30000; // вес посылки, граммы
 var NP_TTN_BUSY_MS = 5 * 60 * 1000; // отметка «создание идёт» живёт столько
@@ -674,8 +674,8 @@ var NP_TRACK_DAYS = 30;             // заказы старше — не опр
 var NP_TRACK_BATCH = 100, NP_TRACK_MAX_BATCHES = 5;
 var NP_DESC_DEFAULT = 'Харчові продукти';
 var NP_SENDER_CACHE_KEY = 'np_sender';
-var NP_SENDER_TTL_MS = 30 * 24 * 3600 * 1000;      // кэш Ref-ов отправителя действует 30 дней
-var NP_SENDER_REFRESH_MS = 25 * 24 * 3600 * 1000;  // hourlyJob обновляет его заранее
+var NP_SENDER_TTL_MS = 7 * 24 * 3600 * 1000;       // кэш Ref-ов отправителя действует 7 дней (при неудачном обновлении старый кэш работает до конца срока)
+var NP_SENDER_REFRESH_MS = 5 * 24 * 3600 * 1000;   // hourlyJob начинает обновлять его за 2 дня до конца срока
 var NP_SENDER_CITY_DEFAULT = 'Харків';
 
 function npProp_(name) {
@@ -792,6 +792,7 @@ var NP_MSG = {
   wh_unknown: ['Не вдалося однозначно знайти відділення за номером. Створіть ТТН вручну й введіть номер', 'Не удалось однозначно найти отделение по номеру. Создайте ТТН вручную и введите номер'],
   np_error: ['Нова пошта не відповіла. Спробуйте пізніше або створіть ТТН вручну', 'Новая почта не ответила. Попробуйте позже или создайте ТТН вручную'],
   np_api: ['Нова пошта відхилила запит', 'Новая почта отклонила запрос'],
+  np_paused: ['Нова пошта тимчасово обмежила запити. Спробуйте через %N% хв.', 'Новая почта временно ограничила запросы. Попробуйте через %N% мин.'],
   np_unknown: ['Відповідь Нової пошти не отримано: накладна могла бути створена. Перевірте кабінет Нової пошти перед повтором (захист від дубля діє 5 хвилин)', 'Ответ Новой почты не получен: накладная могла быть создана. Проверьте кабинет Новой почты перед повтором (защита от дубля действует 5 минут)'],
   save_failed: ['Накладну створено, але номер не записано в замовлення. Введіть номер вручну', 'Накладная создана, но номер не записан в заказ. Введите номер вручную'],
   bad_phone: ['Телефон отримувача не українського формату (+380…). Створіть ТТН вручну', 'Телефон получателя не украинского формата (+380…). Создайте ТТН вручную'],
@@ -824,7 +825,9 @@ function npDimsFail_(vol) {
 
 function npFail_(code, extra) {
   var m = NP_MSG[code] || ['Помилка', 'Ошибка'];
-  var out = { ok: false, error: code, msg: { ua: m[0], ru: m[1] } };
+  var n = code === 'np_paused' ? npPauseMin_() : 0; // «Спробуйте через N хв.»: N — остаток паузы из-за лимита НП
+  var out = { ok: false, error: code, msg: { ua: n ? m[0].replace('%N%', String(n)) : m[0], ru: n ? m[1].replace('%N%', String(n)) : m[1] } };
+  if (n) out.retryAfter = npPauseLeftSec_();
   if (extra) Object.keys(extra).forEach(function (k) { out[k] = extra[k]; });
   return out;
 }
@@ -845,7 +848,7 @@ function npPaged_(model, method, base, maxPages, limit) {
     if (limit) props.Limit = String(limit);
     var eo = {};
     var data = npCall_(method, props, { model: model, noCache: true, quiet: true, admin: true, errOut: eo });
-    if (!data) return { items: items, err: { api: eo.api === true, text: eo.text || '', nocall: eo.nocall === true } };
+    if (!data) return { items: items, err: { api: eo.api === true, text: eo.text || '', nocall: eo.nocall === true, paused: eo.paused === true, retryAfter: eo.retryAfter || 0 } }; // первая же ошибка (и пауза из-за лимита) останавливает перебор
     if (!data.length) break;
     var fresh = 0;
     data.forEach(function (x) {
@@ -860,12 +863,19 @@ function npPaged_(model, method, base, maxPages, limit) {
 }
 
 /**
- * Отделение (или почтомат) города по номеру. Сначала узкий запрос (CityRef + WarehouseId = номер строкой), если точного совпадения нет — полный перебор страниц города.
+ * Отделение (или почтомат) города по номеру. Порядок (выпуск 9Б3, чтобы тратить меньше запросов НП):
+ *   1) кэш этого номера (найдено — 24 ч в двух слоях, «не найдено» — 1 ч);
+ *   2) список отделений города, если он уже в кэше (его кладёт np.whall и полный перебор ниже): поиск без сети;
+ *   3) узкий запрос (CityRef + WarehouseId = номер строкой), как раньше;
+ *   4) только если узкий не дал ответа — полный список города (страницы по 500, останавливается на первой ошибке и на паузе из-за лимита),
+ *      он остаётся в кэше на 24 часа и потом служит и np.whall, и другим номерам.
  * Результат всегда проверяется на своей стороне: Number === номер, CityRef города (если поле есть в ответе), тип, один результат.
- * Возвращает {ref, num, desc, city, cityRu} или {error: 'wh_unknown'|'np_error'|'np_api', text}.
+ * Результат из кэша (любого слоя) сверяется с запросом: номер, CityRef города и тип должны совпасть, иначе он считается отсутствующим.
+ * noLong (поиск отделения отправителя) — читает кэш, но ничего не ставит в очередь на запись в лист «Кеш НП»: Ref отправителя там быть не должно.
+ * Возвращает {ref, num, desc, city, cityRu} или {error: 'wh_unknown'|'np_error'|'np_api'|'np_paused', text, retryAfter}.
  * Не сверено с документацией: имена полей Number, CityRef, CategoryOfWarehouse, Description и параметры Page/Limit/WarehouseId — по библиотекам и указанию владельца.
  */
-function npFindWarehouse_(cityRef, num, locker) {
+function npFindWarehouse_(cityRef, num, locker, noLong) {
   cityRef = String(cityRef || '');
   if (!NP_UUID_RE.test(cityRef) || !(num > 0)) return { error: 'wh_unknown' };
   function pick(items) {
@@ -876,30 +886,53 @@ function npFindWarehouse_(cityRef, num, locker) {
       return isLocker === !!locker;
     });
   }
-  var ck = 'npwh_' + cityRef.toLowerCase() + '_' + num + (locker ? 'l' : 'b'), cache = null; // «найдено» — 6 ч, «не найдено» — 30 мин; сбои связи не кэшируются
+  var ck = 'npwf_' + cityRef.toLowerCase() + '_' + num + (locker ? 'l' : 'b');
+  var cityLow = cityRef.toLowerCase();
+  function cached() { // запись несёт метки запроса (cr, nm, lk): чужая или старая запись без меток не принимается
+    var t = npCacheGet_(ck, true);
+    if (t === null) return null;
+    try {
+      var o = JSON.parse(t);
+      if (!o || typeof o !== 'object' || o.cr !== cityLow || String(o.nm) !== String(num) || o.lk !== !!locker) return null;
+      if (o.error) return o.error === 'wh_unknown' ? { error: 'wh_unknown' } : null;
+      if (!NP_UUID_RE.test(String(o.ref || '')) || String(o.num) !== String(num)) return null;
+      return { ref: String(o.ref), num: String(o.num), desc: String(o.desc || ''), city: String(o.city || ''), cityRu: String(o.cityRu || '') };
+    } catch (e0) { return null; }
+  }
+  function store(res) { // найдено — 24 ч (оба слоя), «не найдено» — 1 ч (только быстрый); сбои связи не кэшируются
+    var tagged = {};
+    Object.keys(res).forEach(function (k) { tagged[k] = res[k]; });
+    tagged.cr = cityLow; tagged.nm = String(num); tagged.lk = !!locker;
+    npCachePut_(ck, JSON.stringify(tagged), res.error ? NP_TTL_EMPTY : NP_TTL_LONG, noLong);
+    return res;
+  }
+  function fail(err) {
+    if (err && err.paused) return { error: 'np_paused', retryAfter: err.retryAfter || 0 };
+    return { error: err && err.api ? 'np_api' : 'np_error', text: err && err.text || '' };
+  }
+  var hit = cached();
+  if (hit) return hit;
+  var list = npWhPeek_(cityRef);
+  if (list) return store(npWhFromList_(list, num, locker));
+  var lead = npLead_(ck, 6, cached);
+  if (lead.value !== undefined) return lead.value;
+  if (!lead.lead) return { error: 'np_error', text: '' };
   try {
-    cache = CacheService.getScriptCache();
-    var hit = cache.get(ck);
-    if (hit) return JSON.parse(hit);
-  } catch (e0) { cache = null; }
-  var hits = null;
-  for (var attempt = 0; attempt < 2; attempt++) {
-    var base = { CityRef: cityRef };
-    if (attempt === 0) base.WarehouseId = String(num); // узкий запрос (WarehouseId по указанию владельца); результат всё равно проверяется ниже
-    var r = npPaged_('Address', 'getWarehouses', base, attempt === 0 ? 3 : 12, NP_WH_PAGE);
-    if (r.err) return { error: r.err.api ? 'np_api' : 'np_error', text: r.err.text };
-    hits = pick(r.items);
-    if (hits.length) break;
+    var r = npPaged_('Address', 'getWarehouses', { CityRef: cityRef, WarehouseId: String(num) }, 3, NP_WH_PAGE); // узкий запрос (WarehouseId по указанию владельца)
+    if (r.err) return fail(r.err);
+    var hits = pick(r.items);
+    if (!hits.length) {
+      var eo = {};
+      list = npWhLoad_(cityRef, true, eo, noLong); // узкий запрос пуст: полный список города, он же попадёт в кэш
+      if (!list) return eo.text || eo.paused ? fail({ api: eo.api === true, text: eo.text || '', paused: eo.paused === true, retryAfter: eo.retryAfter || 0 }) : { error: 'np_error', text: '' };
+      return store(npWhFromList_(list, num, locker));
+    }
+    if (hits.length !== 1) return store({ error: 'wh_unknown' });
+    var w = hits[0];
+    return store({ ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60), cityRu: String(w.CityDescriptionRu || '').slice(0, 60) });
+  } finally {
+    lead.done();
   }
-  if (hits.length !== 1) {
-    var nf = { error: 'wh_unknown' };
-    try { if (cache) cache.put(ck, JSON.stringify(nf), 1800); } catch (e1) { /* не критично */ }
-    return nf;
-  }
-  var w = hits[0];
-  var res = { ref: String(w.Ref), num: String(num), desc: String(w.Description || '').slice(0, 140), city: String(w.CityDescription || '').slice(0, 60), cityRu: String(w.CityDescriptionRu || '').slice(0, 60) };
-  try { if (cache) cache.put(ck, JSON.stringify(res), 21600); } catch (e2) { /* не критично */ }
-  return res;
 }
 
 /* ---------- 0б. Отправитель: разрешение через API, кэш, тревога ---------- */
@@ -916,25 +949,33 @@ var NP_SMSG = {
   ct_none: ['У відправника немає контактної особи. Впишіть її код у NP_SENDER_CONTACT', 'У отправителя нет контактного лица. Впишите её код в NP_SENDER_CONTACT'],
   ct_many: ['Контактних осіб кілька, а телефон із NP_SENDER_PHONE не підійшов ні до однієї. Перевірте телефон або впишіть код контакту в NP_SENDER_CONTACT (список кодів покаже пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)', 'Контактных лиц несколько, а телефон из NP_SENDER_PHONE не подошёл ни к одной. Проверьте телефон или впишите код контакта в NP_SENDER_CONTACT (список кодов покажет пункт меню PAMIR «Етап 9Б2: перевірити Нову пошту»)'],
   phone_bad: ['NP_SENDER_PHONE має неправильний формат (потрібно 380XXXXXXXXX, +380XXXXXXXXX або 0XXXXXXXXX)', 'NP_SENDER_PHONE в неправильном формате (нужно 380XXXXXXXXX, +380XXXXXXXXX или 0XXXXXXXXX)'],
-  bad_resp: ['Відповідь Нової пошти має незвичний вигляд', 'Ответ Новой почты имеет необычный вид']
+  bad_resp: ['Відповідь Нової пошти має незвичний вигляд', 'Ответ Новой почты имеет необычный вид'],
+  paused: ['Нова пошта тимчасово обмежила запити. Спробуйте через %N% хв.', 'Новая почта временно ограничила запросы. Попробуйте через %N% мин.']
 };
 
 function npSmsg_(code, lang, text) {
   var m = NP_SMSG[code] || ['Помилка', 'Ошибка'];
   var s = lang === 'ru' ? m[1] : m[0];
+  if (code === 'paused') return s.replace('%N%', String(npPauseMin_()));
   if (text && (code === 'api' || code === 'net')) s += ' (' + npSafeReason_(text, npKey_(), 120) + ')';
   return s;
 }
 
 /** Итог шага запроса к API → ошибка шага. */
-function npStepErr_(err) { return { code: err.api ? 'api' : 'net', text: err.text || '' }; }
+function npStepErr_(err) { return { code: npErrCode_(err), text: err.text || '' }; }
+
+/** Код причины шага из ошибки запроса: пауза из-за лимита, отказ API или обрыв связи. */
+function npErrCode_(err) { return err && err.paused ? 'paused' : err && err.api ? 'api' : 'net'; }
 
 /**
  * Разрешает отправителя через API (читающие запросы) и сохраняет кэш. Вызывать ВНЕ LockService. Заданные свойства-переопределения не запрашиваются.
  * Возвращает { ok, errs: [{code, text, n}], steps: {city, wh, cp, ct, phone}, sender }, где у шага: state 'override'|'ok'|'kept'|'err'|'skip', name (для меню).
  * Что нашлось — сохраняется, даже если другие шаги не удались (город уже позволяет считать стоимость).
+ * opts.reuse (hourlyJob, кэш свежий): шаги, у которых в кэше уже есть значение, не запрашиваются повторно (state 'cached'); без opts запрашивается всё (меню).
+ * Первая же ошибка лимита НП ставит паузу: остальные шаги сети не касаются (npCall_ отвечает «paused» сразу).
  */
-function npSenderResolve_() {
+function npSenderResolve_(opts) {
+  var reuse = !!(opts && opts.reuse), reused = false;
   // cands — варианты при неоднозначности (с Ref-ами) ТОЛЬКО для окна меню владельца; не попадает в ответы API, Telegram и логи.
   var res = { ok: true, errs: [], steps: {}, sender: null, cands: {} };
   if (!npKey_()) { res.ok = false; res.errs.push({ code: 'no_key' }); return res; }
@@ -946,6 +987,7 @@ function npSenderResolve_() {
     var e = { code: code }; if (extra) Object.keys(extra).forEach(function (k) { e[k] = extra[k]; });
     res.errs.push(e); res.steps[step] = { state: 'err', code: code }; res.ok = false;
   }
+  function have(k) { return reuse && old && old[k] && /^[\w-]{8,64}$/.test(String(old[k])) ? String(old[k]) : ''; } // значение из свежего кэша, если его можно не перезапрашивать
   function keep(k, step) { // этап не удался: прежнее значение из кэша (если оно свежее) лучше, чем ничего
     if (old && old[k] && /^[\w-]{8,64}$/.test(String(old[k]))) { out[k] = String(old[k]); res.steps[step].state = 'kept'; }
   }
@@ -953,10 +995,11 @@ function npSenderResolve_() {
   // 1. Город: getCities(FindByString), точное совпадение названия (не сверено с документацией)
   var cityRef = ov.city;
   if (ov.city) res.steps.city = { state: 'override' };
+  else if (have('city')) { cityRef = have('city'); out.city = cityRef; res.steps.city = { state: 'cached' }; reused = true; }
   else {
     var name = npSenderCityName_(), want = npCityNorm_(name);
-    var rc = npPaged_('Address', 'getCities', { FindByString: name }, 3, 0);
-    if (rc.err) bad('city', rc.err.api ? 'api' : 'net', { text: rc.err.text });
+    var rc = npPaged_('Address', 'getCities', { FindByString: name }, 3, 100);
+    if (rc.err) bad('city', npErrCode_(rc.err), { text: rc.err.text });
     else {
       var cm = rc.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')) && (npCityNorm_(c.Description) === want || npCityNorm_(c.DescriptionRu) === want); });
       if (cm.length === 0) bad('city', 'city_none');
@@ -970,18 +1013,20 @@ function npSenderResolve_() {
   if (ov.address) res.steps.wh = { state: 'override' };
   else if (!whNum) res.steps.wh = { state: 'skip' };
   else if (!cityRef) { res.steps.wh = { state: 'skip', dep: 'city' }; keep('address', 'wh'); }
+  else if (have('address') && res.steps.city.state === 'cached') { out.address = have('address'); res.steps.wh = { state: 'cached', n: whNum }; reused = true; }
   else {
-    var wh = npFindWarehouse_(cityRef, whNum, false);
-    if (wh.error) { bad('wh', wh.error === 'wh_unknown' ? 'wh_none' : wh.error === 'np_api' ? 'api' : 'net', { text: wh.text, n: whNum }); keep('address', 'wh'); }
+    var wh = npFindWarehouse_(cityRef, whNum, false, true); // отправитель: в лист кэша не пишем
+    if (wh.error) { bad('wh', wh.error === 'wh_unknown' ? 'wh_none' : wh.error === 'np_paused' ? 'paused' : wh.error === 'np_api' ? 'api' : 'net', { text: wh.text, n: whNum }); keep('address', 'wh'); }
     else { out.address = wh.ref; res.steps.wh = { state: 'ok', name: wh.desc, n: whNum }; }
   }
 
   // 3. Контрагент-отправитель: ровно один (не сверено с документацией: CounterpartyProperty 'Sender')
   var cpRef = ov.ref;
   if (ov.ref) res.steps.cp = { state: 'override' };
+  else if (have('ref')) { cpRef = have('ref'); out.ref = cpRef; res.steps.cp = { state: 'cached' }; reused = true; }
   else {
-    var rp = npPaged_('Counterparty', 'getCounterparties', { CounterpartyProperty: 'Sender' }, 2, 0);
-    if (rp.err) bad('cp', rp.err.api ? 'api' : 'net', { text: rp.err.text });
+    var rp = npPaged_('Counterparty', 'getCounterparties', { CounterpartyProperty: 'Sender' }, 2, 100);
+    if (rp.err) bad('cp', npErrCode_(rp.err), { text: rp.err.text });
     else {
       var cps = rp.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')); });
       if (cps.length === 0) bad('cp', 'cp_none');
@@ -995,9 +1040,10 @@ function npSenderResolve_() {
   var phoneRaw = npProp_('NP_SENDER_PHONE'), phone = npPhone_(phoneRaw);
   if (ov.contact) res.steps.ct = { state: 'override' };
   else if (!cpRef) { res.steps.ct = { state: 'skip', dep: 'cp' }; keep('contact', 'ct'); }
+  else if (have('contact') && res.steps.cp.state === 'cached') { out.contact = have('contact'); res.steps.ct = { state: 'cached' }; reused = true; }
   else {
-    var rt = npPaged_('Counterparty', 'getCounterpartyContactPersons', { Ref: cpRef }, 2, 0);
-    if (rt.err) { bad('ct', rt.err.api ? 'api' : 'net', { text: rt.err.text }); keep('contact', 'ct'); }
+    var rt = npPaged_('Counterparty', 'getCounterpartyContactPersons', { Ref: cpRef }, 2, 100);
+    if (rt.err) { bad('ct', npErrCode_(rt.err), { text: rt.err.text }); keep('contact', 'ct'); }
     else {
       var cts = rt.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')); });
       var picked = null;
@@ -1023,7 +1069,7 @@ function npSenderResolve_() {
   if (any) {
     var complete = res.ok;
     var hadCity = !!npSenderState_().city;
-    npSenderCacheWrite_({ fp: fp, at: complete || !old ? now : Number(old.at) || now, city: out.city, address: out.address, ref: out.ref, contact: out.contact });
+    npSenderCacheWrite_({ fp: fp, at: (complete && !reused) || !old ? now : Number(old.at) || now, city: out.city, address: out.address, ref: out.ref, contact: out.contact });
     if (!hadCity && out.city && typeof clearCatalogCache_ === 'function') { try { clearCatalogCache_(); } catch (err) { /* кэш каталога обновится сам */ } }
   }
   res.sender = npSenderState_();
@@ -1040,15 +1086,15 @@ function npSenderProblemText_(res) {
 }
 
 /** Служебная тревога админам с правом «Замовлення: статуси»: не чаще раза в 24 часа (NP_ALERT_LAST). Возвращает true, если отправлено. */
-function npAlertAdmins_(ua, ru) {
+function npAlertAdmins_(ua, ru, markProp) {
   try {
-    var props = scriptProps_(), day = 24 * 3600 * 1000, now = Date.now();
-    if (now - (Number(props.getProperty('NP_ALERT_LAST')) || 0) < day) return false;
+    var props = scriptProps_(), day = 24 * 3600 * 1000, now = Date.now(), mark = markProp || 'NP_ALERT_LAST'; // markProp: отметка суток (о лимите НП — своя)
+    if (now - (Number(props.getProperty(mark)) || 0) < day) return false;
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(3000)) return false;
     try {
-      if (now - (Number(props.fresh('NP_ALERT_LAST')) || 0) < day) return false; // кто-то успел раньше
-      props.setProperty('NP_ALERT_LAST', String(now));
+      if (now - (Number(props.fresh(mark)) || 0) < day) return false; // кто-то успел раньше
+      props.setProperty(mark, String(now));
     } finally {
       lock.releaseLock();
     }
@@ -1065,8 +1111,11 @@ function npAlertAdmins_(ua, ru) {
 }
 
 /**
- * Из hourlyJob: если есть ключ и NP_SENDER_WAREHOUSE или NP_SENDER_PHONE, а Ref-ов в свойствах и кэше не хватает (или кэшу больше 25 дней) —
+ * Из hourlyJob: если есть ключ и NP_SENDER_WAREHOUSE или NP_SENDER_PHONE, а Ref-ов в свойствах и кэше не хватает (или кэшу больше 5 дней из 7) —
  * разрешает отправителя через API. Не удалось — админам одно сообщение в сутки; витрина остаётся без стоимости доставки и ТТН.
+ * Выпуск 9Б3: неудачная попытка не повторяется каждый час — следующая через 1 ч, потом 6 ч, потом 24 ч (NP_SENDER_RETRY; смена входных значений
+ * сбрасывает отсчёт). Пока идёт пауза из-за лимита НП, попытки нет и она в счёт не идёт. Свежий кэш без пробелов не обновляется заново:
+ * запрашиваются только недостающие шаги. При неудачном обновлении остаётся прежний кэш до конца срока (7 дней).
  * Возвращает 1, если запрашивали API.
  */
 function npSenderJob_() {
@@ -1077,8 +1126,14 @@ function npSenderJob_() {
   var need = !s.city || !s.ref || !s.contact || (whNum > 0 && !s.address);
   var stale = s.cached && s.at > 0 && Date.now() - s.at > NP_SENDER_REFRESH_MS;
   if (need || stale) {
-    var res = npSenderResolve_();
-    if (res.errs.length) { var t = npSenderProblemText_(res); npAlertAdmins_(t[0], t[1]); }
+    if (npPauseLeftSec_() > 0) return 0;
+    var fp = npSenderFp_(), bo = npSenderBackoff_();
+    if (bo && bo.fp === fp && Number(bo.next) > Date.now()) return 0; // прошлая попытка не удалась: ждём
+    var res = npSenderResolve_({ reuse: !stale });
+    var real = res.errs.filter(function (e) { return e.code !== 'paused'; }); // лимит НП — не ошибка настроек: о нём уже есть своё сообщение
+    if (!res.errs.length) npSenderBackoffClear_();
+    else if (real.length) npSenderBackoffSet_((bo && bo.fp === fp ? Number(bo.n) || 0 : 0) + 1, fp);
+    if (real.length) { var t = npSenderProblemText_({ errs: real }); npAlertAdmins_(t[0], t[1]); }
     return 1;
   }
   if (hasPhone && !s.phone) { var t2 = npSenderProblemText_({ errs: [{ code: 'phone_bad' }] }); npAlertAdmins_(t2[0], t2[1]); }
@@ -1095,7 +1150,16 @@ function stage9b2CheckNp() {
     return { ok: false, message: no };
   }
   lines.push('Ключ: є');
+  lines.push(npLimitStatusLine_());
+  var longLines = npLongStatusLines_();
+  longLines.forEach(function (x) { lines.push(x); });
+  if (npPauseLeftSec_() > 0) { // пауза после «To many requests»: сети нет вообще
+    var pm = npLimitStatusLine_() + '\n' + longLines.join('\n') + '\n' + npSmsg_('paused', 'ua') + ' Запити до Нової пошти зараз не надсилаються; повторіть пункт меню після ' + npPauseUntilText_() + '.';
+    s9Alert_(pm);
+    return { ok: false, message: pm, paused: true, retryAfter: npPauseLeftSec_() };
+  }
   var res = npSenderResolve_(), st = res.steps;
+  if (res.ok) npSenderBackoffClear_();
   function nm(s) { return s && s.name ? ' (' + npSafeReason_(s.name, key, 90) + ')' : ''; }
   function why(e) { return ': ' + npSmsg_(e.code, 'ua', e.text); }
   function errOf(step) { var r = ''; res.errs.forEach(function (e) { if (st[step] && st[step].code === e.code && !r) r = why(e); }); return r; }
@@ -1128,21 +1192,22 @@ function stage9b2CheckNp() {
   var s = res.sender || npSenderState_();
   if (!s.city) lines.push('Вартість доставки 1 кг до Києва: не перевірено, бо невідоме місто відправника');
   else {
-    var kyiv = npPaged_('Address', 'getCities', { FindByString: 'Київ' }, 2, 0), kref = '';
+    var kyiv = npPaged_('Address', 'getCities', { FindByString: 'Київ' }, 2, 100), kref = '';
     if (!kyiv.err) { var km = kyiv.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')) && (npCityNorm_(c.Description) === 'київ' || npCityNorm_(c.DescriptionRu) === 'киев'); }); if (km.length === 1) kref = String(km[0].Ref); }
-    if (!kref) lines.push('Вартість доставки 1 кг до Києва: не вдалося визначити Київ у Нової пошти' + (kyiv.err ? ': ' + npSmsg_(kyiv.err.api ? 'api' : 'net', 'ua', kyiv.err.text) : ''));
+    if (!kref) lines.push('Вартість доставки 1 кг до Києва: не вдалося визначити Київ у Нової пошти' + (kyiv.err ? ': ' + npSmsg_(npErrCode_(kyiv.err), 'ua', kyiv.err.text) : ''));
     else {
       var eo = {};
       var pr = npCall_('getDocumentPrice', { CitySender: s.city, CityRecipient: kref, Weight: '1', ServiceType: 'WarehouseWarehouse', Cost: '200', CargoType: 'Parcel', SeatsAmount: '1' },
         { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
       var price = pr && pr[0] ? Math.round(Number(pr[0].Cost)) : 0;
-      lines.push('Вартість доставки 1 кг до Києва: ' + (price > 0 ? String(price).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' ₴' : 'не вдалося дізнатися' + (eo.text ? ': ' + npSmsg_(eo.api ? 'api' : 'net', 'ua', eo.text) : '')));
+      lines.push('Вартість доставки 1 кг до Києва: ' + (price > 0 ? String(price).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' ₴' : 'не вдалося дізнатися' + (eo.text ? ': ' + npSmsg_(npErrCode_(eo), 'ua', eo.text) : '')));
     }
   }
   var price1 = !!(npKey_() && s.city), ttn1 = npTtnOn_();
   lines.push('');
   lines.push(price1 ? 'Вартість доставки на сайті: увімкнено.' : 'Вартість доставки на сайті: вимкнено.');
   lines.push(ttn1 ? 'Кнопка «Створити ТТН»: увімкнено.' : 'Кнопка «Створити ТТН»: вимкнено (потрібні місто, відділення, відправник, контакт і телефон).');
+  if (npPauseLeftSec_() > 0) { lines.push(''); lines.push(npSmsg_('paused', 'ua') + ' Частину перевірок не виконано.'); }
   lines.push('У Нової пошти нічого не створено: були лише запити на читання.');
   var text = lines.join('\n');
   s9Alert_(text);
@@ -1167,13 +1232,19 @@ function npPrice_(city, w, sum) {
   if (!isFinite(s) || s < 0) s = 0;
   var cost = Math.min(50000, Math.max(200, Math.ceil(s / 500) * 500));
   var cache = CacheService.getScriptCache();
-  var ckey = 'npp_' + city.toLowerCase() + '_' + kg + '_' + cost;
-  var hit = cache.get(ckey);
+  var ckey = 'npp_' + city.toLowerCase() + '_' + kg + '_' + cost + '_' + npSenderTag_(); // тариф зависит и от города отправителя: смена города — новый ключ
+  var hit = npCacheGet_(ckey, true);
   if (hit && /^\d+$/.test(hit)) return { ok: true, cost: Number(hit) };
+  var left = npPauseLeftSec_();
+  if (left > 0) return { ok: false, error: 'np_error', retryAfter: left }; // пауза из-за лимита НП: сети нет, витрина не должна спрашивать снова
+  var lead = npLead_(ckey, 6, function () { var v = npCacheGet_(ckey, true); return v && /^\d+$/.test(v) ? v : null; });
+  if (lead.value !== undefined) return { ok: true, cost: Number(lead.value) };
+  if (!lead.lead) return { ok: false, error: 'busy' }; // тот же расчёт уже идёт: дубль не шлём
+  try {
   var now = Date.now(), parts = String(cache.get('npp_calls') || '').split('|');
   var calls = parseInt(parts[0], 10) || 0, t0 = parseInt(parts[1], 10) || now;
   if (now - t0 > 3600000) { calls = 0; t0 = now; }
-  if (calls >= NP_PRICE_MAX_PER_HOUR) return { ok: false, error: 'busy' };
+  if (calls >= NP_PRICE_MAX_PER_HOUR) return { ok: false, error: 'busy', retryAfter: Math.min(600, Math.max(1, Math.ceil((t0 + 3600000 - now) / 1000))) }; // свой счётчик стоимости
   cache.put('npp_calls', (calls + 1) + '|' + t0, 3600);
   var eo = {};
   var data = npCall_('getDocumentPrice', {
@@ -1187,10 +1258,23 @@ function npPrice_(city, w, sum) {
       npAlertAdmins_('Нова пошта: не вдалося порахувати вартість доставки для покупців (Нова пошта відмовила у запиті). Покупці просто не бачать вартість доставки, замовлення працюють як раніше. Перевірте ключ NP_API_KEY у кабінеті Нової пошти і запустіть у таблиці меню PAMIR → «Етап 9Б2: перевірити Нову пошту».',
         'Новая почта: не удалось рассчитать стоимость доставки для покупателей (Новая почта отклонила запрос). Покупатели просто не видят стоимость доставки, заказы работают как раньше. Проверьте ключ NP_API_KEY в кабинете Новой почты и запустите в таблице меню PAMIR → «Етап 9Б2: перевірити Нову пошту».');
     }
-    return { ok: false, error: 'np_error' };
+    return npFailOut_({ ok: false, error: 'np_error' }, eo);
   }
-  cache.put(ckey, String(price), NP_PRICE_TTL);
+  npCachePut_(ckey, String(price), NP_PRICE_TTL);
   return { ok: true, cost: price };
+  } finally {
+    lead.done();
+  }
+}
+
+/** Короткая метка города отправителя для ключа кэша стоимости (HMAC по ключу НП: самого Ref в кэше и в листе нет). */
+function npSenderTag_() {
+  var city = npSenderState_().city;
+  if (!city) return '-';
+  try {
+    var sig = Utilities.computeHmacSha256Signature(Utilities.newBlob(city).getBytes(), Utilities.newBlob(npKey_() || 'np').getBytes());
+    return sig.slice(0, 4).map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+  } catch (err) { return 'x'; }
 }
 
 /* ---------- 2. «Створити ТТН»: подтверждение и создание ---------- */
@@ -1260,7 +1344,7 @@ function npResolveWh_(cityRef, branchText, locker) {
   var m = String(branchText || '').match(/\d{1,5}/);
   if (!m) return { error: 'wh_unknown' };
   var r = npFindWarehouse_(cityRef, parseInt(m[0], 10), locker);
-  if (r.error) return { error: r.error === 'wh_unknown' ? 'wh_unknown' : 'np_error' };
+  if (r.error) return r.error === 'np_paused' ? { error: 'np_paused' } : { error: r.error === 'wh_unknown' ? 'wh_unknown' : 'np_error' };
   return r;
 }
 
@@ -1360,14 +1444,14 @@ function npRecipientSave_(d, parts) {
   var eo = {};
   var data = npCall_('save', { CounterpartyProperty: 'Recipient', CounterpartyType: 'PrivatePerson', CityRef: d.cityRef,
     FirstName: parts.first, MiddleName: parts.middle || '', LastName: parts.last, Phone: d.phone }, { model: 'Counterparty', noCache: true, quiet: true, admin: true, errOut: eo });
-  if (!data) return { err: eo.api === true ? { api: true, text: eo.text || '' } : { api: false } };
+  if (!data) return { err: eo.paused === true ? { paused: true } : eo.api === true ? { api: true, text: eo.text || '' } : { api: false } };
   var rec = data[0] || {}, ref = String(rec.Ref || ''), contact = '';
   if (!NP_UUID_RE.test(ref)) return { err: { api: false, bad: true } };
   var cp = rec.ContactPerson && rec.ContactPerson.data && rec.ContactPerson.data[0];
   if (cp && NP_UUID_RE.test(String(cp.Ref || ''))) contact = String(cp.Ref);
   if (!contact) {
     var r = npPaged_('Counterparty', 'getCounterpartyContactPersons', { Ref: ref }, 1, 0);
-    if (r.err) return { err: { api: r.err.api, text: r.err.text } };
+    if (r.err) return { err: { api: r.err.api, text: r.err.text, paused: r.err.paused === true } };
     var c0 = r.items.filter(function (c) { return c && NP_UUID_RE.test(String(c.Ref || '')); })[0];
     if (c0) contact = String(c0.Ref);
   }
@@ -1424,6 +1508,7 @@ function npTtnCreate_(body, token) {
   var rec = npRecipientSave_(d, parts);
   if (rec.err) {
     unmark();
+    if (rec.err.paused) return npFail_('np_paused', { step: 1 }); // лимит НП: запрос не обработан, повтор безопасен
     return rec.err.api ? npFail_('np_api', { np: rec.err.text || '', step: 1 }) : npFail_('np_error', { step: 1 });
   }
   // Шаг 2: накладная. Ref-поля — как в большинстве клиентских библиотек (не сверено с документацией).
@@ -1443,6 +1528,7 @@ function npTtnCreate_(body, token) {
   var data = npCall_('save', props, { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
   var ttn = data && data[0] ? String(data[0].IntDocNumber || '').replace(/\s+/g, '') : '';
   if (!/^\d{10,20}$/.test(ttn)) {
+    if (!data && eo.paused === true) { unmark(); return npFail_('np_paused', { step: 2 }); } // лимит НП (или пауза): запрос отклонён, накладной нет, повтор безопасен
     if (!data && eo.api !== true && eo.nocall !== true) return npFail_('np_unknown'); // связь оборвалась: накладная могла создаться, метку не снимаем
     if (data && data.length) return npFail_('np_unknown');                             // success без разборчивого номера: накладная скорее всего создана, метку не снимаем
     unmark();                                                                          // API отказал или не вызывался: повтор безопасен
@@ -1508,6 +1594,7 @@ function npTtnDelete_(body) {
   var data = npCall_('delete', { DocumentRefs: ref }, { model: 'InternetDocument', noCache: true, quiet: true, admin: true, errOut: eo });
   if (!data) {
     npSvcEdit_(num, function (sv) { if (!sv.td) return 'x'; delete sv.td; return ''; });   // НП не удалила: метку снимаем, повтор безопасен
+    if (eo.paused === true) return npFail_('np_paused');
     return eo.api === true ? npFail_('np_api', { np: eo.text || '' }) : npFail_('np_error');
   }
   // Накладной в НП уже нет. Дальше — только заказ; НП больше не спрашиваем. Две попытки взять блокировку.
@@ -1567,6 +1654,7 @@ function npTrackJob_() {
   var hours = Math.round(toNum_(readSettings_().np_track_hours));
   if (!(hours >= 1) || !npKey_()) return 0;
   hours = Math.min(hours, 24);
+  if (npPauseLeftSec_() > 0) return 0; // пауза после «To many requests»: опрос не начинаем и интервал не тратим
   var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   if (!token) return 0;
@@ -1595,12 +1683,12 @@ function npTrackJob_() {
     if (!/^\d{10,20}$/.test(ttn) || svc.ar || svc.nd || svc.tq || !/^\d+$/.test(cell_(row, col.uid))) return;
     list.push({ r: r + 2, ttn: ttn, uid: cell_(row, col.uid), num: cell_(row, col.num), ru: cell_(row, col.lang) === 'ru', phone: npPhone_(cell_(row, col.phone)) });
   });
-  var sent = 0;
+  var sent = 0, teo = {};
   for (var b = 0; b < NP_TRACK_MAX_BATCHES && b * NP_TRACK_BATCH < list.length; b++) {
     var chunk = list.slice(b * NP_TRACK_BATCH, (b + 1) * NP_TRACK_BATCH);
     var data = npCall_('getStatusDocuments', { Documents: chunk.map(function (x) { var d = { DocumentNumber: x.ttn }; if (x.phone) d.Phone = x.phone; return d; }) },
-      { model: 'TrackingDocument', noCache: true, quiet: true, admin: true });
-    if (!data) continue; // ошибка API: до следующего раза
+      { model: 'TrackingDocument', noCache: true, quiet: true, admin: true, errOut: teo });
+    if (!data) { if (teo.paused === true) break; continue; } // лимит НП — остальные пачки не шлём; иная ошибка API: до следующего раза
     var codeOf = {};
     data.forEach(function (x) { if (x && x.Number !== undefined) codeOf[String(x.Number).replace(/\s+/g, '')] = String(x.StatusCode); });
     chunk.forEach(function (x) {

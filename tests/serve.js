@@ -40,7 +40,7 @@ function start(port, codePath, tweak) {
     }
     if (url.pathname === '/config.js') { // вместо боевого config.js — адрес этого стенда
       res.writeHead(200, { 'Content-Type': TYPES['.js'] });
-      res.end("window.PAMIR_CONFIG = { API_URL: location.origin + '/api', BOT: 'pamir_test_bot', APP: 'shop' };");
+      res.end("window.PAMIR_CONFIG = { API_URL: location.origin + '/api', BOT: 'pamir_test_bot', APP: 'shop', CATALOG_URL: '' };"); // CATALOG_URL пустой явно: «прямой» режим, каталог только из Apps Script стенда
       return;
     }
     if (url.pathname === '/tg.js') { // подделка telegram-web-app.js с настоящей (для стенда) подписью

@@ -574,10 +574,14 @@ function menuBackupOff() {
 /* ------------------------- б7.7: ошибки витрины ------------------------- */
 
 var ERR_PER_DID_HOUR = 5;
+var ERR_FB_PER_DID_HOUR = 2;  // метка worker_fallback с одного телефона в час (не съедает лимит настоящих ошибок)
 var ERR_TOTAL_HOUR = 300;     // общий счётчик: выше него повторы уже известных текстов не растут
 var ERR_DISTINCT_HOUR = 40;   // разных текстов в час: новые сверх этого молча отбрасываются
 var ERR_TEXT_MAX = 80;
 var ERR_SUMMARY_TOP = 5;
+var ERR_FALLBACK_MSG = 'worker_fallback'; // метка витрины: Worker не ответил, каталог взят напрямую — это не ошибка
+var ERR_FALLBACK_GAP_MS = 24 * 3600 * 1000; // одна сводка «только метки» в сутки (свойство ERR_FB_LAST)
+var ERR_DID_PER_KEY = 60;     // сколько разных телефонов помним на один вид ошибки
 var ERR_SLOT_LOOKBACK = 65;   // минут слотов, которые читает часовая сводка
 
 /**
@@ -624,6 +628,7 @@ function errSafe_(v) {
     return '';
   }
   if (/^promise:/.test(s)) return 'Unhandled';
+  if (s === ERR_FALLBACK_MSG) return s;
   return '';
 }
 
@@ -633,16 +638,43 @@ function errShowable_(m) {
   return ERR_NET_RE.test(m) || ERR_SCRIPT_RE.test(m) || m === 'Unhandled';
 }
 
-/** Добавляет одну запись в буфер ошибок: тот же текст — одна запись со счётчиком. */
+/** Короткий отпечаток телефона (устройства): сам did в буфер, слоты и сводку не попадает. 16 hex, два варианта FNV. */
+function errDidHash_(did) {
+  var s = String(did || '');
+  var h1 = 0x811c9dc5, h2 = 0x01000193;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (c + i), 0x85ebca6b) >>> 0;
+  }
+  return ('00000000' + h1.toString(16)).slice(-8) + ('00000000' + h2.toString(16)).slice(-8);
+}
+
+/** Запоминает телефон за видом ошибки: есть отпечаток — в список (без повторов), нет (старая запись) — метка «невідомо». */
+function errNoteDid_(holder, key, d) {
+  if (!d) { holder.u = holder.u || {}; holder.u[key] = 1; return; }
+  holder.d = holder.d || {};
+  var list = holder.d[key] = holder.d[key] || [];
+  if (list.indexOf(d) < 0 && list.length < ERR_DID_PER_KEY) list.push(d);
+}
+
+/** Добавляет одну запись в буфер ошибок: тот же текст — одна запись со счётчиком и списком отпечатков телефонов. */
 function errBufAdd_(buf, x) {
+  var d = /^[0-9a-f]{16}$/.test(String(x.d || '')) ? String(x.d) : '';
+  if (x.m === ERR_FALLBACK_MSG) { // не ошибка: считается отдельно и в N не входит
+    var f = buf.f = buf.f || { c: 0 };
+    if (f.c < ERR_TOTAL_HOUR) { f.c++; errNoteDid_(f, 'x', d); }
+    return;
+  }
   var key = x.s + '\u0001' + x.v + '\u0001' + x.m;
   if (buf.m[key] !== undefined) { // повтор: не расходует потолок разных текстов, общий счётчик растёт до ERR_TOTAL_HOUR
-    if (buf.n < ERR_TOTAL_HOUR) { buf.m[key]++; buf.n++; }
+    if (buf.n < ERR_TOTAL_HOUR) { buf.m[key]++; buf.n++; errNoteDid_(buf, key, d); }
     return;
   }
   if (Object.keys(buf.m).length >= ERR_DISTINCT_HOUR) return; // разных текстов слишком много
   buf.m[key] = 1;
   buf.n++;
+  errNoteDid_(buf, key, d);
 }
 
 function errBufParse_(raw) {
@@ -650,6 +682,10 @@ function errBufParse_(raw) {
   try { buf = JSON.parse(raw || '{}') || {}; } catch (err) { buf = {}; }
   buf.n = Number(buf.n) || 0;
   buf.m = buf.m && typeof buf.m === 'object' ? buf.m : {};
+  if (!buf.v) { // буфер, накопленный до выкладки (нет отпечатков телефонов): всё в нём «невідомо»
+    Object.keys(buf.m).forEach(function (k) { buf.u = buf.u || {}; buf.u[k] = 1; });
+    buf.v = 2;
+  }
   return buf;
 }
 
@@ -664,17 +700,26 @@ function handleErr_(body) {
   var cache = CacheService.getScriptCache();
   var dKey = 'er_d_' + did + '_' + Math.floor(Date.now() / 3600000);
   var used = parseInt(cache.get(dKey), 10) || 0;
+  var fKey = 'er_f_' + did + '_' + Math.floor(Date.now() / 3600000); // метка worker_fallback: свой лимит
+  var usedF = parseInt(cache.get(fKey), 10) || 0;
+  var newF = 0;
   var items = [];
-  body.items.slice(0, ERR_PER_DID_HOUR).forEach(function (it) {
-    if (used + items.length >= ERR_PER_DID_HOUR) return;
+  var dh = errDidHash_(did);
+  body.items.slice(0, ERR_PER_DID_HOUR + ERR_FB_PER_DID_HOUR).forEach(function (it) {
     var m = errSafe_(it && it.m) || errScrub_(it && it.m, ERR_TEXT_MAX);
     if (!m) return;
+    if (m === ERR_FALLBACK_MSG) {
+      if (usedF + newF >= ERR_FB_PER_DID_HOUR) return;
+      newF++;
+    } else if (used + items.filter(function (y) { return y.m !== ERR_FALLBACK_MSG; }).length >= ERR_PER_DID_HOUR) return;
     var v = String((it && it.v) || '').replace(/[^0-9A-Za-z.\-]/g, '').slice(0, 12);
     if (!/^v?\d[\w.\-]*$/i.test(v)) v = ''; // версия похожа на версию, а не на адрес
-    items.push({ m: m, s: String((it && it.s) || '').replace(/[^\w:\-]/g, '').slice(0, 24), v: v });
+    items.push({ m: m, s: String((it && it.s) || '').replace(/[^\w:\-]/g, '').slice(0, 24), v: v, d: dh });
   });
   if (!items.length) return { ok: true };
-  cache.put(dKey, String(used + items.length), 3600);
+  var realN = items.length - newF;
+  if (realN > 0) cache.put(dKey, String(used + realN), 3600);
+  if (newF > 0) cache.put(fKey, String(usedF + newF), 3600);
   // Анонимный запрос не должен брать блокировку заказов: только DocumentLock, иначе запасные слоты.
   var lock = null;
   try { var dl = LockService.getDocumentLock(); if (dl && dl.tryLock(500)) lock = dl; } catch (errLock) { lock = null; }
@@ -708,7 +753,7 @@ function errorsJob() {
       var sl = slotRead_(cache, 'fx_', slotMins);
       sl.keys.forEach(function (key) {
         if (typeof sl.vals[key] !== 'string') return;
-        try { (JSON.parse(sl.vals[key]) || []).forEach(function (x) { if (x && x.m) errBufAdd_(buf, { m: String(x.m).slice(0, ERR_TEXT_MAX), s: String(x.s || ''), v: String(x.v || '') }); }); } catch (e) { /* испорченный слот */ }
+        try { (JSON.parse(sl.vals[key]) || []).forEach(function (x) { if (x && x.m) errBufAdd_(buf, { m: String(x.m).slice(0, ERR_TEXT_MAX), s: String(x.s || ''), v: String(x.v || ''), d: String(x.d || '') }); }); } catch (e) { /* испорченный слот */ }
       });
       cacheRemoveAll_(cache, sl.keys.filter(function (key) { return typeof sl.vals[key] === 'string'; }));
       cacheRemoveAll_(cache, slotMins.map(function (m) { return 'fx_m_' + m; }));
@@ -716,24 +761,102 @@ function errorsJob() {
   } finally {
     unlock_(lock);
   }
-  if (!buf || !(buf.n > 0)) return { sent: 0 };
+  var fb = buf && buf.f && buf.f.c > 0 ? buf.f : null;
+  if (!buf || (!(buf.n > 0) && !fb)) return { sent: 0 };
   var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   var ids = orderNotifyIds_(props);
   if (!token || !ids.length) return { sent: 0 };
-  var all = Object.keys(buf.m || {}).map(function (k) { return { k: k, c: buf.m[k] }; })
-    .sort(function (a, b) { return (b.c - a.c) || (a.k < b.k ? -1 : 1); });
-  var shown = all.filter(function (x) { return errShowable_(x.k.split('\u0001')[2]); });
-  var otherN = 0;
-  all.forEach(function (x) { if (shown.indexOf(x) < 0) otherN += x.c; });
-  var top = shown.slice(0, ERR_SUMMARY_TOP);
-  var lines = top.map(function (x) {
-    var p = x.k.split('\u0001');
-    return '• ' + escHtml_(p[2]) + ' (екран: ' + escHtml_(p[0] || '—') + ', версія: ' + escHtml_(p[1] || '—') + ') × ' + x.c;
-  });
-  shown.slice(ERR_SUMMARY_TOP).forEach(function (x) { otherN += x.c; });
-  if (otherN) lines.push('інші: ' + otherN + ' / другие: ' + otherN);
-  var text = 'Помилки у магазині: ' + buf.n + (lines.length ? '\n' + lines.join('\n') : '');
+  var fbLast = Number(props.getProperty('ERR_FB_LAST')) || 0;
+  if (!(buf.n > 0) && Date.now() - fbLast < ERR_FALLBACK_GAP_MS) return { sent: 0, fbSkipped: true }; // одни метки — не чаще раза в сутки
+  var text = errSummaryText_(buf, fb);
   ids.forEach(function (id) { tg_(token, 'sendMessage', { chat_id: id, text: text, parse_mode: 'HTML', disable_web_page_preview: true }); });
+  if (fb) { try { props.setProperty('ERR_FB_LAST', String(Date.now())); } catch (e) { /* не критично */ } }
   return { sent: ids.length, n: buf.n };
+}
+
+/** 1 телефон, 2–4 телефони, 5+ телефонів (11–14 — телефонів). */
+function errPhoneNoun_(n) {
+  var a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return 'телефон';
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return 'телефони';
+  return 'телефонів';
+}
+/** После «з» (родительный): з 1 телефону, з 21 телефону, з 2 телефонів, з 11 телефонів. */
+function errPhoneFrom_(n) { return 'з ' + n + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'телефону' : 'телефонів'); }
+/** 1 раз, 2–4 рази, 5+ разів (11–14 — разів, 21 раз, 22 рази). */
+function errTimesText_(n) {
+  var a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return n + ' раз';
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return n + ' рази';
+  return n + ' разів';
+}
+/** Ошибка админки: экран начинается с admin или это сетевая ошибка действия admin.* (витрина читает admin.* заранее, с экрана catalog). */
+function errIsAdmin_(screen, msg) {
+  return /^admin/i.test(String(screen || '')) || /^net admin/i.test(String(msg || ''));
+}
+
+/** Число разных телефонов по списку видов ошибок; unknown — есть записи без отпечатка (старые, до выкладки). */
+function errPhoneStat_(holder, keys) {
+  var seen = {}, known = 0, unknown = false;
+  keys.forEach(function (k) {
+    var list = holder.d && holder.d[k];
+    if (list && list.length) list.forEach(function (d) { if (!seen[d]) { seen[d] = 1; known++; } });
+    if ((holder.u && holder.u[k]) || !(list && list.length)) unknown = true;
+  });
+  return { known: known, unknown: unknown };
+}
+
+function errPhoneText_(st, from) {
+  if (!st.known) return 'телефон невідомий';
+  return (from ? errPhoneFrom_(st.known) : st.known + ' ' + errPhoneNoun_(st.known)) + (st.unknown ? ' + невідомо' : '');
+}
+
+/** Текст сводки: только счётчики, экраны, версии и известные виды ошибок. Ни did, ни отпечатков. */
+function errSummaryText_(buf, fb) {
+  var groups = { shop: [], admin: [] };
+  Object.keys(buf.m || {}).forEach(function (k) {
+    var kp = k.split('\u0001');
+    groups[errIsAdmin_(kp[0], kp[2]) ? 'admin' : 'shop'].push({ k: k, c: buf.m[k] });
+  });
+  function block(list) {
+    list.sort(function (a, b) { return (b.c - a.c) || (a.k < b.k ? -1 : 1); });
+    var shown = list.filter(function (x) { return errShowable_(x.k.split('\u0001')[2]); });
+    var top = shown.slice(0, ERR_SUMMARY_TOP);
+    var rest = list.filter(function (x) { return top.indexOf(x) < 0; });
+    var lines = top.map(function (x) {
+      var p = x.k.split('\u0001');
+      return '• ' + escHtml_(p[2]) + ' (екран: ' + escHtml_(p[0] || '—') + ', версія: ' + escHtml_(p[1] || '—') + ') — ' + x.c + ' (' + errPhoneText_(errPhoneStat_(buf, [x.k]), false) + ')';
+    });
+    if (rest.length) {
+      var rn = 0; rest.forEach(function (x) { rn += x.c; });
+      lines.push('інші: ' + rn + ' / другие: ' + rn + ' (' + errPhoneText_(errPhoneStat_(buf, rest.map(function (x) { return x.k; })), false) + ')');
+    }
+    var n = 0; list.forEach(function (x) { n += x.c; });
+    return { n: n, lines: lines, st: errPhoneStat_(buf, list.map(function (x) { return x.k; })) };
+  }
+  var out = [];
+  var shop = groups.shop.length ? block(groups.shop) : null;
+  var adm = groups.admin.length ? block(groups.admin) : null;
+  if (shop || adm) {
+    var all = errPhoneStat_(buf, groups.shop.concat(groups.admin).map(function (x) { return x.k; }));
+    out.push('Помилки у магазині за годину: ' + buf.n + ' (' + errPhoneText_(all, true) + ')');
+    if (shop && adm) {
+      out.push('Покупці: ' + shop.n + ' (' + errPhoneText_(shop.st, true) + ')');
+      out = out.concat(shop.lines);
+      out.push('Адмін-панель: ' + adm.n + ' (' + errPhoneText_(adm.st, true) + ')');
+      out = out.concat(adm.lines);
+    } else if (adm) {
+      out.push('Тільки адмін-панель, покупці помилок не мали / Только админ-панель, у покупателей ошибок не было.');
+      out.push('Адмін-панель: ' + adm.n + ' (' + errPhoneText_(adm.st, true) + ')');
+      out = out.concat(adm.lines);
+    } else {
+      out = out.concat(shop.lines);
+    }
+  }
+  if (fb) {
+    if (!out.length) out.push('Інформація (це не помилки, покупці нічого не помітили):');
+    out.push('Каталог через Cloudflare не відповів, магазин узяв його напряму: ' + errTimesText_(fb.c) + ' (' + errPhoneText_(errPhoneStat_(fb, ['x']), true) + ')');
+  }
+  return out.join('\n');
 }

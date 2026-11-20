@@ -564,6 +564,7 @@
     data.products.forEach(function (p) { data.byId[p.id] = p; });
     buildSearchIndex(data);
     state.catalog = data;
+    npc.off = false;
     state.status = 'ready';
     if (state.cat && !data.categories.some(function (c) { return c.code === state.cat; })) state.cat = '';
     reconcileCart();
@@ -581,27 +582,82 @@
     openSheet(found.id);
   }
 
-  /** Один запрос каталога с таймаутом; ответ без ok и списка товаров — ошибка. */
-  function fetchCatalog(url, ms, isApi) {
+  /** Один запрос каталога с таймаутом; ответ без ok и списка товаров — ошибка. box — «коробка» запроса: если витрина сама его отменила (box.own), ошибка помечается own и в сводку не идёт. */
+  function fetchCatalog(url, ms, box) {
     var ctrl = window.AbortController ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, ms);
+    if (box) box.ctrl = ctrl;
+    var timedOut = false, cacheHdr = '';
+    if (box) box.cache = '';
+    var timer = setTimeout(function () { timedOut = true; if (ctrl) ctrl.abort(); }, ms);
     return fetch(url, ctrl ? { signal: ctrl.signal } : undefined).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      try { cacheHdr = String(r.headers.get('X-Pamir-Cache') || ''); } catch (e) { cacheHdr = ''; } // заголовок Worker: HIT / STALE / REFRESHED / MISS / EXPIRED — витрина реагирует только на EXPIRED; прочие значения и нечитаемый заголовок (null без Access-Control-Expose-Headers) равнозначны
       return r.json();
     }).then(function (data) {
       clearTimeout(timer);
       if (!data || !data.ok || !Array.isArray(data.products)) throw new Error('bad catalog');
+      if (box) box.cache = cacheHdr;
       return data;
     }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) {
-      if (isApi) reportNet('catalog', err);
+      if (box && box.own) throw ownAbort();
+      if (timedOut && err && typeof err === 'object') err.ownTimeout = true; // оборвано нашим таймером, а не сетью: повторять не нужно
       throw err;
     });
   }
-  /** Если в config.js задан CATALOG_URL (Worker), сначала идём туда (6 с); любая неудача — тот же запрос в Apps Script. */
+  var catGen = 0, catBox = null; // номер последней загрузки каталога и её «коробка»: устаревший запрос отменяется, его ответ не применяется
+  function catCancel() {
+    if (!catBox) return;
+    catBox.own = true;
+    try { if (catBox.ctrl) catBox.ctrl.abort(); } catch (e) { /* уже закончен */ }
+  }
+  /** Если в config.js задан CATALOG_URL (Worker), сначала идём туда (6 с); любая неудача — тот же запрос в Apps Script (с одним автоповтором). Сбой Worker при удачном откате — не ошибка, а метка worker_fallback. */
   function requestCatalog(direct) {
-    var apiLoad = function () { return fetchCatalog(catalogUrl(), 20000, !!cfg.API_URL); };
+    catCancel();
+    var box = catBox = { ctrl: null, own: false };
+    var one = function (url, ms) { return box.own ? Promise.reject(ownAbort()) : fetchCatalog(url, ms, box); };
+    var apiLoad = function () {
+      // первая попытка — до 20 с (после собственного таймаута повтора нет), вторая — короткая (NET_RETRY_LIMIT_MS)
+      var run = function (limit) { return one(catalogUrl(), limit || Number(window.__CAT_TIMEOUT_MS) || 20000); };
+      return cfg.API_URL ? netGuard('catalog', run) : run();
+    };
     if (direct || !cfg.API_URL || !/^https?:\/\//.test(String(cfg.CATALOG_URL || ''))) return apiLoad(); // direct: после «ціни змінилися» Worker мог ещё держать прежние цены
-    return fetchCatalog(cfg.CATALOG_URL, 6000, false).catch(apiLoad);
+    var ws = netStart();
+    return one(cfg.CATALOG_URL, 6000).catch(function (err) {
+      if (err && err.own) throw err;
+      var real = !netSuspect(ws, true) && navigator.onLine !== false; // обрыв при скрытой странице — не вина Worker
+      return apiLoad().then(function (data) { if (real) reportWorkerFallback(); return data; });
+    });
+  }
+
+  /**
+   * Мягкая страховка: Worker пометил ответ EXPIRED (копия старше 5 минут, до 24 ч). Каталог уже показан; один раз (на загрузку) тихо пробуем Apps Script напрямую.
+   * Удалось — обновляем витрину без мигания (позиция прокрутки сохраняется; при открытой шторке перерисовка основного экрана откладывается до её закрытия).
+   * Не удалось (сеть, таймаут, плохой ответ, новая загрузка вытеснила эту) — ничего: ни ошибки, ни сводки, ни повтора.
+   */
+  var staleBox = null;
+  function staleRecheck(gen) {
+    if (!cfg.API_URL) return;
+    var box = staleBox = { ctrl: null, own: false };
+    fetchCatalog(catalogUrl(), 10000, box).then(function (data) {
+      if (box.own || gen !== catGen || staleBox !== box) return;
+      var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
+      var old = state.catalog ? JSON.stringify({ c: state.catalog.categories, p: state.catalog.products, s: state.catalog.shop }) : '';
+      store.set(CACHE_KEY, JSON.stringify({ url: cfg.API_URL, data: data }));
+      if (fresh === old) return;
+      var y = window.scrollY || 0;
+      var openId = state.sheet ? state.sheet.id : '', before = openId && state.catalog && state.catalog.byId[openId] ? JSON.stringify(state.catalog.byId[openId]) : '';
+      if (state.sheet) {
+        setCatalog(data);
+        stale.main = 'force'; // экран под шторкой перерисуем, когда её закроют (flushStale)
+        var np2 = data.byId[openId];
+        if (!np2 || JSON.stringify(np2) !== before) renderSheet();
+        renderChips(); renderBanner();
+      } else {
+        setCatalog(data);
+        renderAll();
+        if ((window.scrollY || 0) !== y) window.scrollTo(0, y);
+      }
+    }).catch(function () { /* страховка не сработала — покупатель видит каталог от Worker */ });
   }
 
   function loadCatalog(direct) {
@@ -618,8 +674,12 @@
     openDeepLink();
     captureSrc();
 
-    return requestCatalog(direct === true)
+    var gen = ++catGen;
+    try { if (staleBox) { staleBox.own = true; if (staleBox.ctrl) staleBox.ctrl.abort(); } } catch (e) { /* уже закончен */ }
+    var p = requestCatalog(direct === true), box0 = catBox;
+    return p
       .then(function (data) {
+        if (gen !== catGen) return; // за это время началась более новая загрузка
         if (state.offline) { state.offline = false; renderBanner(); }
         var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
         var old = state.catalog
@@ -634,8 +694,10 @@
         deepId = '';
         captureSrc();
         openReLink();
+        if (box0 && box0.cache === 'EXPIRED') staleRecheck(gen); // Worker отдал СТАРУЮ копию (старше 5 минут, Apps Script не ответил): один тихий прямой запрос. HIT / STALE / REFRESHED / MISS / нет заголовка — каталог свежий, ничего не делаем
       })
-      .catch(function () {
+      .catch(function (err) {
+        if ((err && err.own) || gen !== catGen) return; // отменено самой витриной: новая загрузка уже идёт
         if (!state.catalog) {
           state.status = 'error';
           renderMain();
@@ -932,8 +994,110 @@
   /** Неудачный запрос к API (сеть, таймаут, HTTP-ошибка). Отмену пользователем (не наш таймаут) не считаем. */
   function reportNet(action, err) {
     var msg = err && err.message ? String(err.message) : '';
-    if (err && err.name === 'AbortError' && !msg) return;
+    if (err && (err.own || err.name === 'AbortError' && !msg)) return;
     reportError('net ' + String(action).replace(/[^\w.]/g, '').slice(0, 24) + ': ' + (/^HTTP \d{3}$/.test(msg) ? msg : err && err.name === 'AbortError' ? 'timeout' : 'network'));
+  }
+
+  /* --- Ложные «network»: обрывы при уходе Telegram в фон и короткие пропадания сети в сводку не идут --- */
+  var NET_RETRY_MS = 1000;   // пауза перед автоповтором чтения
+  var NET_WAIT_MS = 8000;    // сколько ждём возвращения на экран или сети перед автоповтором
+  var NET_TAIL_MS = 1500;    // хвост оборванных запросов после возвращения из фона
+  /** Запросы только на чтение: их безопасно повторить один раз. Всё остальное (заказ, корзина, действия админов, err, события) не повторяется никогда. */
+  var NET_READ = { catalog: 1, 'orders.my': 1, 'admin.orders': 1, 'admin.products': 1, 'admin.settings': 1, 'admin.admins': 1, 'admin.reviews': 1,
+    'admin.wh': 1, 'admin.mail': 1, 'admin.log': 1, 'admin.today': 1, 'admin.archiveList': 1, 'admin.statusPreview': 1, 'wh.prices': 1 };
+  // Не в списке (не повторяются): admin.stats — переписывает лист «Статистика» под блокировкой; admin.ttn.preview — ходит в Нову пошту и тратит лимит; всё остальное — запись, отправка или заказ.
+  var NET_RETRY_LIMIT_MS = 9000; // предел второй попытки: покупатель ждёт не дольше прежнего максимума + ~10 с
+  var vis = { lastHide: 0, lastShow: 0, tg: null, waiters: [] }; // tg: true — Telegram сообщил «свёрнуто» (deactivated), false — «активно», null — не знаем
+  function tgInactive() {
+    try { return vis.tg !== null ? vis.tg : !!(tg && tg.isActive === false); } catch (e) { return false; }
+  }
+  function pageHiddenNow() {
+    try { return !!document.hidden || document.visibilityState === 'hidden' || tgInactive(); } catch (e) { return false; }
+  }
+  function visNotify() { vis.waiters.slice().forEach(function (f) { try { f(); } catch (e) { /* ждун не должен ломать остальных */ } }); }
+  function visMark() { if (pageHiddenNow()) vis.lastHide = Date.now(); else vis.lastShow = Date.now(); visNotify(); }
+  // Новые версии Telegram сворачивают Mini App без visibilitychange: слушаем activated / deactivated.
+  try {
+    if (tg && typeof tg.onEvent === 'function') {
+      tg.onEvent('deactivated', function () { vis.tg = true; visMark(); });
+      tg.onEvent('activated', function () { vis.tg = false; visMark(); });
+    }
+  } catch (e) { /* старый Telegram — только visibilitychange */ }
+  if (pageHiddenNow()) vis.lastHide = Date.now();
+  document.addEventListener('visibilitychange', visMark);
+  window.addEventListener('pagehide', function () { vis.lastHide = Date.now(); });
+  window.addEventListener('freeze', function () { vis.lastHide = Date.now(); });
+  window.addEventListener('pageshow', function (ev) { if (ev && ev.persisted && !pageHiddenNow()) vis.lastShow = Date.now(); }); // возврат из кэша страниц; обычная загрузка — не «возвращение»
+  document.addEventListener('resume', function () { if (!pageHiddenNow()) vis.lastShow = Date.now(); });
+  function ownAbort() { var e = new Error('cancelled'); e.own = true; return e; }
+  function netStart() { return { t: Date.now(), hid: pageHiddenNow() }; }
+  /** Запрос мог оборваться из-за ухода в фон: страница скрыта сейчас или была скрыта за время запроса; при tail — ещё и вернулась меньше 1,5 с назад. */
+  function netSuspect(s, tail) {
+    if (s.hid || pageHiddenNow() || vis.lastHide >= s.t) return true;
+    return !!(tail && vis.lastShow && Date.now() - vis.lastShow < NET_TAIL_MS);
+  }
+  /** Ответ сервера (HTTP 4xx/5xx, не JSON) — это не обрыв сети: для записи его не глушим, даже если страница пряталась. Обрыв — исключение fetch или abort. */
+  function isServerReply(err) {
+    var m = err && err.message ? String(err.message) : '';
+    return /^HTTP \d{3}$/.test(m) || !!(err && err.name === 'SyntaxError');
+  }
+  function netFail(action, err, s, tail, write) {
+    if (write && isServerReply(err)) { reportNet(action, err); return; }
+    if (netSuspect(s, tail) || navigator.onLine === false) return; // устройство без сети — не ошибка магазина
+    reportNet(action, err);
+  }
+  /** Ждём, пока страница снова видна и есть сеть (не дольше NET_WAIT_MS), затем короткая пауза. */
+  function netReady() {
+    return new Promise(function (resolve) {
+      var done = false, cap = null;
+      function ready() { return !pageHiddenNow() && navigator.onLine !== false; }
+      function go() {
+        if (done) return;
+        done = true;
+        clearTimeout(cap);
+        var wi = vis.waiters.indexOf(check); if (wi >= 0) vis.waiters.splice(wi, 1);
+        document.removeEventListener('visibilitychange', check);
+        window.removeEventListener('online', check);
+        setTimeout(resolve, NET_RETRY_MS);
+      }
+      function check() { if (ready()) go(); }
+      if (ready()) { go(); return; }
+      document.addEventListener('visibilitychange', check);
+      vis.waiters.push(check);
+      window.addEventListener('online', check);
+      cap = setTimeout(go, NET_WAIT_MS);
+    });
+  }
+  /**
+   * Запрос к API: run() делает одну попытку. Чтение при сбое повторяется один раз; «network» уходит в сводку, только если не прошла и вторая попытка.
+   * Запись не повторяется никогда. Ошибка не пишется, если страница была скрыта, запрос отменён самой витриной или это хвост после возвращения из фона.
+   */
+  function netGuard(action, run) {
+    var s1 = netStart();
+    return run().catch(function (err) {
+      if (err && err.own) throw err;
+      if (!NET_READ[action]) { netFail(action, err, s1, true, true); throw err; }
+      // Автоповтор только после быстрого сбоя сети (обрыв, ошибка fetch, HTTP 5xx). Свой таймаут при видимой странице — ошибка сразу; «ответ не тот» (4xx, не JSON) — тоже.
+      var fast = !!err && !err.ownTimeout && (err.name === 'TypeError' || /^HTTP 5\d\d$/.test(String(err.message || '')));
+      var hiddenTimeout = !!err && !!err.ownTimeout && netSuspect(s1, false); // таймаут, пока страница была скрыта: покупатель не ждал
+      if (!fast && !hiddenTimeout) { netFail(action, err, s1, true); throw err; }
+      return netReady().then(function () {
+        var s2 = netStart();
+        return run(NET_RETRY_LIMIT_MS).catch(function (e2) { if (!(e2 && e2.own)) netFail(action, e2, s2, false); throw e2; });
+      });
+    });
+  }
+  /** Worker не ответил, но каталог из Apps Script получен: покупатель ничего не заметил. Метка — не чаще раза в час с устройства, в лимит 5 записей не входит. */
+  var WFB_KEY = 'pamir_wfb_v1';
+  function reportWorkerFallback() {
+    try {
+      if (!cfg.API_URL) return;
+      var hour = String(Math.floor(Date.now() / 3600000));
+      if (store.get(WFB_KEY) === hour) return;
+      store.set(WFB_KEY, hour);
+      errQueue.push({ m: 'worker_fallback', s: 'catalog', v: SCRIPT_V });
+      if (!errTimer) errTimer = setTimeout(function () { flushErrors(false); }, 2500);
+    } catch (e) { /* метка не должна ломать магазин */ }
   }
   window.addEventListener('error', function (ev) {
     var file = String(ev && ev.filename || '').split(/[?#]/)[0].split('/').pop();
@@ -1740,7 +1904,7 @@
     askWriteAccess().then(function () { return postApi('notify', { id: id, lang: state.lang }); }).then(function (res) {
       notifying[id] = false; btnFree(btn);
       if (!res || !res.ok) throw new Error('fail');
-      if (res.instock) { loadCatalog(); return; } // товар уже вернулся — просто обновляем витрину
+      if (res.instock) { loadCatalog(true); return; } // direct: покупатель видит «немає», а товар уже вернулся — Worker мог держать старую копию // товар уже вернулся — просто обновляем витрину
       if (subs.indexOf(id) < 0) { subs.unshift(id); subs = subs.slice(0, 40); saveList(SUBS_KEY, '', subs); }
       haptic('success');
       track('notify', id);
@@ -2463,6 +2627,7 @@
     order.rid = state.rid;
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 45000);
+    var st = netStart(); // заказ не повторяется автоматически (ключ rid и кнопка «повторить»), но ложную ошибку не пишем
     return fetch(cfg.API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -2472,7 +2637,7 @@
       clearTimeout(timer);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
-    }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) { reportNet('order', err); throw err; });
+    }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) { netFail('order', err, st, true, true); throw err; });
   }
 
   /** Просим разрешение писать клиенту в Telegram: иначе бот не сможет сообщить статус. */
@@ -2608,12 +2773,19 @@
   /* ------------------------------ Мои заказы (этап 6) ------------------------------ */
   var my = { list: null, loading: false, error: '', bought: [], done: null };
 
+  /** Один POST к API. limit (мс) задаётся только второй попытке чтения; у первой своего таймаута нет. */
+  function postFetch(body, limit) {
+    var ctrl = limit && window.AbortController ? new AbortController() : null, timedOut = false;
+    var timer = ctrl ? setTimeout(function () { timedOut = true; ctrl.abort(); }, limit) : null;
+    return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (d) { clearTimeout(timer); return d; }, function (err) { clearTimeout(timer); if (timedOut && err && typeof err === 'object') err.ownTimeout = true; throw err; });
+  }
+
   function postApi(action, data) {
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
     Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
-    return fetch(cfg.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .catch(function (err) { reportNet(action, err); throw err; });
+    return netGuard(action, function (limit) { return postFetch(body, limit); });
   }
 
   /** quiet — фоновая загрузка при старте: нужна для подборки «Купити знову» и программы для постоянных клиентов. */
@@ -2803,12 +2975,7 @@
     var body = { action: action, initData: inTelegram ? tg.initData : '' };
     Object.keys(data || {}).forEach(function (k) { body[k] = data[k]; });
     var started = Date.now();
-    return fetch(cfg.API_URL, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body)
-    }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }).catch(function (err) { reportNet(action, err); throw err; }).then(function (res) {
+    return netGuard(action, function (limit) { return postFetch(body, limit); }).then(function (res) {
       if (res && res._t) perfShow(action, Date.now() - started, res._t); // замер включён на сервере (PERF_LOG = 1)
       return res;
     });
@@ -3957,7 +4124,7 @@
       var act = e.target.closest('[data-action]');
       if (act) {
         var kind = act.getAttribute('data-action');
-        if (kind === 'retry') loadCatalog();
+        if (kind === 'retry') loadCatalog(true); // direct: первая загрузка уже не удалась (и через Worker, и напрямую) — второй круг через Worker только добавил бы ожидание
         if (kind === 'reset') {
           state.cat = ''; flt.sort = ''; flt.onlyStock = false; flt.onlySale = false;
           setSearch('');
@@ -4449,20 +4616,74 @@
 
   /* ---- 1.7 Нова пошта: тип доставки, города, подсказки (если на сервере задан NP_API_KEY) ---- */
   var NP_CITIES = [['Харків', 'Харьков'], ['Київ', 'Киев'], ['Дніпро', 'Днепр'], ['Львів', 'Львов'], ['Одеса', 'Одесса'], ['Запоріжжя', 'Запорожье'], ['Вінниця', 'Винница'], ['Полтава', 'Полтава']];
-  var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0, resolving: false, whAt: {}, whPending: {} };
+  var np = { ref: '', timer: null, seq: 0, cities: {}, wh: {}, whSeq: 0, whTimer: null, tap: 0, resolving: false, whAt: {}, whPending: {}, chosen: null, flight: '', queued: null, req: {}, whq: {} };
   var NP_TIMEOUT = 5000;
+  var NP_MIN = 3;               // подсказки города — от 3 букв; короче поле просто принимает любой текст
+  var NP_DEBOUNCE = 600;        // пауза после последней буквы перед запросом
+  var NP_PAUSE_MS = 10 * 60 * 1000; // после ошибки Новой почты (лимит и т.п.) запросов np.* не шлём 10 минут
   var NP_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  /** Ref города Новой почты для текста города city: выбран из подсказки (np.ref) или восстановлен из сохранённой формы; введён руками — пусто. */
-  function npRefNow(city) {
-    var f = state.form;
-    if (np.ref && NP_UUID.test(np.ref)) return np.ref;
-    return f.cityRef && f.cityRefFor === city && NP_UUID.test(f.cityRef) ? f.cityRef : '';
+  function ssGet(k) { try { return window.sessionStorage.getItem(k); } catch (e) { return null; } }
+  function ssSet(k, v) { try { window.sessionStorage.setItem(k, v); } catch (e) { /* хранилище недоступно — живём в памяти */ } }
+  /* --- пауза: Нова пошта ответила ошибкой — до её конца витрина не шлёт np.*, поля работают вручную, покупателю ничего не показываем --- */
+  var npPauseUntil = Number(ssGet('pamir_nppause_v1')) || 0;
+  function npPaused() { return Date.now() < npPauseUntil; }
+  function npPauseSet(res) {
+    var ra = res && Number(res.retryAfter), ms = ra > 0 ? Math.min(ra, 3600) * 1000 : NP_PAUSE_MS; // retryAfter — секунды; без него (три ошибки подряд у старого бэкенда) — 10 минут
+    npPauseUntil = Date.now() + ms;
+    ssSet('pamir_nppause_v1', String(npPauseUntil));
+    clearTimeout(np.timer); clearTimeout(np.whTimer); clearTimeout(npc.timer); npc.want = ''; np.queued = null;
   }
+  /** Запрос np.* через единую дверь: в паузе не уходит. ОБЩУЮ паузу включает только ответ с retryAfter (так новый бэкенд сообщает о лимите НП)
+   *  или три ошибки ok:false подряд за 2 минуты (старый бэкенд retryAfter не присылает). Остальные ошибки отключают только свой запрос — решает вызывающий. */
+  var npErrAt = [];
+  function npGet(query, limit) {
+    if (npPaused()) return Promise.reject(new Error('np_pause'));
+    return apiGetTimed(query, limit).then(function (res) {
+      if (res && res.ok === false) {
+        var now = Date.now();
+        if (Number(res.retryAfter) > 0) { npErrAt = []; npPauseSet(res); }
+        else if (res.error === 'busy') { /* такой же запрос уже в пути: это не ошибка НП, в счёт «3 за 2 минуты» не идёт */ }
+        else {
+          npErrAt.push(now);
+          npErrAt = npErrAt.filter(function (t0) { return now - t0 <= 120000; });
+          if (npErrAt.length >= 3) { npErrAt = []; npPauseSet(null); }
+        }
+      } else if (res && res.ok) npErrAt = [];
+      return res;
+    });
+  }
+  /** Ref города Новой почты для текста города city: выбран из подсказки (np.ref), совпадает с ранее выбранным или восстановлен из сохранённой формы; введён руками — пусто. */
+  function npRefNow(city) {
+    if (np.ref && NP_UUID.test(np.ref)) return np.ref;
+    return npKnownRef(city);
+  }
+  /** Ref, если текст city совпадает с уже выбранным городом (в этой сессии или в сохранённой форме); иначе пусто. Запрос к серверу для такого текста не нужен. */
+  function npKnownRef(city) {
+    var f = state.form, low = npKey(city);
+    if (!low) return '';
+    if (np.chosen && np.chosen.t === low && NP_UUID.test(np.chosen.ref)) return np.chosen.ref;
+    if (f.cityRef && f.cityRefFor && npKey(f.cityRefFor) === low && NP_UUID.test(f.cityRef)) { np.chosen = { t: low, ref: f.cityRef }; return f.cityRef; }
+    return '';
+  }
+  function npKey(q) { return String(q || '').trim().replace(/\s+/g, ' ').toLowerCase(); }
 
   /* --- стоимость доставки «≈ 85 ₴ за тарифом Нової пошти» (только при shop.npp = 1; в сумму заказа не входит) --- */
-  var npc = { cache: {}, failAt: {}, timer: null, want: '' };
-  var NPC_DEBOUNCE = 400, NPC_RETRY_MS = 60000;
-  function npCostOn() { return Number(shopInfo().npp) === 1 && !!cfg.API_URL; }
+  // Не чаще одного запроса на пару (город, ступень веса 0,5 кг) за сессию: кэш в памяти и в sessionStorage; после ошибки — не раньше чем через 10 минут.
+  var npc = { cache: {}, failAt: {}, timer: null, want: '', off: false }; // off: сервер не считает стоимость (off / нет функции) — до перезагрузки каталога не спрашиваем
+  var NPC_DEBOUNCE = 400, NPC_RETRY_MS = NP_PAUSE_MS;
+  (function () {
+    try {
+      var s = JSON.parse(ssGet('pamir_npc_v1') || '{}');
+      Object.keys(s.c || {}).forEach(function (k) { if (Number(s.c[k]) > 0) npc.cache[k] = Number(s.c[k]); });
+      Object.keys(s.f || {}).forEach(function (k) { npc.cache[k] = 'fail'; npc.failAt[k] = Number(s.f[k]) || 0; });
+    } catch (e) { /* битая запись — начинаем с пустого кэша */ }
+  })();
+  function npcSave() {
+    var s = { c: {}, f: {} };
+    Object.keys(npc.cache).forEach(function (k) { if (typeof npc.cache[k] === 'number') s.c[k] = npc.cache[k]; else if (npc.cache[k] === 'fail') s.f[k] = npc.failAt[k] || 0; });
+    ssSet('pamir_npc_v1', JSON.stringify(s));
+  }
+  function npCostOn() { return Number(shopInfo().npp) === 1 && !!cfg.API_URL && !npc.off; }
   /** Что спрашивать у сервера сейчас: город, вес корзины, сумма. null — не хватает данных (нет города с ref, не наш вид доставки, вес хоть одной позиции неизвестен). */
   function npCostTarget() {
     if (!npCostOn() || state.form.delivery !== 'np' || !state.catalog) return null;
@@ -4486,7 +4707,7 @@
     if (!w) return '';
     var c = npc.cache[w.key];
     if (typeof c === 'number') return tf('npCost', { n: money(c) });
-    if (c === undefined || (c === 'fail' && Date.now() - (npc.failAt[w.key] || 0) >= NPC_RETRY_MS)) npCostAsk(w); // после ошибки повтор не раньше чем через минуту
+    if (!npPaused() && (c === undefined || (c === 'fail' && Date.now() - (npc.failAt[w.key] || 0) >= NPC_RETRY_MS))) npCostAsk(w); // после ошибки повтор не раньше чем через 10 минут
     return '';
   }
   function npCostAsk(w) {
@@ -4495,12 +4716,21 @@
     clearTimeout(npc.timer);
     npc.timer = setTimeout(function () {
       var c0 = npc.cache[w.key];
-      if (c0 === 'loading' || typeof c0 === 'number') return;
+      if (c0 === 'loading' || typeof c0 === 'number' || npPaused()) { if (npc.want === w.key) npc.want = ''; return; }
       npc.cache[w.key] = 'loading';
-      apiGetTimed('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
-        var c = res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0;
-        if (c) npc.cache[w.key] = c; else { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); }
-      }).catch(function () { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); })
+      // short — сдвиг метки ошибки: ключ спросим снова не через 10 минут, а через (10 минут − short)
+      var done = function (c, short) {
+        if (c) npc.cache[w.key] = c; else { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now() - (short || 0); }
+        npcSave();
+      };
+      npGet('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
+        if (res && res.ok === false && res.error === 'off') npc.off = true;                // данные отправителя устарели: стоимость не спрашиваем до перезагрузки каталога
+        else if (res && res.ok === true && !('cost' in res)) npc.off = true;               // старый бэкенд: на неизвестное действие отвечает {ok:true} без данных — функции нет
+        var ra = res && res.ok === false ? Number(res.retryAfter) : 0;
+        // busy без retryAfter (такой же запрос уже в пути) — этот ключ снова через 90 с; busy с retryAfter — сразу после общей паузы; прочие ошибки (np_error) — через 10 минут
+        var short = res && res.ok === false && res.error === 'busy' ? (ra > 0 ? NPC_RETRY_MS : NPC_RETRY_MS - 90000) : 0;
+        done(res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0, short);
+      }).catch(function () { done(0); })
         .then(function () { if (npc.want === w.key) npc.want = ''; npCostSync(); }); // устаревший ответ только ложится в кэш: показывается то, что нужно сейчас
     }, NPC_DEBOUNCE);
   }
@@ -4571,27 +4801,55 @@
   function npBusy(id, on) { var b = document.getElementById(id); if (b) b.hidden = !on; }
   function npOn() { return !!(shopInfo().np && cfg.API_URL && state.view === 'checkout'); }
 
-  /* --- города: дебаунс 500 мс, кэш по строке запроса, не короче 2 букв --- */
+  /* --- города: от 3 букв, дебаунс 600 мс, кэш по нормализованной строке, один запрос в пути (новый ждёт), устаревшие ответы только в кэш --- */
   function npCityTyped(input) {
     clearTimeout(np.timer);
-    np.ref = ''; np.seq++; np.resolving = false;
-    npBusy('cityPick', false); npBusy('whBusy', false); suggShow('whSugg', [], ''); npCostSync();
-    var q = input.value.trim(), key = q.toLowerCase(), seq = np.seq;
-    if (q.length < 2) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
+    np.seq++; np.resolving = false; np.queued = null;
+    var q = input.value.trim(), key = npKey(q), seq = np.seq;
+    npBusy('cityPick', false);
+    var known = npKnownRef(q);
+    if (known) { // текст совпал с уже выбранным городом: ref возвращаем, на сервер не ходим
+      np.ref = known; npBusy('cityBusy', false); suggShow('citySugg', [], '');
+      npCostSync(); npLoadWh();
+      return;
+    }
+    np.ref = ''; npBusy('whBusy', false); suggShow('whSugg', [], ''); npCostSync();
+    if (q.length < NP_MIN || npPaused()) { suggShow('citySugg', [], ''); npBusy('cityBusy', false); return; }
     if (np.cities[key]) { npBusy('cityBusy', false); suggShow('citySugg', np.cities[key], 'np-city'); return; }
     npBusy('cityBusy', true);
-    np.timer = setTimeout(function () { npCityFetch(q, seq, false, false); }, 500);
+    np.timer = setTimeout(function () { npCityFetch(q, seq, false, false); }, NP_DEBOUNCE);
   }
-  function npCityFetch(q, seq, pick, chip) {
-    var key = q.toLowerCase();
-    apiGetTimed('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
+  var npCityFail = {}; // текст -> до какого момента его не запрашиваем (ошибка не из-за лимита: только этот текст)
+  function npCityFetch(q, seq, pick, chip, retried) {
+    var key = npKey(q);
+    if (npPaused() || Date.now() < (npCityFail[key] || 0)) { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } return; }
+    if (np.flight) { np.queued = { q: q, seq: seq, pick: pick, chip: chip }; return; } // один запрос в пути: новый ждёт его конца
+    np.flight = key;
+    var finish = function () { np.flight = ''; npCityNext(); };
+    npGet('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
       var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
       if (list) np.cities[key] = list;
-      if (seq !== np.seq) return; // пришёл устаревший ответ — не затираем свежий
-      np.resolving = false;
-      npBusy('cityBusy', false);
-      if (list) npCityShow(list, pick, q, chip); else suggShow('citySugg', [], '');
-    }).catch(function () { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } });
+      if (!list && res && res.ok === false && res.error === 'busy' && !(Number(res.retryAfter) > 0) && !retried) { // с retryAfter — общая пауза (npGet), повтор не нужен; такой же запрос уже идёт: один повтор через ~2,5 с, если текст не менялся
+        setTimeout(function () { if (seq === np.seq) npCityFetch(q, seq, pick, chip, true); else if (np.seq === seq) npBusy('cityBusy', false); }, 2500);
+        finish();
+        return;
+      }
+      if (!list && res && res.ok === false) npCityFail[key] = Date.now() + 60000; // этот текст — не раньше чем через минуту
+      if (seq === np.seq) { // устаревший ответ только ложится в кэш и не затирает свежий
+        np.resolving = false;
+        npBusy('cityBusy', false);
+        if (list) npCityShow(list, pick, q, chip); else suggShow('citySugg', [], '');
+      }
+      finish();
+    }).catch(function () { if (seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); suggShow('citySugg', [], ''); } finish(); });
+  }
+  /** Запрос, дожидавшийся конца предыдущего: уходит, только если он всё ещё актуален и ответа нет в кэше. */
+  function npCityNext() {
+    var n = np.queued; np.queued = null;
+    if (!n || n.seq !== np.seq || npPaused()) { if (n && n.seq === np.seq) { np.resolving = false; npBusy('cityBusy', false); } return; }
+    var list = np.cities[npKey(n.q)];
+    if (list) { np.resolving = false; npBusy('cityBusy', false); npCityShow(list, n.pick, n.q, n.chip); return; }
+    npCityFetch(n.q, n.seq, n.pick, n.chip);
   }
   function npCityShow(list, pick, q, chip) {
     suggShow('citySugg', list, 'np-city');
@@ -4607,8 +4865,11 @@
   function npCityResolve(q, chip) {
     clearTimeout(np.timer);
     q = String(q || '').trim();
-    if (!npOn() || np.ref || q.length < 2) return;
-    var seq = ++np.seq, key = q.toLowerCase();
+    if (!npOn() || np.ref || q.length < NP_MIN) return;
+    var known = npKnownRef(q);
+    if (known) { np.ref = known; npBusy('cityPick', false); npBusy('cityBusy', false); suggShow('citySugg', [], ''); readForm(); npCostSync(); npLoadWh(); return; } // уже выбранный город: запроса нет
+    if (npPaused()) return;
+    var seq = ++np.seq, key = npKey(q);
     if (np.cities[key]) { npBusy('cityBusy', false); npCityShow(np.cities[key], true, q, chip); return; }
     npBusy('cityBusy', true);
     np.resolving = true; // поиск «по уходу с поля» или из чипа уже идёт: второй не запускаем
@@ -4618,7 +4879,8 @@
     var city = document.getElementById('f-city');
     if (!city) return;
     city.value = String(x.s).slice(0, 60);
-    np.ref = String(x.ref || ''); np.seq++;
+    np.ref = String(x.ref || ''); np.seq++; np.queued = null;
+    np.chosen = NP_UUID.test(np.ref) ? { t: npKey(city.value), ref: np.ref } : null; // этот текст больше не требует запросов
     npBusy('cityPick', false); npBusy('cityBusy', false);
     setError('city', ''); suggShow('citySugg', [], ''); readForm(); npCostSync();
     if (!auto) hapticSelect();
@@ -4631,8 +4893,10 @@
   function npLoadWh() {
     var ref = np.ref;
     if (!npOn() || !ref) return;
-    var st = np.wh[ref], retryMs = Number(window.__NP_RETRY_MS) || 30000;
-    // Прошлая попытка не удалась: повторяем при следующем фокусе поля, не чаще раза в 30 с на город.
+    var st = np.wh[ref], retryMs = Number(window.__NP_RETRY_MS) || NP_PAUSE_MS;
+    // Список — один раз на город за сессию. Прошлая попытка не удалась: повторяем при следующем фокусе поля, не раньше чем через 10 минут.
+    if (npPaused() && (st === undefined || st === 'old' || st === 'err')) return; // пауза: не грузим, поле работает вручную
+    if (st === 'err' && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined; // ошибка списка этого города: не раньше чем через 10 минут
     if (st === 'old' && !np.whPending[ref] && Date.now() - (np.whAt[ref] || 0) >= retryMs) st = undefined;
     if (st === undefined) {
       np.wh[ref] = 'loading'; np.whPending[ref] = true; np.whAt[ref] = Date.now();
@@ -4643,20 +4907,33 @@
         np.wh[ref] = 'old';
         if (np.ref === ref) npBusy('whBusy', false);
       }, NP_TIMEOUT);
-      apiGetTimed('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
-        np.whPending[ref] = false;
-        var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
-          .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
-        np.wh[ref] = list || 'old'; // нет ответа или бэкенд не знает np.whall — подсказки по-старому, через np.wh
-        if (np.ref === ref) {
-          npBusy('whBusy', false);
-          var inp = document.getElementById('f-branch');
-          if (list && inp && (document.activeElement === inp || !inp.value)) npShowWh(); // открытый список обновляем
-        }
-      }).catch(function () { np.whPending[ref] = false; np.wh[ref] = 'old'; if (np.ref === ref) npBusy('whBusy', false); });
+      npWhAll(ref, false);
       return;
     }
     npShowWh();
+  }
+  /** Запрос списка отделений города. busy — одна повторная попытка через ~5 с; прочие ошибки — этот город 10 минут не запрашиваем. Запасной np.wh при ошибке НП не включаем. */
+  function npWhAll(ref, retried) {
+    npGet('action=np.whall&city=' + encodeURIComponent(ref), 40000).then(function (res) {
+      np.whPending[ref] = false;
+      var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
+        .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
+      var npErr = res && res.ok === false;
+      if (npErr && res.error === 'busy' && !(Number(res.retryAfter) > 0) && !retried) { // busy с retryAfter — общая пауза (npGet), ниже whAt = 0; список города грузит другой запрос: ждём ~5 с и пробуем один раз
+        np.wh[ref] = 'wait'; np.whPending[ref] = true;
+        if (np.ref === ref) npBusy('whBusy', false);
+        setTimeout(function () { if (npPaused()) { np.wh[ref] = 'err'; np.whAt[ref] = Date.now(); np.whPending[ref] = false; return; } np.wh[ref] = 'loading'; npWhAll(ref, true); }, 5000);
+        return;
+      }
+      if (npErr) np.whAt[ref] = Number(res.retryAfter) > 0 ? 0 : Date.now(); // лимит НП (retryAfter): список повторим сразу после общей паузы; иная ошибка — через 10 минут
+      // Ответ без списка и без ok:false — старый бэкенд ({ok:true} на неизвестное действие): подсказки по-старому, через np.wh.
+      np.wh[ref] = list || (npErr ? 'err' : 'old');
+      if (np.ref === ref) {
+        npBusy('whBusy', false);
+        var inp = document.getElementById('f-branch');
+        if (list && inp && (document.activeElement === inp || !inp.value)) npShowWh(); // открытый список обновляем
+      }
+    }).catch(function () { np.whPending[ref] = false; np.wh[ref] = 'old'; if (np.ref === ref) npBusy('whBusy', false); });
   }
   /** Номер — точное совпадение первым («12» → №12, потом №120…), затем по улице. Тип — до обрезки списка. */
   function npFilterWh(list, q, type) {
@@ -4690,14 +4967,20 @@
     if (np.wh[np.ref] !== 'old') return;
     // Старый бэкенд: запрос на ввод, с задержкой, устаревшие ответы отбрасываются.
     clearTimeout(np.whTimer);
-    var q = input.value.trim(), seq = ++np.whSeq, ref = np.ref; // ref: ответ по прежнему городу не показываем под новым
+    if (npPaused()) { suggShow('whSugg', [], ''); return; }
+    var q = input.value.trim(), seq = ++np.whSeq, ref = np.ref, type = state.form.npType === 'locker' ? 'locker' : '', ck = ref + '|' + type + '|' + npKey(q); // ref: ответ по прежнему городу не показываем под новым
+    if (np.whq[ck]) { npBusy('whBusy', false); suggShow('whSugg', np.whq[ck], 'np-wh'); return; } // та же строка — из кэша
     np.whTimer = setTimeout(function () {
-      if (np.ref !== ref) return;
+      if (np.ref !== ref || npPaused()) return;
       npBusy('whBusy', true);
-      apiGetTimed('action=np.wh&city=' + encodeURIComponent(ref) + '&q=' + encodeURIComponent(q) + '&t=' + (state.form.npType === 'locker' ? 'locker' : ''))
-        .then(function (res) { if (seq === np.whSeq) { npBusy('whBusy', false); if (np.ref === ref) suggShow('whSugg', (res && res.ok && res.list) || [], 'np-wh'); } })
+      npGet('action=np.wh&city=' + encodeURIComponent(ref) + '&q=' + encodeURIComponent(q) + '&t=' + type)
+        .then(function (res) {
+          var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
+          if (list) np.whq[ck] = list;
+          if (seq === np.whSeq) { npBusy('whBusy', false); if (np.ref === ref) suggShow('whSugg', list || [], 'np-wh'); }
+        })
         .catch(function () { if (seq === np.whSeq) npBusy('whBusy', false); });
-    }, 350);
+    }, NP_DEBOUNCE);
   }
   function npSuggest(input) {
     if (!npOn()) return;
@@ -4715,7 +4998,7 @@
   el.page.addEventListener('focusin', function (e) {
     if (!npOn() || e.target.name !== 'branch') return;
     var city = document.getElementById('f-city');
-    if (!np.ref && city && city.value.trim().length >= 2) npCityResolve(city.value, false);
+    if (!np.ref && city && city.value.trim().length >= NP_MIN) npCityResolve(city.value, false);
     else if (np.ref) npLoadWh();
   });
   el.page.addEventListener('focusout', function (e) {
@@ -5966,7 +6249,7 @@
   var catalogTimer = null;
   function catalogSoon() {
     clearTimeout(catalogTimer);
-    catalogTimer = setTimeout(loadCatalog, 1200);
+    catalogTimer = setTimeout(function () { loadCatalog(true); }, 1200); // direct: Worker держит копию до минуты, а админ только что сохранил правку
   }
   /**
    * Замер времени. Виден, только когда владелец включил его на сервере (свойство скрипта PERF_LOG = 1):

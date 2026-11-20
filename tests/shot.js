@@ -7,6 +7,12 @@ fs.mkdirSync(OUT, { recursive: true });
 
 async function open(browser, base, opts) {
   const ctx = await browser.newContext({ viewport: { width: opts.w || 360, height: opts.h || 760 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
+  // Защита стенда: настоящий Worker (*.workers.dev) и настоящий Apps Script (script.google.com) из тестов не вызываются никогда.
+  // Страничные route тестов (page.route) срабатывают раньше этого; сюда доходит только то, что тест не перехватил: запрос обрывается и записывается в globalThis.__realHostLeaks — e2e.js в конце проваливает прогон.
+  await ctx.route(/^https?:\/\/([^/]*\.)?(workers\.dev|script\.google\.com|script\.googleusercontent\.com)(\/|:|$)/, r => {
+    (globalThis.__realHostLeaks = globalThis.__realHostLeaks || []).push(r.request().method() + ' ' + r.request().url());
+    return r.abort();
+  });
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
