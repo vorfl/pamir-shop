@@ -2393,7 +2393,7 @@ const smallTargets = page => page.evaluate(() => {
     const before = async page => {
       await page.route(/\/img\/products\//, r => {
         const u = r.request().url(); reqs.push(u);
-        if (/\/s\/DRY-001\.webp\?v=28$/.test(u) || /DRY-002\.webp\?v=28$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
+        if (/\/s\/DRY-001\.webp\?v=29$/.test(u) || /DRY-002\.webp\?v=29$/.test(u)) { r.fulfill({ status: 404, body: '' }); return; }
         r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg });
       });
       await page.route('https://drive.google.com/**', r => { reqs.push(r.request().url()); r.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg }); });
@@ -2403,21 +2403,21 @@ const smallTargets = page => page.evaluate(() => {
     await page.waitForTimeout(700);
     const src = id => page.evaluate(i => { const im = document.querySelector('#grid .card[data-id="' + i + '"] .card__img img'); return im ? im.getAttribute('src') : null; }, id);
     const has = re => reqs.some(u => re.test(u));
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=28$/) && !has(/\/img\/products\/DRY-039\.webp\?v=28$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
-    ok(/\/img\/products\/DRY-001\.webp\?v=28$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=28$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
-    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=28$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=28$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=29$/.test(await src('DRY-039')) && has(/\/s\/DRY-039\.webp\?v=29$/) && !has(/\/img\/products\/DRY-039\.webp\?v=29$/), 'карточка берёт маленькую копию (…/s/DRY-039.webp), большая не загружается', reqs);
+    ok(/\/img\/products\/DRY-001\.webp\?v=29$/.test(await src('DRY-001')) && has(/\/s\/DRY-001\.webp\?v=29$/) && await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-001"] .card__img img').naturalWidth > 0), 'маленькой копии нет (404) — карточка один раз подставляет большую', await src('DRY-001'));
+    ok(await src('DRY-002') === null && await count(page, '#grid .card[data-id="DRY-002"] .card__img .mark') === 1 && reqs.filter(u => /\/s\/DRY-002\.webp\?v=29$/.test(u)).length === reqs.filter(u => /\/img\/products\/DRY-002\.webp\?v=29$/.test(u)).length && reqs.filter(u => /DRY-002/.test(u)).length <= 4, 'нет ни маленькой, ни большой — заглушка; на каждую отрисовку одна попытка маленькой и одна большой, без цикла', reqs.filter(u => /DRY-002/.test(u)));
     const catImg = st.gas.get({ action: 'catalog' }).products.find(p => p.id === 'DRY-003').img;
     ok(/drive\.google\.com/.test(catImg) && await src('DRY-003') === catImg && !/\/s\//.test(await src('DRY-003')), 'адрес Google Drive не меняется', [catImg, await src('DRY-003')]);
     const miniSrc = await page.evaluate(() => { const im = document.querySelector('.mini[data-id="DRY-039"] img'); return im ? im.getAttribute('src') : ''; });
-    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=28$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
+    ok(!miniSrc || /\/s\/DRY-039\.webp\?v=29$/.test(miniSrc), 'ленты (mini) тоже берут маленькую копию', miniSrc);
     await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
     await page.waitForSelector('.sheet__img img');
     await page.waitForTimeout(300);
-    ok(/\/img\/products\/DRY-039\.webp\?v=28$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=28$/), 'шторка товара берёт большое фото');
+    ok(/\/img\/products\/DRY-039\.webp\?v=29$/.test(await page.getAttribute('.sheet__img img', 'src')) && has(/\/img\/products\/DRY-039\.webp\?v=29$/), 'шторка товара берёт большое фото');
     await page.click('[data-action="add"]');
     await page.click('#toastBtn');
     await page.waitForSelector('.line__img img');
-    ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
+    ok(/\/img\/products\/s\/DRY-039\.webp\?v=29$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт маленькую копию');
     ok(errors.length === 0, 'в консоли браузера нет ошибок', errors);
     await ctx.close(); st.server.close();
     // файлы: у каждого большого фото есть копия не тяжелее 30 КБ
@@ -2457,7 +2457,7 @@ const smallTargets = page => page.evaluate(() => {
       await page.waitForSelector('#grid .card');
       const tag = ' (' + theme + ')';
       const cardSrc = await page.evaluate(() => document.querySelector('#grid .card[data-id="DRY-039"] .card__img img').getAttribute('src'));
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=29$/.test(cardSrc) && !/\/p\//.test(cardSrc), 'карточка каталога товара с i2 берёт первое (маленькое) фото' + tag, cardSrc);
       await page.locator('#grid .card[data-id="DRY-039"] .card__name').click();
       await page.waitForSelector('.sheet__strip');
       await page.waitForTimeout(400);
@@ -2467,7 +2467,7 @@ const smallTargets = page => page.evaluate(() => {
         return { first: sl[0].getAttribute('src'), second: sl[1].getAttribute('src'), lazy: sl[1].getAttribute('loading'), cur: d.map(x => x.classList.contains('is-on')), tag: d.map(x => x.tagName), hidden: document.querySelector('.sheet__dots').getAttribute('aria-hidden'),
           gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), dist: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().left), snap: getComputedStyle(document.querySelector('.sheet__strip')).scrollSnapType };
       });
-      ok(/\/img\/products\/DRY-039\.webp\?v=28$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=28$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
+      ok(/\/img\/products\/DRY-039\.webp\?v=29$/.test(info.first) && /\/img\/products\/p\/DRY-039\.webp\?v=29$/.test(info.second) && info.lazy === 'lazy', 'слайды: первое фото и второе (…/p/DRY-039.webp, loading=lazy)' + tag, info);
       ok(info.cur[0] === true && info.cur[1] === false && /x mandatory/.test(info.snap), 'активна первая точка; у ленты scroll-snap' + tag, info);
       const dots = await page.evaluate(() => { const b = document.querySelector('.sheet__dots'), r = b.getBoundingClientRect(), d = [].slice.call(b.querySelectorAll('.sheet__dot')); return { tag: b.tagName, label: b.getAttribute('aria-label'), w: Math.round(r.width), h: Math.round(r.height), n: d.length, gap: Math.round(d[1].getBoundingClientRect().left - d[0].getBoundingClientRect().right), hid: d.every(x => x.getAttribute('aria-hidden') === 'true') }; });
       ok(dots.tag === 'BUTTON' && dots.label === 'Наступне фото' && dots.w >= 44 && dots.h >= 44 && dots.n === 2 && dots.gap >= 8 && dots.gap <= 10 && dots.hid, 'полоска точек — одна кнопка ≥ 44×44 с подписью «Наступне фото», точки внутри на расстоянии 8–10 px' + tag, dots);
@@ -2498,7 +2498,7 @@ const smallTargets = page => page.evaluate(() => {
       // корзина — только первое фото (маленькая копия)
       await page.click('[data-action="add"]'); await page.click('#toastBtn');
       await page.waitForSelector('.line__img img');
-      ok(/\/img\/products\/s\/DRY-039\.webp\?v=28$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
+      ok(/\/img\/products\/s\/DRY-039\.webp\?v=29$/.test(await page.getAttribute('.line__img img', 'src')), 'корзина берёт первое маленькое фото' + tag);
       ok(!reqs.some(u => /\/s\/p\//.test(u)), 'маленькой копии второго фото не запрашивали' + tag, reqs.filter(u => /\/p\//.test(u)));
       await ctx.close();
 
@@ -3370,7 +3370,7 @@ const smallTargets = page => page.evaluate(() => {
     const e1 = items();
     ok(e1.length === 1 && /boom1/.test(e1[0].m) && !/123 45 67|\+380 50/.test(e1[0].m) && e1[0].m.length <= 200, 'ошибка скрипта уходит записью err; телефон из текста вычищен', e1);
     const body1 = JSON.stringify(errReqs[0]);
-    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '28' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (28); без initData и данных покупателя', body1);
+    ok(/^[a-z0-9]{8,32}$/.test(errReqs[0].did) && e1[0].s === 'catalog' && e1[0].v === '29' && !/initData|Олена|Тест|hash=|user=/.test(body1.replace('Тестовая ошибка', '')), 'в записи: did, экран (catalog), версия (29); без initData и данных покупателя', body1);
     ok(await c.page.evaluate(() => /^[a-z0-9]{8,32}$/.test(localStorage.getItem('pamir_did'))), 'did — случайная строка в хранилище устройства');
     // одинаковые подряд не дублируются
     await boom('Тестовая ошибка boom1 телефон +380 50 123 45 67');
@@ -5434,7 +5434,7 @@ const smallTargets = page => page.evaluate(() => {
     ok(/^https:\/\/pamir-bot\.pochoev2306\.workers\.dev\/catalog$/.test(WORKER), 'боевой config.js: CATALOG_URL = https://pamir-bot.pochoev2306.workers.dev/catalog', WORKER);
     const html = fs.readFileSync(path.join(__dirname, '..', 'webapp', 'index.html'), 'utf8');
     const vCfg = (/config\.js\?v=(\d+)/.exec(html) || [])[1], vApp = (/app\.js\?v=(\d+)/.exec(html) || [])[1], vCss = (/styles\.css\?v=(\d+)/.exec(html) || [])[1];
-    ok(vCfg === '28' && vApp === '28' && vCss === '28', 'index.html: config.js, app.js, styles.css — все с ?v=28 (телефоны не оставят старый config)', [vCfg, vApp, vCss]);
+    ok(vCfg === '29' && vApp === '29' && vCss === '29', 'index.html: config.js, app.js, styles.css — все с ?v=29 (телефоны не оставят старый config)', [vCfg, vApp, vCss]);
     const st = await start(8990, undefined, s => { withPhotos(s); });
     const cat = (notice) => () => { const j = JSON.parse(JSON.stringify(st.gas.get({ action: 'catalog' }))); j.shop.notice = { ua: notice, ru: notice }; return j; };
     // cacheState: значение X-Pamir-Cache (null — заголовка нет); expose === false — заголовок есть, но без Access-Control-Expose-Headers (браузер его не покажет странице)
@@ -5637,6 +5637,219 @@ const smallTargets = page => page.evaluate(() => {
     }
     console.log('  времена на стенде (для справки): каталог через Worker ' + tWorker + ' мс; при обрыве Worker и откате на Apps Script ' + tFall + ' мс');
     st.server.close();
+  }
+
+  /* ---------------- Выпуск Б4: комиссия за наложенный платёж (только текст) и версия данных покупателя shop.cdv ---------------- */
+  console.log('Выпуск Б4 · наложенный платёж: строка о комиссии Новой почты; очистка данных покупателя по shop.cdv');
+  {
+    const NBSP = ' ';
+    const UA1 = 'Нова пошта бере за накладений платіж 20' + NBSP + '₴ + 2' + NBSP + '% від суми.', UA2 = ' Оплата на рахунок ФОП — без цієї комісії.';
+    const RU1 = 'Новая почта берёт за наложенный платёж 20' + NBSP + '₴ + 2' + NBSP + '% от суммы.', RU2 = ' Оплата на счёт ФОП — без этой комиссии.';
+    const REF = '11111111-1111-1111-1111-111111111111';
+    const patch = (st, fn) => { const orig = st.gas.get; st.gas.get = q => { const r = orig(q); if (q.action === 'catalog' && r && r.shop) fn(r.shop); return r; }; };
+    const stubNp = async page => {
+      await page.route(/\/api\?.*action=np\./, route => {
+        const u = new URL(route.request().url()), a = u.searchParams.get('action');
+        const body = a === 'np.city' ? { ok: true, list: [{ n: 'м. Харків, Харківська обл.', s: 'Харків', ref: REF }] } : a === 'np.whall' ? { ok: true, list: [[12, 'вул. Сумська, 12', 'w']] } : a === 'np.price' ? { ok: true, cost: 95 } : { ok: false };
+        route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(body) }).catch(() => {});
+      });
+    };
+    const toCheckout = async (st, uid, extra) => {
+      const c = await open(browser, st.url, Object.assign({ uid }, extra || {}));
+      await stubNp(c.page);
+      if (extra && extra.start) { await c.page.waitForSelector('.sheet__title'); await c.page.click('#sheet [data-action="add"]'); }
+      else {
+        await c.page.waitForSelector('.card');
+        await toCard(c.page, 'NUT-007');
+        await c.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+      }
+      await c.page.click('.tabbar [data-go="cart"]');
+      await c.page.waitForSelector('.line');
+      await c.page.evaluate(() => window.__tg.main.cb());
+      await c.page.waitForSelector('#form');
+      return c;
+    };
+    const noteVisible = page => page.evaluate(() => { const n = document.getElementById('codNote'); return !!n && !n.hidden && n.getBoundingClientRect().height > 0 ? n.textContent : ''; });
+    const sumText = page => page.evaluate(() => Array.from(document.querySelectorAll('.js-sum')).map(n => n.textContent).join('|'));
+    const pickCity = async page => {
+      await page.fill('#f-city', 'Харк');
+      await page.waitForSelector('#citySugg button');
+      await page.locator('#citySugg button').first().click();
+    };
+
+    // --- а) с ФОП и способом «на счёт»: обе фразы; UA светлая ---
+    const stA = await start(8995, undefined, withPhotos);
+    patch(stA, s => { s.np = true; s.npp = 1; s.fop = 1; s.pay = ['cash', 'card', 'cod']; });
+    const a = await toCheckout(stA, 951, { start: 'DRY-039' });
+    ok(await a.page.locator('#codNote').count() === 1 && await noteVisible(a.page) === '', 'наложенный платёж: пока он не выбран (самовывоз) — строки нет');
+    await a.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
+    ok(await noteVisible(a.page) === '', 'Новая почта, оплата «при отриманні»: строки о комиссии нет');
+    const sum0 = await sumText(a.page);
+    await pickCity(a.page);
+    await a.page.locator('[data-opt="pay-cod"]').click();
+    ok(await noteVisible(a.page) === UA1 + UA2, 'UA: при наложенном платеже строка дословно (обе фразы, неразрывные пробелы в «20 ₴» и «2 %»)', await noteVisible(a.page));
+    ok(await sumText(a.page) === sum0 && sum0 !== '', 'сумма заказа при выборе наложенного платежа не изменилась', [sum0, await sumText(a.page)]);
+    await a.page.waitForSelector('.js-npcost:not([hidden])', { timeout: 5000 }).catch(() => {});
+    ok(await noOverflow(a.page) && (await smallTargets(a.page)).length === 0, '360 px: без горизонтальной прокрутки, кнопки и поля ≥ 44 px', await smallTargets(a.page));
+    const geo = await a.page.evaluate(() => { const c = document.querySelector('.js-npcost'), n = document.getElementById('codNote'); return { cost: c && !c.hidden ? c.getBoundingClientRect().bottom : null, note: n.getBoundingClientRect().top, apart: !!n.closest('fieldset') && n.closest('fieldset') !== (c && c.closest('fieldset')) }; });
+    ok(geo.cost !== null && geo.note > geo.cost && geo.apart, 'строка тарифа Новой почты и строка комиссии стоят в разных блоках (доставка / оплата), не сливаются', geo);
+    await a.page.locator('#codNote').scrollIntoViewIfNeeded();
+    await a.page.screenshot({ path: OUT + '/b4-cod-ua-light.png', fullPage: true });
+    await a.page.locator('[data-opt="pay-card"]').click();
+    ok(await noteVisible(a.page) === '', 'переключили на «на рахунок ФОП»: строка исчезла сразу');
+    await a.page.locator('[data-opt="pay-cash"]').click();
+    ok(await noteVisible(a.page) === '', 'переключили на «при отриманні»: строки нет');
+    await a.page.locator('[data-opt="pay-cod"]').click();
+    ok(await noteVisible(a.page) === UA1 + UA2, 'вернули наложенный платёж: строка снова есть');
+    await a.page.locator('.opt', { hasText: 'Самовивіз' }).first().click();
+    ok(await noteVisible(a.page) === '' && await a.page.locator('[data-opt="pay-cod"]').isHidden(), 'самовывоз: наложенного платежа нет и строки нет');
+    await a.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
+    await a.page.locator('[data-opt="pay-cod"]').click();
+    // восстановление сохранённой формы
+    await a.page.reload({ waitUntil: 'networkidle' });
+    await stubNp(a.page);
+    await a.page.waitForTimeout(500); await a.page.evaluate(() => { const b = document.querySelector('#sheet .sheet__close'); if (b && !document.getElementById('sheet').hidden) b.click(); });
+    await a.page.click('.tabbar [data-go="cart"]');
+    await a.page.waitForSelector('.line');
+    await a.page.evaluate(() => window.__tg.main.cb());
+    await a.page.waitForSelector('#form');
+    ok(await a.page.locator('input[name="pay"][value="cod"]').isChecked() && await noteVisible(a.page) === UA1 + UA2, 'после перезагрузки сохранённая форма с наложенным платежом сразу показывает строку', await noteVisible(a.page));
+    // заказ: на сервер уходит прежнее тело (pay=cod, без новых полей)
+    await a.page.fill('#f-phone', '0501234567');
+    await a.page.fill('#f-branch', 'Відділення 12');
+    const posts = [];
+    a.page.on('request', r => { if (r.method() === 'POST' && /\/api$/.test(r.url())) { try { const b = JSON.parse(r.postData()); if (b.action === 'order') posts.push(b); } catch (e) { /* не JSON */ } } });
+    await a.page.evaluate(() => window.__tg.main.cb());
+    await a.page.waitForSelector('.done');
+    ok(posts.length === 1 && posts[0].pay === 'cod' && !/comis|fee|commission|cod_/i.test(Object.keys(posts[0]).join(',')) && posts[0].items.length === 1, 'в заказе наложенный платёж, без новых полей про комиссию', Object.keys(posts[0] || {}));
+    await a.page.context().close();
+
+    // --- б) RU, тёмная ---
+    const r = await toCheckout(stA, 952, { lc: 'ru', theme: 'dark', start: 'DRY-039' });
+    await r.page.locator('.opt', { hasText: 'Новая почта' }).first().click();
+    await pickCity(r.page);
+    await r.page.locator('[data-opt="pay-cod"]').click();
+    ok(await noteVisible(r.page) === RU1 + RU2, 'RU: строка дословно (обе фразы)', await noteVisible(r.page));
+    ok(await noOverflow(r.page), 'RU, тёмная тема: без горизонтальной прокрутки');
+    await r.page.waitForSelector('.js-npcost:not([hidden])', { timeout: 5000 }).catch(() => {});
+    await r.page.locator('#codNote').scrollIntoViewIfNeeded();
+    await r.page.screenshot({ path: OUT + '/b4-cod-ru-dark.png', fullPage: true });
+    await r.page.context().close(); stA.server.close();
+
+    // --- в) вторая фраза зависит от доступности оплаты на счёт ФОП ---
+    const stB = await start(8996, undefined, withPhotos);
+    patch(stB, s => { s.np = true; s.fop = 1; s.pay = ['cash', 'cod']; });
+    const b = await toCheckout(stB, 953);
+    await b.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
+    await b.page.locator('[data-opt="pay-cod"]').click();
+    ok(await noteVisible(b.page) === UA1, 'ФОП есть, но способа «на рахунок» нет в списке: только первая фраза', await noteVisible(b.page));
+    await b.page.context().close(); stB.server.close();
+    const stC = await start(8997, undefined, withPhotos);
+    patch(stC, s => { s.np = true; s.pay = ['cash', 'card', 'cod']; });
+    const c = await toCheckout(stC, 954);
+    await c.page.locator('.opt', { hasText: 'Нова пошта' }).first().click();
+    await c.page.locator('[data-opt="pay-cod"]').click();
+    ok(await noteVisible(c.page) === UA1, 'нет флага ФОП (перевод на обычную карту): только первая фраза', await noteVisible(c.page));
+    await c.page.context().close(); stC.server.close();
+    const stD = await start(8998, undefined, withPhotos); // shop без np/pay/fop (как у старого бэкенда)
+    const d = await toCheckout(stD, 955);
+    ok(await d.page.locator('#codNote').count() === 1 && await noteVisible(d.page) === '' && d.errors.length === 0, 'бэкенд без настроек: оформление открывается, строки нет, ошибок в консоли нет', d.errors);
+    await d.page.context().close(); stD.server.close();
+
+    // --- г) shop.cdv: очистка данных покупателя один раз ---
+    let cdv = 'A';
+    const stV = await start(8999, undefined, withPhotos);
+    patch(stV, s => { if (cdv !== undefined) s.cdv = cdv; });
+    let hold = null;
+    const SEED = {
+      pamir_cart_v1: JSON.stringify({ t: Date.now(), i: [{ id: 'NUT-007', g: 0, q: 2, pr: 85 }] }),
+      pamir_fav_v1: JSON.stringify(['DRY-039']), pamir_seen_v1: JSON.stringify(['NUT-007']), pamir_search_v1: JSON.stringify(['курага']), pamir_subs_v1: JSON.stringify(['DRY-005']),
+      pamir_notice_closed: 'nabc1', pamir_form_v1: JSON.stringify({ name: 'Іван', phone: '+380501234567', delivery: 'np', city: 'Харків', pay: 'cod', ifOut: 'replace', comment: 'тест' }),
+      pamir_rid_v1: JSON.stringify({ r: 'abcdefgh1234', t: Date.now() }),
+      pamir_lang: 'ru', pamir_did: 'did1234567890', pamir_admin: '1', pamir_ref: '777', pamir_wh: '1'
+    };
+    const KEEP = ['pamir_lang', 'pamir_did', 'pamir_admin', 'pamir_ref', 'pamir_wh', 'pamir_catalog_v1'];
+    const GONE = ['pamir_cart_v1', 'pamir_fav_v1', 'pamir_seen_v1', 'pamir_search_v1', 'pamir_subs_v1', 'pamir_notice_closed', 'pamir_form_v1', 'pamir_rid_v1'];
+    const seedLs = (page, ver) => page.evaluate(([seed, ver]) => { Object.keys(seed).forEach(k => localStorage.setItem(k, seed[k])); if (ver) localStorage.setItem('pamir_cdv', ver); sessionStorage.setItem('pamir_nppause_v1', '123'); }, [SEED, ver]);
+    const seedCloud = page => page.evaluate(() => { ['cart', 'form', 'fav', 'seen', 'notice'].forEach(k => { window.__tg.cloud[k] = '["x"]'; }); window.__tg.cloud.other = 'keep'; });
+    const state = page => page.evaluate(([g, k]) => ({ gone: g.filter(x => localStorage.getItem(x)), keep: k.filter(x => localStorage.getItem(x)), cdv: localStorage.getItem('pamir_cdv'), cloud: Object.keys(window.__tg.cloud).sort().join(','), nppause: sessionStorage.getItem('pamir_nppause_v1'), removes: window.__tg.calls.filter(x => x[0] === 'cloudRemove').length }), [GONE, KEEP]);
+    const openV = async uid => {
+      const c = await open(browser, stV.url, { uid, w: 360, h: 640, until: 'domcontentloaded', before: async page => {
+        await page.route(/\/api\?action=catalog/, async r => { if (hold) await hold; r.fallback(); });
+      } });
+      await c.page.waitForFunction(() => window.__tg && document.getElementById('tabbar'));
+      return c;
+    };
+    const cartLines = async page => { await page.click('.tabbar [data-go="cart"]'); await page.waitForTimeout(250); const n = await count(page, '.line'); await page.click('.tabbar [data-go="catalog"]').catch(() => {}); return n; };
+    let release;
+
+    // 1) первая загрузка: версии на телефоне нет, shop.cdv = A, лежат тестовые данные — очищаем один раз
+    hold = new Promise(res => { release = res; });
+    const v = await openV(960);
+    await seedLs(v.page);
+    await v.page.reload({ waitUntil: 'domcontentloaded' }); // тестовые данные подхватятся в память до ответа сервера
+    await v.page.waitForFunction(() => window.__tg && document.getElementById('tabbar'));
+    await seedCloud(v.page);
+    await v.page.waitForSelector('#cartCount');
+    ok(await v.page.locator('#cartCount').count() === 1, 'до ответа сервера корзина с тестовыми данными уже в памяти (бейдж на вкладке)');
+    release(); hold = null;
+    await v.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'A');
+    await v.page.waitForSelector('#grid .card');
+    const s1 = await state(v.page);
+    ok(s1.gone.length === 0 && s1.keep.length === KEEP.length && s1.cdv === 'A' && s1.removes === 1 && s1.cloud === 'other' && s1.nppause === '123', 'нет сохранённой версии + есть shop.cdv: данные покупателя стёрты (localStorage и CloudStorage); язык, did, админ, реферал, опт и пауза НП на месте', s1);
+    ok(await count(v.page, '#cartCount') === 0 && await cartLines(v.page) === 0, 'корзина в памяти и на экране пуста сразу, без перезагрузки');
+    // 2) повторная загрузка с той же версией — не чистит
+    await v.page.evaluate(() => { localStorage.setItem('pamir_fav_v1', '["DRY-039"]'); localStorage.setItem('pamir_cart_v1', JSON.stringify({ t: Date.now(), i: [{ id: 'NUT-007', g: 0, q: 1, pr: 85 }] })); });
+    await v.page.reload({ waitUntil: 'networkidle' });
+    const s2 = await state(v.page);
+    ok(s2.gone.length === 2 && s2.cdv === 'A' && s2.removes === 0, 'версия совпала (повторная загрузка): ничего не чистится', s2);
+    // 3) версия изменилась: сохранённая копия каталога показана сразу, свежий ответ принёс B; покупатель за это время положил товар — всё равно чистим один раз
+    cdv = 'B'; hold = new Promise(res => { release = res; });
+    await v.page.reload({ waitUntil: 'domcontentloaded' });
+    await v.page.waitForSelector('#grid .card'); // из сохранённой копии
+    await seedCloud(v.page);
+    await toCard(v.page, 'NUT-007');
+    await v.page.locator('#grid .card[data-id="NUT-007"] [data-quick="1"]').click();
+    ok(await v.page.evaluate(() => JSON.parse(localStorage.getItem('pamir_cart_v1')).i.some(l => l.id === 'NUT-007' && l.q >= 1)), 'пока свежий ответ не пришёл, покупатель положил товар (каталог из сохранённой копии)');
+    release(); hold = null;
+    await v.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'B');
+    const s3 = await state(v.page);
+    ok(s3.gone.length === 0 && s3.removes === 1 && s3.cloud === 'other' && await count(v.page, '#cartCount') === 0, 'версия изменилась A → B: данные стёрты один раз (и то, что положили за эти секунды)', s3);
+    await v.page.evaluate(() => localStorage.setItem('pamir_fav_v1', '["DRY-039"]'));
+    await v.page.reload({ waitUntil: 'networkidle' });
+    const s3b = await state(v.page);
+    ok(s3b.gone.length === 1 && s3b.removes === 0, 'после очистки повторная загрузка с версией B — не чистит', s3b);
+    ok(v.errors.length === 0, 'ошибок в консоли нет', v.errors);
+    await v.ctx.close();
+    // 4) версия на телефоне та же, в хранилище лежат данные: ничего не чистится
+    const v2 = await openV(961);
+    await seedLs(v2.page, 'B');
+    await v2.page.reload({ waitUntil: 'networkidle' });
+    const s4 = await state(v2.page);
+    ok(s4.gone.length === GONE.length && s4.removes === 0 && s4.cdv === 'B', 'версия совпала: данные покупателя целы', s4);
+    await v2.ctx.close();
+    // 5) старый бэкенд / пустое поле: ничего не чистится и версия не пишется
+    for (const empty of [undefined, '']) {
+      cdv = empty;
+      const o = await openV(962);
+      await seedLs(o.page); await o.page.reload({ waitUntil: 'networkidle' });
+      const s5 = await state(o.page);
+      ok(s5.gone.length === GONE.length && s5.cdv === null && s5.removes === 0 && o.errors.length === 0, 'нет shop.cdv (' + (empty === '' ? 'пустая строка' : 'поле отсутствует, как у старого бэкенда') + '): ничего не чистится, версия не записывается', s5);
+      await o.ctx.close();
+    }
+    // 6) новая версия C при сломанном CloudStorage.removeItems: очистка не падает
+    cdv = 'C';
+    const w = await openV(963);
+    await seedLs(w.page, 'Z');
+    hold = new Promise(res => { release = res; });
+    await w.page.reload({ waitUntil: 'domcontentloaded' });
+    await w.page.waitForFunction(() => window.__tg && document.getElementById('tabbar'));
+    await w.page.evaluate(() => { window.Telegram.WebApp.CloudStorage.removeItems = function () { throw new Error('cloud down'); }; });
+    release(); hold = null;
+    await w.page.waitForFunction(() => localStorage.getItem('pamir_cdv') === 'C');
+    const s6 = await state(w.page);
+    ok(s6.gone.length === 0 && w.errors.length === 0, 'облако ломается при очистке: localStorage всё равно очищен, ошибок нет', [s6, w.errors]);
+    await w.ctx.close(); stV.server.close();
   }
 
   // Защита: ни один тест не должен был дойти до настоящего Worker или Apps Script

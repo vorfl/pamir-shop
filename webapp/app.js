@@ -377,10 +377,12 @@
   var I18N_A = {
     ua: { noticeClose: 'Закрити повідомлення', jar: 'Баночка {n} г', featureAll: 'Наша курага',
       payCardFop: 'Переказ на рахунок ФОП (IBAN)', payCardNoteFop: 'Реквізити надішлемо в Telegram одразу після оформлення.',
-      npSearching: 'Шукаю…', npPickCity: 'Оберіть місто зі списку' },
+      npSearching: 'Шукаю…', npPickCity: 'Оберіть місто зі списку',
+      codNote: 'Нова пошта бере за накладений платіж 20 ₴ + 2 % від суми.', codNoteFop: 'Оплата на рахунок ФОП — без цієї комісії.' },
     ru: { noticeClose: 'Закрыть уведомление', jar: 'Баночка {n} г', featureAll: 'Наша курага',
       payCardFop: 'Перевод на счёт ФОП (IBAN)', payCardNoteFop: 'Реквизиты пришлём в Telegram сразу после оформления.',
-      npSearching: 'Ищу…', npPickCity: 'Выберите город из списка' }
+      npSearching: 'Ищу…', npPickCity: 'Выберите город из списка',
+      codNote: 'Новая почта берёт за наложенный платёж 20 ₴ + 2 % от суммы.', codNoteFop: 'Оплата на счёт ФОП — без этой комиссии.' }
   };
   ['ua', 'ru'].forEach(function (lang) {
     Object.keys(I18N_A[lang]).forEach(function (k) { I18N[lang][k] = I18N_A[lang][k]; });
@@ -426,7 +428,8 @@
 
   var store = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* хранилище недоступно */ } }
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) { /* хранилище недоступно */ } },
+    del: function (k) { try { localStorage.removeItem(k); } catch (e) { /* хранилище недоступно */ } }
   };
 
   /** Ключ попытки заказа живёт в хранилище устройства до ответа сервера (сервер помнит его 6 часов). */
@@ -640,10 +643,11 @@
     var box = staleBox = { ctrl: null, own: false };
     fetchCatalog(catalogUrl(), 10000, box).then(function (data) {
       if (box.own || gen !== catGen || staleBox !== box) return;
+      var cleared = cdvApply(data.shop);
       var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
       var old = state.catalog ? JSON.stringify({ c: state.catalog.categories, p: state.catalog.products, s: state.catalog.shop }) : '';
       store.set(CACHE_KEY, JSON.stringify({ url: cfg.API_URL, data: data }));
-      if (fresh === old) return;
+      if (fresh === old && !cleared) return;
       var y = window.scrollY || 0;
       var openId = state.sheet ? state.sheet.id : '', before = openId && state.catalog && state.catalog.byId[openId] ? JSON.stringify(state.catalog.byId[openId]) : '';
       if (state.sheet) {
@@ -658,6 +662,33 @@
         if ((window.scrollY || 0) !== y) window.scrollTo(0, y);
       }
     }).catch(function () { /* страховка не сработала — покупатель видит каталог от Worker */ });
+  }
+
+  /**
+   * Версия данных покупателя (shop.cdv, необязательная строка). Не совпала с сохранённой на телефоне (или сохранённой нет) — ОДИН раз стираем данные покупателя:
+   * корзину, «Обране», «Ви дивились», поиски, закрытую полоску, форму оформления, ключ повтора заказа, «підписки» — на телефоне, в Telegram CloudStorage и в памяти.
+   * Язык, тема, did, кэш каталога, паузы Новой почты, админские настройки не трогаем. Нет поля или пусто (старый бэкенд) — ничего не делаем.
+   * Берём только из свежего ответа сервера, не из сохранённой копии каталога. Возвращает true, если очистка была (вызывающий перерисует экран).
+   */
+  var CDV_KEY = 'pamir_cdv', cdvDone = false;
+  function cdvApply(shop) {
+    var v = shop && typeof shop.cdv === 'string' ? shop.cdv.trim().slice(0, 40) : '';
+    if (!v || v === store.get(CDV_KEY) || cdvDone === v) return false;
+    cdvDone = v; // даже если хранилище сломано — в этой сессии повторно не чистим; поздние ответы облака не вернут старое
+    [CART_KEY, FORM_KEY, RID_KEY, FAV_KEY, SEEN_KEY, SEARCH_KEY, SUBS_KEY, NOTICE_KEY].forEach(function (k) { store.del(k); });
+    try {
+      if (cloudOk() && tg.CloudStorage.removeItems) tg.CloudStorage.removeItems(['cart', 'form', 'fav', 'seen', 'notice'], function () {});
+    } catch (e) { /* облако недоступно */ }
+    try { clearTimeout(cartSync.timer); } catch (e) { /* таймера нет */ }
+    state.cart = { t: 0, i: [] };
+    state.form = { name: '', phone: '', delivery: 'pickup', city: '', branch: '', pay: 'cash', comment: '', giftNote: '', npType: 'branch', point: '', ifOut: 'call', cityRef: '', cityRefFor: '' };
+    if (tgUser) state.form.name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').slice(0, 60);
+    state.rid = '';
+    favs = []; seen = []; searches = []; subs = [];
+    noticeSeen.local = ''; noticeSeen.cloud = ''; noticeSeen.session = ''; noticeSeen.cloudReady = true;
+    store.set(CDV_KEY, v);
+    if (state.view === 'cart' || state.view === 'checkout') state.view = 'catalog'; // корзина пуста — оформлять нечего
+    return true;
   }
 
   function loadCatalog(direct) {
@@ -681,12 +712,13 @@
       .then(function (data) {
         if (gen !== catGen) return; // за это время началась более новая загрузка
         if (state.offline) { state.offline = false; renderBanner(); }
+        var cleared = cdvApply(data.shop);
         var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
         var old = state.catalog
           ? JSON.stringify({ c: state.catalog.categories, p: state.catalog.products, s: state.catalog.shop })
           : '';
         if (cfg.API_URL) store.set(CACHE_KEY, JSON.stringify({ url: cfg.API_URL, data: data }));
-        if (fresh !== old) {
+        if (fresh !== old || cleared) {
           setCatalog(data);
           renderAll();
         }
@@ -745,7 +777,7 @@
     // Новый телефон: избранное и просмотренное приезжают из Telegram, если здесь ещё пусто.
     try {
       tg.CloudStorage.getItems(['fav', 'seen'], function (err, values) {
-        if (err || !values) return;
+        if (err || !values || cdvDone) return;
         var changed = false;
         function take(cloudKey, max) {
           try {
@@ -1169,7 +1201,7 @@
 
   function loadNoticeFlag() {
     function done(value) {
-      if (noticeSeen.cloudReady) return;
+      if (noticeSeen.cloudReady || cdvDone) return;
       noticeSeen.cloud = typeof value === 'string' ? value : '';
       noticeSeen.cloudReady = true;
       renderBanner();
@@ -2000,7 +2032,7 @@
     if (!cloudOk()) return;
     try {
       tg.CloudStorage.getItem('cart', function (err, value) {
-        var cloud = err ? null : parseCart(value);
+        var cloud = err || cdvDone ? null : parseCart(value);
         // Берём копию из Telegram, только если она новее той, что на телефоне.
         if (cloud && cloud.t > state.cart.t) {
           state.cart = cloud;
@@ -2508,7 +2540,8 @@
 
       '<fieldset class="group"><legend class="label">' + esc(t('payment')) + '</legend><div class="opts opts--col">' +
       payMethods().map(function (k) { return option('pay', k, '', payName(k)); }).join('') + '</div>' +
-      '<p class="info info__muted" id="cardNote">' + esc(t(shopInfo().fop ? 'payCardNoteFop' : 'payCardNote')) + '</p></fieldset>' +
+      '<p class="info info__muted" id="cardNote">' + esc(t(shopInfo().fop ? 'payCardNoteFop' : 'payCardNote')) + '</p>' +
+      '<p class="info info__muted" id="codNote" hidden></p></fieldset>' +
 
       '<div class="field"><label class="label" for="f-comment">' + esc(t('fComment')) + ' <span class="label__opt">(' + esc(t('optional')) + ')</span></label>' +
       '<textarea class="input input--area" id="f-comment" name="comment" rows="3" maxlength="300" placeholder="' + esc(t('commentPh')) + '">' + esc(f.comment) + '</textarea></div>' +
@@ -2537,6 +2570,13 @@
       saveForm();
     }
     document.getElementById('cardNote').hidden = state.form.pay !== 'card';
+    // Комиссия Новой почты за наложенный платёж: только текст, сумму заказа не меняет. Вторая фраза — если оплата на счёт ФОП доступна в этом заказе.
+    var codNote = document.getElementById('codNote');
+    if (codNote) {
+      var showCod = np && state.form.pay === 'cod';
+      if (showCod) codNote.textContent = t('codNote') + (shopInfo().fop && payMethods().indexOf('card') >= 0 ? ' ' + t('codNoteFop') : '');
+      codNote.hidden = !showCod;
+    }
     npCostSync();
   }
 
@@ -5211,7 +5251,7 @@
     if (!cloudOk() || state.form.phone) return;
     try {
       tg.CloudStorage.getItem('form', function (err, value) {
-        if (err || !value || state.form.phone) return;
+        if (err || !value || state.form.phone || cdvDone) return;
         try { applyForm(JSON.parse(value)); } catch (e) { return; }
         if (state.view === 'checkout') renderPage();
       });

@@ -71,7 +71,8 @@ function start(port, codePath, tweak) {
           CloudStorage: {
             setItem:function(k,v,cb){ cloud[k]=v; if(cb) cb(null,true); },
             getItem:function(k,cb){ cb(null, cloud[k]||''); },
-            getItems:function(keys,cb){ var o={}; keys.forEach(function(k){ o[k]=cloud[k]||''; }); cb(null,o); } },
+            getItems:function(keys,cb){ var o={}; keys.forEach(function(k){ o[k]=cloud[k]||''; }); cb(null,o); },
+            removeItems:function(keys,cb){ keys.forEach(function(k){ delete cloud[k]; }); rec('cloudRemove', [keys]); if(cb) cb(null,true); } },
           requestWriteAccess:function(cb){ rec('requestWriteAccess'); cb(true); },
           requestContact:function(cb){ rec('requestContact'); cb(true, { responseUnsafe: { contact: { phone_number: '380671112233' } } }); },
           showConfirm:function(t, cb){ rec('showConfirm', [t]); cb(true); },

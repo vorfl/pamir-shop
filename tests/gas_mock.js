@@ -135,6 +135,8 @@ function createGas(codePath, seed) {
   const lockWaited = { script: 0, doc: 0, user: 0 };
   const fetched = []; // запросы не к Telegram: { url, method, headers, payload }
   const fetchCfg = { fail: false, code: 200 };
+  // Счётчик UrlFetch по адресатам (выпуск Б4, п.7): requests — все запросы, trips — «поездки в сеть» (fetchAll считается одной), batches — число fetchAll
+  const urlStats = { telegram: 0, worker: 0, np: 0, batches: 0, trips: 0 };
   const drive = { folders: [], files: [], seq: 0 };
   function newFile(name, folder, src) {
     drive.clock = (drive.clock || Date.now()) + 60000; // каждая следующая копия «создана» на минуту позже
@@ -205,7 +207,9 @@ function createGas(codePath, seed) {
       base64Decode: s => Array.from(Buffer.from(s, 'base64')),
       getUuid: () => crypto.randomUUID()
     },
-    UrlFetchApp: { fetchAll: reqs => { op('tgBatch'); return reqs.map(r => sandbox.UrlFetchApp.fetch(r.url, r, true)); }, fetch: (url, opts, batched) => {
+    UrlFetchApp: { fetchAll: reqs => { op('tgBatch'); urlStats.batches++; urlStats.trips++; return reqs.map(r => sandbox.UrlFetchApp.fetch(r.url, r, true)); }, fetch: (url, opts, batched) => {
+      urlStats[/api\.telegram\.org/.test(url) ? 'telegram' : /novaposhta/.test(url) ? 'np' : 'worker']++;
+      if (!batched) urlStats.trips++;
       if (!/api.telegram.org|novaposhta/.test(url)) { // Worker и прочее: запоминаем, Telegram не трогаем
         fetched.push({ lockHeld: held.script + held.doc, followRedirects: opts && opts.followRedirects, url, method: opts && opts.method, headers: (opts && opts.headers) || {}, payload: opts && opts.payload });
         if (fetchCfg.fail) throw new Error('fetch failed: ' + url + ' ' + JSON.stringify((opts && opts.headers) || {}));
@@ -257,7 +261,7 @@ function createGas(codePath, seed) {
   function resetMemo() { vm.runInContext('settingsMemo_ = null; if (typeof adminsMemo_ !== "undefined") { adminsMemo_ = null; actor_ = null; } if (typeof propsMemo_ !== "undefined") { propsMemo_ = null; logBuffer_ = null; perf_ = null; pointsMemo_ = null; } if (typeof whMapMemo_ !== "undefined") { whMapMemo_ = null; }', sandbox); } // у каждого запроса Apps Script свой запуск
 
   return {
-    sandbox, sheets, props, cache, sent, triggers, ops, io, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
+    sandbox, sheets, props, cache, sent, triggers, ops, io, urlStats, copies, ui, lockLog, lockWaited, fetched, drive, newFile,
     setLockBusy(scriptMs, docMs) { lockCfg.script = scriptMs || 0; lockCfg.doc = docMs || 0; },
     setDocLockNull(v) { lockCfg.docNull = !!v; },
     setUserLockBusy(ms) { lockCfg.user = ms || 0; },
@@ -265,7 +269,7 @@ function createGas(codePath, seed) {
     /** Сдвиг часов внутри Code.gs (Date.now) вперёд на ms: «прошла минута». */
     advance(ms) { sandbox.__shift = (sandbox.__shift || 0) + ms; },
     setFetch(fail, code) { fetchCfg.fail = !!fail; fetchCfg.code = code || 200; },
-    resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); },
+    resetOps() { Object.keys(ops).forEach(k => { delete ops[k]; }); Object.keys(urlStats).forEach(k => { urlStats[k] = 0; }); },
     /** Обнулить счётчик обращений к листам (g.io). */
     resetIo() { io.sheetByName = io.lastRow = io.lastCol = io.reads = io.cells = io.writes = 0; io.byName = {}; },
     setTelegramFail(v) { failTelegram = v; },

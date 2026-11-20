@@ -879,6 +879,7 @@ function onOpen() {
   if (typeof stage9bMenu_ === 'function') stage9bMenu_(menu); // Stage9b.gs: «Етап 9Б: створити колонки»
   if (typeof stage9b2Menu_ === 'function') stage9b2Menu_(menu); // Stage9b2.gs: «Етап 9Б2: записати другі фото»
   if (typeof stage9b4Menu_ === 'function') stage9b4Menu_(menu); // Stage9b4.gs: «Службове: перевстановити / перевірити webhook»
+  if (typeof stage9b5Menu_ === 'function') stage9b5Menu_(menu); // Stage9b5.gs: «Швидке оформлення замовлень»
   menu.addToUi();
 }
 
@@ -1076,7 +1077,19 @@ function ridDupAnswer_(prev, fp, ownerKey) {
   return res;
 }
 
+/** Замер этапов заказа (Stage9b5.gs, только при PERF_LOG = 1): маленькая обёртка, чтобы без этого файла заказ работал как раньше. */
+function ordMark_(name) { if (typeof ordPerfMark_ === 'function') ordPerfMark_(name); }
+
 function handleOrder_(body) {
+  if (typeof ordPerfStart_ === 'function') ordPerfStart_();
+  try {
+    return handleOrderCore_(body);
+  } finally {
+    if (typeof ordPerfEnd_ === 'function') ordPerfEnd_();
+  }
+}
+
+function handleOrderCore_(body) {
   var props = scriptProps_();
   var token = props.getProperty('BOT_TOKEN');
   if (!token) return { ok: false, error: 'not_configured' };
@@ -1092,6 +1105,7 @@ function handleOrder_(body) {
     if (props.getProperty('ALLOW_TEST_ORDERS') !== '1') return { ok: false, error: body.test === true ? 'test_off' : 'bad_auth' };
     isTest = true;
   }
+  ordMark_('sig');
 
   // 2. Поля формы.
   var o = {
@@ -1122,6 +1136,7 @@ function handleOrder_(body) {
     shop.points.forEach(function (p) { if (p.id === String(body.point || '')) point = p; });
     o.point = point.ua;
   }
+  ordMark_('shop');
 
   // 3. Повтор того же запроса (клиент не дождался ответа и нажал ещё раз) — отдаём тот же номер.
   var cache = CacheService.getScriptCache();
@@ -1132,6 +1147,7 @@ function handleOrder_(body) {
     var dupEarly = ridDupAnswer_(cache.get('rid_' + rid), fp, ownerKey);
     if (dupEarly) return dupEarly;
   }
+  ordMark_('rid');
 
   // 4. Цены и наличие — только по таблице. Ценам от клиента не доверяем.
   var catalog;
@@ -1139,6 +1155,7 @@ function handleOrder_(body) {
   else { catalog = buildCatalog_(); cachePutLarge_(CACHE_KEY, JSON.stringify(catalog)); } // витрина сразу увидит то же, что видел сервер
   var byId = {};
   var idUp = {};
+  ordMark_('catalog');
   catalog.products.forEach(function (p) { byId[p.id] = p; idUp[p.id.toUpperCase()] = true; });
   o.src = srcLabel_(body.src, idUp, true); // источник заказа (?startapp=qr1); невалидное молча отбрасывается
   o.giftNote = shop.giftNote ? clean_(body.giftNote, 120) : ''; // подпись к подарку — только при gift_note = 1
@@ -1189,9 +1206,13 @@ function handleOrder_(body) {
   o.status = STATUS_NEW;
 
   // 5. Запись в таблицу под блокировкой: два заказа одновременно не получат один номер.
-  var rowIndex;
+  var rowIndex, sheet, col, svc;
+  // Очередь сообщений (Stage9b5.gs, включается пунктом меню): решение берётся до блокировки — это одно чтение кэша, а не работа под замком.
+  var viaQueue = typeof orderQueueOn_ === 'function' && orderQueueOn_();
+  ordMark_('checks');
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
+  ordMark_('lockwait');
   try {
     // Повторная проверка под блокировкой: параллельный дубль мог записать заказ, пока мы ждали.
     if (rid) {
@@ -1203,8 +1224,9 @@ function handleOrder_(body) {
     if (count >= (o.uid ? MAX_ORDERS_PER_HOUR : MAX_TEST_ORDERS_PER_HOUR)) return { ok: false, error: 'rate_limit' };
     cache.put(rlKey, String(count + 1), 3600);
 
-    var sheet = ensureOrdersSheet_();
-    var col = orderCols_(sheet);
+    sheet = ensureOrdersSheet_();
+    var width = sheet.getLastColumn(); // один раз: раньше getLastColumn вызывался на каждую ячейку строки заказа
+    col = orderCols_(sheet, sheet.getRange(1, 1, 1, Math.max(1, width)).getValues()[0]);
     if (shop.loyal && o.uid && !isTest) {
       var doneBefore = completedOrders_(sheet, col, o.uid);
       if ((doneBefore + 1) % shop.loyal.every === 0) gifts.push(shop.loyal);
@@ -1215,15 +1237,18 @@ function handleOrder_(body) {
     }
     o.gifts = gifts.map(function (x) { return x.ua; });
     o.giftsClient = gifts.map(function (x) { return o.lang === 'ru' ? x.ru : x.ua; });
-    var svc = { i: compact };
+    svc = { i: compact };
     if (o.uid && !isTest && isFirstOrder_(sheet, col, o.uid)) { o.first = true; svc.f = 1; } // отметка «Перше замовлення» для админа
     if (o.gifts.length) svc.g = o.gifts;
     if (o.delivery === 'np' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(body.cityRef || ''))) svc.nc = String(body.cityRef).toLowerCase(); // Ref города из np.city (необязательно): нужен «Створити ТТН», на цену и сумму не влияет
     if (o.ifOut) svc.io = o.ifOut; // запасной путь: без колонки «Якщо немає» выбор всё равно виден админу в тексте
     if (whIds.length) { svc.w = whIds; o.wh = true; } // позиции по оптовой цене — для отметки «ОПТ» у админа
     o.num = nextOrderNumber_(sheet, col);
+    // Очередь: пометка «надіслати» лежит в самой строке заказа (одна запись), поэтому строка без пометки и пометка без строки невозможны.
+    if (viaQueue && col.svc >= 0 && typeof orderQueueMark_ === 'function') orderQueueMark_(svc, o, user, isTest);
+    else viaQueue = false;
     var row = [];
-    for (var i = 0; i < sheet.getLastColumn(); i++) row.push('');
+    for (var i = 0; i < width; i++) row.push('');
     function put(key, value) { if (col[key] >= 0) row[col[key]] = value; }
     put('num', o.num); put('date', new Date()); put('status', o.status);
     put('uid', o.uid); put('username', safeCell_(o.username)); put('name', safeCell_(o.name));
@@ -1239,49 +1264,33 @@ function handleOrder_(body) {
     sheet.appendRow(row);
     orderFloorBump_(o.num); // последний выданный номер запоминается под той же блокировкой: очистка листа не вернёт нумерацию к P-0001
     rowIndex = sheet.getLastRow();
-    SpreadsheetApp.flush();
+    // Номер ответа повтору запоминается сразу после записи строки: даже если дальше что-то упадёт, повтор того же rid второй заказ не создаст.
     if (rid) cache.put('rid_' + rid, JSON.stringify({ n: o.num, f: fp, u: ownerKey }), 21600);
     if (o.uid) { try { clearCart_(o.uid); } catch (err) { console.warn('cart: ' + err); } }
     // Колонка «Залишок» (если она есть и заполнена) уменьшается сама. Сбой здесь заказ не отменяет.
+    var stockChanged = false;
     if (!isTest) {
-      try { takeFromStock_(compact); } catch (err) { console.error('stock: ' + safeErr_(err, true)); }
+      try { stockChanged = takeFromStock_(compact, true); } catch (err) { console.error('stock: ' + safeErr_(err, true)); }
     }
+    SpreadsheetApp.flush(); // один сброс на всё: строка заказа и остатки зафиксированы до ответа витрине
+    if (stockChanged) clearCatalogCache_(true); // каталог помечается «изменился» после записи; Worker покупатель не дёргает
   } finally {
     lock.releaseLock();
   }
-  if (user && !isTest) touchClient_(user, o.lang, true, o.src); // лист «Клієнти»: язык — тот, что выбран в магазине
+  ordMark_('locked');
 
-  // 6. Уведомления. Заказ уже записан: сбой Telegram не должен его отменять.
-  try {
-    var sent = [];
-    orderNotifyIds_(props).forEach(function (chatId) {
-      var res = tg_(token, 'sendMessage', {
-        chat_id: chatId, text: adminText_(o, ''), parse_mode: 'HTML',
-        disable_web_page_preview: true, reply_markup: adminKeyboard_(o.num)
-      });
-      if (res.ok) sent.push([chatId, res.result.message_id]);
-      else console.error('Не доставлено админу ' + chatId + ': ' + res.description);
-    });
-    var sheet2 = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ORDERS);
-    var col2 = orderCols_(sheet2);
-    if (col2.svc >= 0 && sent.length) {
-      svc.m = sent;
-      sheet2.getRange(rowIndex, col2.svc + 1).setValue(JSON.stringify(svc));
+  if (viaQueue) {
+    // Заказ записан вместе с пометкой «надіслати»: сообщения и отметку клиента отправит orderNotifyJob (Stage9b5.gs) в течение ~минуты.
+    orderQueueHint_();
+  } else {
+    if (user && !isTest) touchClient_(user, o.lang, true, o.src); // лист «Клієнти»: язык — тот, что выбран в магазине
+    ordMark_('touch');
+    // 6. Уведомления сразу в запросе (очередь выключена или недоступна). Заказ уже записан: сбой Telegram не должен его отменять.
+    try {
+      orderNotifySend_(token, props, { o: o, svc: svc, sheet: sheet, col: col, rowIndex: rowIndex, job: false });
+    } catch (err) {
+      console.error('notify: ' + safeErr_(err, true));
     }
-    if (o.uid && !isTest) {
-      tg_(token, 'sendMessage', { chat_id: o.uid, text: clientText_('new', o) });
-      if (o.pay === 'card') { // реквизиты ФОП — отдельным сообщением после подтверждения: его сбой подтверждение не трогает
-        try {
-          var fop = fopConfig_();
-          if (fop.on) {
-            var fres = tg_(token, 'sendMessage', { chat_id: o.uid, text: fopRequisitesText_(o, fop), parse_mode: 'HTML', disable_web_page_preview: true });
-            if (fres && fres.ok && col2.svc >= 0) { svc.r = 1; sheet2.getRange(rowIndex, col2.svc + 1).setValue(JSON.stringify(svc)); } // отметка «реквизиты отправлены»
-          }
-        } catch (err2) { console.error('fop: send failed'); }
-      }
-    }
-  } catch (err) {
-    console.error('notify: ' + safeErr_(err, true));
   }
   return { ok: true, number: o.num, gifts: o.giftsClient };
 }
@@ -1324,11 +1333,11 @@ function completedOrders_(sheet, col, uid) {
  * Уменьшает «Залишок» у заказанных товаров: кг для весовых, штуки для остальных.
  * Работает только там, где в ячейке уже стоит число. Дошло до нуля — «Наявність» становится «немає».
  */
-function takeFromStock_(compact) {
+function takeFromStock_(compact, noFlush) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PRODUCTS);
-  if (!sheet) return;
+  if (!sheet) return false;
   var col = productCols_(sheet);
-  if (col.qty < 0) return;
+  if (col.qty < 0) return false;
   var values = sheet.getDataRange().getValues();
   var rowById = {};
   for (var r = 1; r < values.length; r++) rowById[cell_(values[r], col.id)] = r;
@@ -1345,7 +1354,9 @@ function takeFromStock_(compact) {
     if (next <= 0) sheet.getRange(r + 1, col.stock + 1).setValue('немає');
     changed = true;
   });
-  if (changed) { SpreadsheetApp.flush(); clearCatalogCache_(true); } // заказ покупателя: Worker не дёргаем
+  // noFlush = true (заказ): сброс и пометку каталога делает вызывающий после своей записи, один раз на весь заказ
+  if (changed && !noFlush) { SpreadsheetApp.flush(); clearCatalogCache_(true); } // заказ покупателя: Worker не дёргаем
+  return changed;
 }
 
 /** «Мої замовлення»: последние заказы этого клиента. Кто спрашивает — определяется только по подписи Telegram. */
@@ -3373,6 +3384,7 @@ function dailyJob() {
 
 /** Раз в час (тот же пункт меню PAMIR): напоминание о брошенной корзине. */
 function hourlyJob() {
+  try { if (typeof orderQueueSweep_ === 'function') orderQueueSweep_(); } catch (err) { console.error('hourly order queue: ' + safeErr_(err)); } // Stage9b5.gs: страховка — досылает сообщения о заказах, которые завис в очереди
   try { if (typeof catalogWarm_ === 'function') catalogWarm_(); } catch (err) { console.error('hourly catalog: ' + safeErr_(err)); } // Stage9b4.gs: каталог собирает расписание, а не покупатель
   try { remindCarts_(); } catch (err) { console.error('hourly carts: ' + safeErr_(err, true)); }
   try { if (typeof npTrackJob_ === 'function') npTrackJob_(); } catch (err) { console.error('hourly np track: ' + safeErr_(err, true)); } // Stage9b2.gs: посылка прибыла в отделение
@@ -6808,6 +6820,7 @@ function cancelMail_(id) {
 function mailJob() {
   var token = scriptProps_().getProperty('BOT_TOKEN');
   if (!token) return;
+  try { if (typeof orderQueueSweep_ === 'function') orderQueueSweep_(); } catch (err) { console.error('mailJob order queue: ' + safeErr_(err)); } // Stage9b5.gs: страховка очереди сообщений о заказах раз в 10 минут
   try { mailRun_(token, MAIL_BATCH, MAIL_RUN_MS); } catch (err) { console.error('mailJob: ' + safeErr_(err, true)); }
   try { mailFreezeStats_(); } catch (err) { console.error('mail stats: ' + safeErr_(err, true)); }
 }

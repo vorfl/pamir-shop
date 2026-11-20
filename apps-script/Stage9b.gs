@@ -437,6 +437,7 @@ function flushJob() {
   } catch (err) {
     console.error('flushJob: ' + safeErr_(err));
   }
+  try { if (typeof orderQueueSweep_ === 'function') orderQueueSweep_(); } catch (err2) { console.error('flushJob order queue: ' + safeErr_(err2)); } // Stage9b5.gs: страховка очереди сообщений о заказах
 }
 
 /** Статистика: если блокировка свободна, дописать буфер до расчёта. Занята — считаем по листу как есть. */
