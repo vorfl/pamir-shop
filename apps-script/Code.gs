@@ -247,6 +247,11 @@ function buildCatalog_(opt) {
   return out;
 }
 
+/** Версия данных для витрины: только цифры, буквы и - : _ . (до 32 знаков). Всё лишнее выбрасывается. */
+function cdvClean_(v) {
+  return String(v === null || v === undefined ? '' : v).replace(/[^0-9A-Za-z:_.\-]/g, '').slice(0, 32);
+}
+
 /** feature_id: один ID или список через запятую (до 5), в верхнем регистре, без повторов. */
 function featureIds_(raw) {
   var out = [];
@@ -291,6 +296,8 @@ function readShop_() {
     };
   }
   shopExtras8_(shop, st);
+  var cdv = cdvClean_(st.client_data_version); // версия данных на телефонах: витрина при смене один раз очищает своё хранилище; нет значения — поля нет
+  if (cdv) shop.cdv = cdv;
   return shop;
 }
 
@@ -1230,6 +1237,7 @@ function handleOrder_(body) {
     put('items', safeCell_(o.items)); put('total', o.total); put('lang', o.lang); put('source', o.source);
     put('svc', JSON.stringify(svc));
     sheet.appendRow(row);
+    orderFloorBump_(o.num); // последний выданный номер запоминается под той же блокировкой: очистка листа не вернёт нумерацию к P-0001
     rowIndex = sheet.getLastRow();
     SpreadsheetApp.flush();
     if (rid) cache.put('rid_' + rid, JSON.stringify({ n: o.num, f: fp, u: ownerKey }), 21600);
@@ -1452,10 +1460,15 @@ function orderCols_(sheet, headers) {
  * новый заказ не получит номер старого, и старые кнопки в чате админов не попадут на чужой заказ.
  */
 var PROP_ORDER_FLOOR = 'ORDER_NUM_FLOOR';
+/** ORDER_LAST_NUM — последний выданный номер: обновляется при каждом заказе (orderFloorBump_) и перед очисткой тестовых данных. Берётся максимум с листом и ORDER_NUM_FLOOR. */
+var PROP_ORDER_LAST = 'ORDER_LAST_NUM';
 function nextOrderNumber_(sheet, col) {
   var last = sheet.getLastRow();
   var max = 0;
-  try { max = Math.max(0, parseInt(scriptProps_().getProperty(PROP_ORDER_FLOOR), 10) || 0); } catch (err) { max = 0; }
+  try {
+    var pp = scriptProps_();
+    max = Math.max(0, parseInt(pp.getProperty(PROP_ORDER_FLOOR), 10) || 0, parseInt(pp.getProperty(PROP_ORDER_LAST), 10) || 0);
+  } catch (err) { max = 0; }
   if (last > 1) {
     sheet.getRange(2, col.num + 1, last - 1, 1).getValues().forEach(function (r) {
       var m = String(r[0]).match(/^P-(\d+)$/);
@@ -1465,6 +1478,20 @@ function nextOrderNumber_(sheet, col) {
   var n = String(max + 1);
   while (n.length < 4) n = '0' + n;
   return 'P-' + n;
+}
+
+/** Запоминает выданный номер в ORDER_LAST_NUM (только вверх). Вызывается под блокировкой заказа; сбой записи заказ не ломает. */
+function orderFloorBump_(num) {
+  try {
+    var m = /^P-(\d+)$/.exec(String(num));
+    if (!m) return;
+    var n = parseInt(m[1], 10);
+    var props = scriptProps_();
+    var cur = parseInt(propRead_(props, PROP_ORDER_LAST, true), 10) || 0;
+    if (n > cur) props.setProperty(PROP_ORDER_LAST, String(n));
+  } catch (err) {
+    console.warn('order floor: ' + safeErr_(err));
+  }
 }
 
 /** Находит заказ по номеру. Возвращает { sheet, col, rowIndex, o } или null. */
@@ -1805,7 +1832,7 @@ function handleCallback_(cq, token, admins) {
     if (!me.perms.st) { answer('У вас немає права змінювати статуси замовлень'); return; }
     actor_ = { id: fromId, name: clean_((cq.from && cq.from.first_name) || me.name || '', 60) };
     var paidRes = setOrderPaid_(pay[1], 'paid', token, cq.message ? [chatId, cq.message.message_id] : null);
-    if (paidRes.error === 'not_found') answer('Замовлення ' + pay[1] + ' не знайдено в таблиці');
+    if (paidRes.error === 'not_found') answer('Замовлення не знайдено / Заказ не найден');
     else if (paidRes.same) answer('Уже позначено: оплачено');
     else answer('Оплату позначено' + (paidRes.told === false ? '. Клієнту написати не вдалося' : ''));
     return;
@@ -1815,7 +1842,7 @@ function handleCallback_(cq, token, admins) {
   if (!me.perms.st) { answer('У вас немає права змінювати статуси замовлень'); return; }
   actor_ = { id: fromId, name: clean_((cq.from && cq.from.first_name) || me.name || '', 60) };
   var res = setOrderStatus_(m[1], m[2], (cq.from && cq.from.first_name) || '', token, cq.message ? [chatId, cq.message.message_id] : null);
-  if (res.error === 'not_found') answer('Замовлення ' + m[1] + ' не знайдено в таблиці');
+  if (res.error === 'not_found') answer('Замовлення не знайдено / Заказ не найден');
   else if (res.same) answer('Статус уже: ' + res.status);
   else answer('Статус: ' + res.status + (res.told === false ? '. Клієнту написати не вдалося' : ''));
   // Отправили Новой почтой — сразу спрашиваем номер накладной.
@@ -2743,14 +2770,17 @@ var SETTINGS_DEF = [
   acc.push(['reply_' + i + '_ua', 'Готова відповідь клієнту № ' + i + ' (UA, до 300 знаків). Порожньо — шаблону немає', '']);
   acc.push(['reply_' + i + '_ru', 'Готовый ответ клиенту № ' + i + ' (RU, до 300 знаков)', '']);
   return acc;
-}, []));
+}, [])).concat([
+  // Служебная настройка выпуска Б4: ставится сама пунктом меню «Очистити тестові дані перед відкриттям». В панели не показывается и не меняется.
+  ['client_data_version', 'Версія даних на телефонах покупців. Змінюється сама після очищення тестових даних. Вручну не міняти', '']
+]);
 var SRC_LIST_DEFAULT = 'qr1,qr2,insert';
 var SETTINGS_NUM = { np_track_hours: 24, followup1_days: 60, followup2_days: 365, referral_min_order: 100000, mail_every_days: 365, min_order: 100000, gift_from: 100000, loyal_every: 100, remind_days: 365, low_stock: 1000, fresh_days: 365, review_days: 60, cart_remind_hours: 72, cart_mute_days: 365 };
 var SETTINGS_MAY_BE_EMPTY = ['notice_ua', 'notice_ru', 'notice_text_ua', 'notice_text_ru', 'feature_id', 'gift_text_ua', 'gift_text_ru', 'loyal_text_ua', 'loyal_text_ru',
   'welcome_photo', 'welcome_video_note', 'contact', 'theme', 'story_text_ua', 'story_text_ru', 'story_photos',
   'father_ids', 'father_text_ua', 'father_text_ru', 'referral_gift_ua', 'referral_gift_ru',
   'hint_tag', 'hint_id', 'hint_text_ua', 'hint_text_ru', 'followup2_text_ua', 'followup2_text_ru', 'digest_hour',
-  'theme_until', 'ny_ids', 'ny_order_until_ua', 'ny_order_until_ru',
+  'theme_until', 'ny_ids', 'ny_order_until_ua', 'ny_order_until_ru', 'client_data_version',
   'reply_1_ua', 'reply_1_ru', 'reply_2_ua', 'reply_2_ru', 'reply_3_ua', 'reply_3_ru', 'reply_4_ua', 'reply_4_ru', 'reply_5_ua', 'reply_5_ru'];
 var settingsMemo_ = null;
 
@@ -2776,6 +2806,11 @@ function readSettings_() {
           if (Object.prototype.toString.call(rv) === '[object Date]' && !isNaN(rv.getTime())) rv = Utilities.formatDate(rv, 'Europe/Kiev', 'yyyy-MM-dd');
           rv = String(rv === null || rv === undefined ? '' : rv).replace(/^'/, '');
         }
+        if (key === 'client_data_version' && Object.prototype.toString.call(rv) === '[object Date]' && !isNaN(rv.getTime())) { // таблица могла превратить «2026-11-21T10:15» в дату
+          var cdvTz = 'Europe/Kiev';
+          try { cdvTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || cdvTz; } catch (e) { /* пояс по умолчанию */ }
+          rv = Utilities.formatDate(rv, cdvTz, 'yyyy-MM-dd') + 'T' + Utilities.formatDate(rv, cdvTz, 'HH:mm');
+        }
         out[key] = String(rv === null || rv === undefined ? '' : rv).trim();
       }
     });
@@ -2788,7 +2823,7 @@ function readSettings_() {
 
 function settingsFields_() {
   var st = readSettings_();
-  return SETTINGS_DEF.map(function (d) { return { k: d[0], label: d[1], v: st[d[0]] }; });
+  return SETTINGS_DEF.filter(function (d) { return d[0] !== 'client_data_version'; }).map(function (d) { return { k: d[0], label: d[1], v: st[d[0]] }; }); // служебную версию данных панель не видит
 }
 
 function saveSettings_(values) {
@@ -2796,7 +2831,7 @@ function saveSettings_(values) {
   var current = readSettings_();
   SETTINGS_DEF.forEach(function (d) {
     var k = d[0];
-    if (values[k] === undefined) { next[k] = current[k]; return; }
+    if (values[k] === undefined || k === 'client_data_version') { next[k] = current[k]; return; } // версию данных на телефонах меняет только очистка тестовых данных
     if (k.indexOf('pay_') === 0) next[k] = values[k] === true || isYes_(values[k]) ? 'так' : 'ні';
     else if (k === 'home_rails_max') next[k] = String(railsMax_(values[k]));
     else if (k === 'ny_snow' || k === 'gift_note') next[k] = values[k] === true || /^(1|так|да|yes|true)$/i.test(String(values[k]).trim()) ? '1' : '0';

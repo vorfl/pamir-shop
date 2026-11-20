@@ -335,9 +335,11 @@ function catPerfEnd_() {
 var WH_ALLOWED = ['message', 'callback_query', 'my_chat_member']; // всё, что разбирает handleUpdate_; drop_pending_updates не ставим никогда
 
 function stage9b4Menu_(menu) {
-  return menu.addSeparator()
+  menu.addSeparator()
     .addItem('Службове: перевстановити webhook', 'menuWebhookReinstall')
     .addItem('Службове: перевірити webhook', 'menuWebhookCheck');
+  if (typeof cleanMenu_ === 'function') cleanMenu_(menu); // Stage9b4clean.gs: «Очистити тестові дані перед відкриттям»
+  return menu;
 }
 
 function whAlert_(text) {
@@ -459,9 +461,9 @@ function webhookReinstall_() {
     return { ok: false, refused: 'noui', message: 'Запустіть цей пункт із меню таблиці PAMIR: потрібне підтвердження.' + noUa + '\n\nЗапустите этот пункт из меню таблицы PAMIR: нужно подтверждение.' + noRu };
   }
   var ask = 'Перевстановити webhook?\n\nБуде викликано Telegram setWebhook:\n• адреса: ' + host + '\n• secret_token: значення WEBHOOK_SECRET із властивостей скрипта (на екран не виводиться)\n• типи подій: ' + WH_ALLOWED.join(', ') +
-    '\n• непрочитані повідомлення НЕ видаляються\n\nЗамінюючи секрет, спочатку змініть його в Cloudflare та у властивостях скрипта (docs/SECRETS_ROTATION.md).' +
+    '\n• непрочитані повідомлення НЕ видаляються\n\nЗамінюючи секрет, спочатку змініть його в Cloudflare та у властивостях скрипта (docs/KEYS_ROTATION.md).' +
     '\n\nПереустановить webhook?\n\nБудет вызван Telegram setWebhook: адрес ' + host + ', secret_token — значение WEBHOOK_SECRET из свойств скрипта (на экран не выводится), типы событий: ' + WH_ALLOWED.join(', ') +
-    '. Непрочитанные сообщения НЕ удаляются. При замене секрета сначала измените его в Cloudflare и в свойствах скрипта (docs/SECRETS_ROTATION.md).';
+    '. Непрочитанные сообщения НЕ удаляются. При замене секрета сначала измените его в Cloudflare и в свойствах скрипта (docs/KEYS_ROTATION.md).';
   var answer;
   try { answer = ui.alert('PAMIR', ask, ui.ButtonSet.YES_NO); } catch (err2) { answer = null; }
   if (answer !== ui.Button.YES) {

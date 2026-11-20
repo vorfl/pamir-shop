@@ -47,6 +47,7 @@ class Sheet {
   // trace — общий журнал (lockLog): записи листа попадают в него как { kind: 'sheet', op, sheet }, чтобы видеть порядок «блокировка → запись»
   _op(kind) { if (this.ops) this.ops[kind] = (this.ops[kind] || 0) + 1; if (this.trace && kind !== 'read') this.trace.push({ kind: 'sheet', op: kind, sheet: this.name }); }
   // Размер листа как в настоящих Таблицах: maxC/maxR (по умолчанию — «достаточно», без предела). Запись за пределы бросает ошибку.
+  getName() { return this.name; }
   getMaxColumns() { return this.maxC === undefined ? Infinity : this.maxC; }
   getMaxRows() { return this.maxR === undefined ? Infinity : this.maxR; }
   insertColumnsAfter(pos, n) { this._op('write'); if (this.maxC !== undefined) this.maxC = Math.max(this.maxC, pos + n); }
@@ -138,7 +139,7 @@ function createGas(codePath, seed) {
   function newFile(name, folder, src) {
     drive.clock = (drive.clock || Date.now()) + 60000; // каждая следующая копия «создана» на минуту позже
     return { id: 'FILE-' + (++drive.seq), name, folder, trashed: false, created: new Date(drive.clock), src,
-      getName() { return this.name; }, getDateCreated() { return this.created; }, setTrashed(v) { this.trashed = !!v; return this; } };
+      getName() { return this.name; }, getId() { return this.id; }, getUrl() { return 'https://docs.google.com/spreadsheets/d/' + this.id + '/edit'; }, getDateCreated() { return this.created; }, setTrashed(v) { this.trashed = !!v; return this; } };
   }
   const held = { script: 0, doc: 0, user: 0 }; // сколько блокировок сейчас удерживается (для проверки «не внутри блокировки»)
   function mkLock(kind) {
@@ -155,17 +156,28 @@ function createGas(codePath, seed) {
     insertSheet: n => { sheets[n] = new Sheet(n, [], ops, lockLog, io); return sheets[n]; },
     getSpreadsheetTimeZone: () => 'Europe/Kiev',
     getId: () => 'SS-ID-1',
+    getName: () => 'PAMIR — Товари',
+    getUrl: () => 'https://docs.google.com/spreadsheets/d/SS-ID-1/edit',
+    getSheets: () => Object.keys(sheets).map(k => sheets[k]),
     // «Создать копию»: стенд запоминает имя и снимок всех листов на момент копии
     copy: name => { copies.push({ name, sheets: JSON.parse(JSON.stringify(Object.fromEntries(Object.keys(sheets).map(k => [k, sheets[k].rows])))) }); return {}; }
   };
   const copies = [];
-  const ui = { alerts: [], answer: 'YES', ButtonSet: { YES_NO: 'YES_NO' }, Button: { YES: 'YES', NO: 'NO' },
+  // prompt: ui.promptAnswer = { button: 'OK'|'CANCEL', text } — что «ввёл» владелец; ui.prompts — что ему показали
+  const ui = { alerts: [], prompts: [], promptAnswer: { button: 'OK', text: '' }, answer: 'YES', ButtonSet: { YES_NO: 'YES_NO', OK_CANCEL: 'OK_CANCEL' }, Button: { YES: 'YES', NO: 'NO', OK: 'OK', CANCEL: 'CANCEL' },
+    prompt(title, text) { ui.prompts.push(title + ' | ' + text); const a = ui.promptAnswer; return { getSelectedButton: () => a.button, getResponseText: () => a.text }; },
     alert(...a) { ui.alerts.push(a.join(' | ')); return ui.answer; },
     createMenu: () => { const m = { items: [], addItem: (t, fn) => { m.items.push([t, fn]); return m; }, addSeparator: () => m, addSubMenu: sub => { m.items.push(['>', sub]); return m; }, addToUi() { ui.menu = m; } }; return m; } };
   const sandbox = {
     console: { log() {}, warn(...a) { sandbox.__warns.push(a.join(' ')); }, error(...a) { sandbox.__errors.push(a.join(' ')); } },
     __errors: [], __warns: [],
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ui },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush() { op('flush'); }, getUi: () => ui,
+      openById: id => { // открыть копию, сделанную makeCopy: лист за листом по снимку на момент копии
+        const f = drive.files.find(x => x.id === id);
+        if (!f || !f.snapshot || drive.failOpen) throw new Error('Exception: Unexpected error while getting the method or property openById');
+        const sh = {}; Object.keys(f.snapshot).forEach(n => { sh[n] = new Sheet(n, f.snapshot[n].map(r => r.slice())); });
+        return { getId: () => id, getName: () => f.name, getUrl: () => f.getUrl(), getSheets: () => Object.keys(sh).map(k => sh[k]), getSheetByName: n => sh[n] || null };
+      } },
     CacheService: { getScriptCache: () => ({
       get: k => { op('cache'); return alive(k) ? cache[k] : null; },
       put: (k, v, ttl) => { op('cache'); putOne(k, v, ttl); },
@@ -177,7 +189,8 @@ function createGas(codePath, seed) {
     PropertiesService: { getScriptProperties: () => ({
       getProperty: k => { op('prop'); return k in props ? props[k] : null; },
       getProperties: () => { op('prop'); return Object.assign({}, props); },
-      setProperty: (k, v) => { op('prop'); props[k] = String(v); }
+      setProperty: (k, v) => { op('prop'); props[k] = String(v); },
+      deleteProperty: k => { op('prop'); delete props[k]; }
     }) },
     LockService: { getScriptLock: () => mkLock('script'), getDocumentLock: () => (lockCfg.docNull ? null : mkLock('doc')), getUserLock: () => (lockCfg.userNull ? null : mkLock('user')) },
     Utilities: {
@@ -220,7 +233,14 @@ function createGas(codePath, seed) {
       getFoldersByName: name => { const l = drive.folders.filter(x => x.name === name); let i = 0; return { hasNext: () => i < l.length, next: () => l[i++] }; },
       createFolder: name => { const f = { id: 'FOLDER-' + (++drive.seq), name, trashed: false, getId() { return this.id; }, isTrashed() { return this.trashed; },
         getFiles() { const l = drive.files.filter(x => x.folder === this && !x.trashed); let i = 0; return { hasNext: () => i < l.length, next: () => l[i++] }; } }; drive.folders.push(f); return f; },
-      getFileById: id => ({ makeCopy: (name, folder) => { drive.files.push(newFile(name, folder, id)); return drive.files[drive.files.length - 1]; } })
+      getFileById: id => ({ makeCopy: (name, folder) => {
+        if (drive.failCopy) throw new Error('Exception: Service error: Drive');
+        const f = newFile(name, folder, id);
+        if (id === 'SS-ID-1') { // снимок листов на момент копии; drive.mutateCopy(snapshot) — испортить копию (тест «проверка не сошлась»)
+          f.snapshot = JSON.parse(JSON.stringify(Object.fromEntries(Object.keys(sheets).map(k => [k, sheets[k].rows]))));
+          if (typeof drive.mutateCopy === 'function') drive.mutateCopy(f.snapshot);
+        }
+        drive.files.push(f); return f; } })
     }
   };
   vm.createContext(sandbox);
