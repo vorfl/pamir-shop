@@ -4517,7 +4517,7 @@ const smallTargets = page => page.evaluate(() => {
             log.push({ a, q: u.searchParams.get('q'), w: Number(u.searchParams.get('w')) });
             const send = b => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify(b) }).catch(() => {});
             if (mode.old && mode.old.includes(a)) return send({ ok: true, service: 'PAMIR' }); // настоящий ответ старого бэкенда на неизвестное действие
-            if (mode.limit && (!mode.limit.actions || mode.limit.actions.includes(a)) && (mode.limit.times === undefined || mode.limit.times-- > 0)) { const r = { ok: false, error: mode.limit.error || 'np_error' }; if (mode.limit.retryAfter) r.retryAfter = mode.limit.retryAfter; return send(r); }
+            if (mode.limit && (!mode.limit.actions || mode.limit.actions.includes(a)) && (mode.limit.times === undefined || mode.limit.times-- > 0)) { const r = { ok: false }; if (!mode.limit.noError) r.error = mode.limit.error || 'np_error'; if (mode.limit.retryAfter) r.retryAfter = mode.limit.retryAfter; return send(r); }
             if (a === 'np.city') return send({ ok: true, list: CITIES(u.searchParams.get('q')).concat(u.searchParams.get('q').toLowerCase().indexOf('ки') === 0 ? [{ n: 'м. Київ, Київська обл.', s: 'Київ', ref: '33333333-3333-3333-3333-333333333333' }] : []) });
             if (a === 'np.whall') return send({ ok: true, list: [[12, 'вул. Сумська, 12', 'w']] });
             if (a === 'np.price') return send({ ok: true, cost: priceFor(Number(u.searchParams.get('w'))) });
@@ -4722,6 +4722,53 @@ const smallTargets = page => page.evaluate(() => {
         L.mode.limit = null;
         await p.fill('#f-city', 'Харка'); await p.waitForSelector('#citySugg button');
         ok(L.n('np.city') === 5, 'Б3 city busy: другой текст работает — общей паузы нет', L.log);
+        await L.c.ctx.close();
+      }
+      /* --- Б3-5d. busy без retryAfter в счёт «3 ошибки за 2 минуты» не идёт; busy с retryAfter — общая пауза без повтора; np.price busy — ключ через ~90 с, а не 10 минут --- */
+      {
+        const L = await b3open(stB3, 953, {}), p = L.page;
+        L.mode.limit = { error: 'busy', actions: ['np.city'], times: 8 };
+        await p.fill('#f-city', 'Київ'); await p.waitForTimeout(3500);
+        await p.fill('#f-city', 'Мерефа'); await p.waitForTimeout(3500);
+        ok(L.n('np.city') === 4, 'Б3 busy: два текста по два busy (4 ответа подряд) — запросов ровно 4', L.log);
+        L.mode.limit = null;
+        await p.fill('#f-city', 'Харк'); await p.waitForSelector('#citySugg button', { timeout: 4000 });
+        ok(L.n('np.city') === 5, 'Б3 busy: после четырёх busy подряд общей паузы нет — подсказки работают', L.log);
+        await L.c.ctx.close();
+      }
+      {
+        const L = await b3open(stB3, 954, {}), p = L.page;
+        L.mode.limit = { error: 'busy', actions: ['np.city'], retryAfter: 120 };
+        await p.fill('#f-city', 'Київ'); await p.waitForTimeout(4500);
+        ok(L.n('np.city') === 1 && await p.locator('#citySugg').isHidden() && await p.locator('#cityBusy').isHidden(), 'Б3 busy+retryAfter: один запрос, повтора через 2,5 с нет, индикатор погас', L.log);
+        await p.fill('#f-city', 'Харк'); await p.waitForTimeout(1500);
+        await L.skew(90 * 1000); await p.fill('#f-city', 'Харка'); await p.waitForTimeout(1500);
+        ok(L.n('np.city') === 1, 'Б3 busy+retryAfter: общая пауза 120 с — через 90 с всё ещё 0 запросов', L.log);
+        L.mode.limit = null; await L.skew(40 * 1000);
+        await p.fill('#f-city', 'Харко'); await p.waitForSelector('#citySugg button', { timeout: 4000 });
+        ok(L.n('np.city') === 2, 'Б3 busy+retryAfter: через 130 с запросы возобновились', L.log);
+        await L.c.ctx.close();
+      }
+      { // настоящая ошибка НП у np.city: {ok:false} без error и без retryAfter — обычная ошибка, три подряд дают общую паузу
+        const L = await b3open(stB3, 959, {}), p = L.page;
+        L.mode.limit = { noError: true, actions: ['np.city'] };
+        for (const q of ['Харк', 'Київ', 'Мерефа']) { await p.fill('#f-city', q); await p.waitForTimeout(1500); }
+        ok(L.n('np.city') === 3 && await p.locator('#citySugg').isHidden(), 'Б3 {ok:false} без error: три разных текста — три запроса, подсказок и сообщений нет', L.log);
+        await p.fill('#f-city', 'Харкі'); await p.waitForTimeout(1500);
+        ok(L.n('np.city') === 3, 'Б3 {ok:false} без error: три ошибки подряд — общая пауза, 4-й запрос не уходит', L.log);
+        await L.c.ctx.close();
+      }
+      for (const ra of [0, 120]) {
+        const L = await b3open(stB3, 955 + ra, {}), p = L.page;
+        L.mode.limit = { error: 'busy', actions: ['np.price'], times: 1, retryAfter: ra || undefined };
+        await p.type('#f-city', 'Харк', { delay: 60 }); await p.waitForSelector('#citySugg button');
+        await p.locator('#citySugg button').first().click(); await p.waitForTimeout(1500);
+        ok(L.n('np.price') === 1 && !(await costVisible(p)), 'Б3 price busy (retryAfter=' + ra + '): один запрос, строки стоимости нет', cntStr(L));
+        const redo = async () => { await p.click('[data-nav="back"]'); await p.waitForSelector('.line'); await p.evaluate(() => window.__tg.main.cb()); await p.waitForSelector('#form'); await p.waitForTimeout(1200); };
+        await L.skew(60 * 1000); await redo();
+        ok(L.n('np.price') === 1, 'Б3 price busy (retryAfter=' + ra + '): через 60 с ключ не спрашивается', cntStr(L));
+        await L.skew((ra ? 70 : 50) * 1000); await redo(); // всего 110 / 130 с: без retryAfter — уже можно (90 с), с retryAfter — сразу после паузы 120 с
+        ok(L.n('np.price') === 2 && await costVisible(p), 'Б3 price busy (retryAfter=' + ra + '): через ' + (ra ? 130 : 110) + ' с ключ спрошен снова (не через 10 минут), стоимость показана', cntStr(L));
         await L.c.ctx.close();
       }
       /* --- Б3-6. Нет sessionStorage (запрещён): всё работает в памяти, ошибок нет --- */
@@ -5390,7 +5437,12 @@ const smallTargets = page => page.evaluate(() => {
     ok(vCfg === '28' && vApp === '28' && vCss === '28', 'index.html: config.js, app.js, styles.css — все с ?v=28 (телефоны не оставят старый config)', [vCfg, vApp, vCss]);
     const st = await start(8990, undefined, s => { withPhotos(s); });
     const cat = (notice) => () => { const j = JSON.parse(JSON.stringify(st.gas.get({ action: 'catalog' }))); j.shop.notice = { ua: notice, ru: notice }; return j; };
-    const wOk = (notice, cacheState) => r => r.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Cache-Control': 'no-store', 'X-Pamir-Cache': cacheState || 'HIT' }, body: JSON.stringify(cat(notice)()) });
+    // cacheState: значение X-Pamir-Cache (null — заголовка нет); expose === false — заголовок есть, но без Access-Control-Expose-Headers (браузер его не покажет странице)
+    const wOk = (notice, cacheState, expose) => r => {
+      const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Cache-Control': 'no-store' };
+      if (cacheState !== null) { headers['X-Pamir-Cache'] = cacheState || 'HIT'; if (expose !== false) headers['Access-Control-Expose-Headers'] = 'X-Pamir-Cache'; }
+      return r.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', headers, body: JSON.stringify(cat(notice)()) });
+    };
     const w502 = r => r.fulfill({ status: 502, contentType: 'application/json; charset=utf-8', headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }, body: JSON.stringify({ ok: false, error: 'upstream' }) });
     // Открывает витрину с боевым config.js. wh.fn — текущая заглушка Worker (можно менять между перезагрузками).
     const mk = async (uid, wh, o = {}) => {
@@ -5444,11 +5496,82 @@ const smallTargets = page => page.evaluate(() => {
     await E.c.page.waitForTimeout(300);
     ok(/З воркера v2/.test(await notice(E.c.page)) && E.wreq.length === 1, 'е) Worker отдал новую версию — следующая загрузка витрины показывает её', await notice(E.c.page));
     // прямой режим: Worker держит старое, Apps Script новое — после «ціни змінилися» витрина берёт Apps Script (отдельный тест выше, блок «changed»); здесь — старое из Worker при обычной загрузке
-    wh.fn = wOk('З воркера v1 (старое)', 'STALE');
-    await E.c.page.reload({ waitUntil: 'networkidle' });
-    await E.c.page.waitForSelector('#grid .card');
-    ok(/старое/.test(await notice(E.c.page)) && apiCat() === 0, 'е) обычная загрузка доверяет Worker (даже STALE): прямой режим включается только после «ціни змінилися»', await notice(E.c.page));
     await E.c.ctx.close();
+    // ж) витрина не зависит от значения заголовка: HIT / STALE / REFRESHED / MISS / неизвестное / заголовка нет — каталог из Worker, Apps Script не спрашиваем
+    for (const hv of ['HIT', 'STALE', 'REFRESHED', 'MISS', 'NEWVALUE', null]) {
+      wh.fn = wOk('З воркера v1 (старое)', hv);
+      st.log.length = 0;
+      const H = await mk(7003, wh);
+      await H.c.page.waitForSelector('#grid .card');
+      await H.c.page.waitForTimeout(1500);
+      ok(/старое/.test(await notice(H.c.page)) && apiCat() === 0 && H.wreq.length === 1 && H.errs.length === 0, 'ж) X-Pamir-Cache = ' + hv + ': каталог из Worker принимается, прямого запроса в Apps Script нет', [await notice(H.c.page), apiCat()]);
+      await H.c.ctx.close();
+    }
+    // з) EXPIRED (копия старше 5 минут, Apps Script не ответил Worker): каталог из Worker показан, затем ровно один тихий прямой запрос; удался — каталог обновлён
+    {
+      wh.fn = wOk('З воркера v1 (старое)', 'EXPIRED');
+      st.log.length = 0;
+      const Z = await mk(7004, wh);
+      await Z.c.page.waitForSelector('#grid .card');
+      ok(/старое/.test(await notice(Z.c.page)) || apiCat() >= 1, 'з) EXPIRED: каталог показан сразу (из Worker)');
+      await Z.c.page.waitForFunction(() => document.getElementById('notice').hidden || !/старое/.test(document.getElementById('notice').textContent), null, { timeout: 8000 });
+      await Z.c.page.waitForTimeout(1500);
+      ok(apiCat() === 1 && Z.wreq.length === 1 && !/старое/.test(await notice(Z.c.page)) && Z.errs.length === 0 && await count(Z.c.page, '#grid .card') === 20, 'з) EXPIRED: один фоновый прямой запрос в Apps Script, каталог обновлён без ошибок и записей в сводку', { api: apiCat(), w: Z.wreq.length, errs: Z.errs });
+      await Z.c.ctx.close();
+      // без Access-Control-Expose-Headers заголовок нечитаем (null): всё как без страховки
+      wh.fn = wOk('З воркера v1 (старое)', 'EXPIRED', false);
+      st.log.length = 0;
+      const Z2 = await mk(7005, wh);
+      await Z2.c.page.waitForSelector('#grid .card');
+      await Z2.c.page.waitForTimeout(1800);
+      ok(apiCat() === 0 && /старое/.test(await notice(Z2.c.page)), 'з) EXPIRED без Access-Control-Expose-Headers: заголовок нечитаем, лишнего запроса нет, каталог из Worker', apiCat());
+      await Z2.c.ctx.close();
+      // прямой запрос не удался (обрыв / 500 / мусор): ни ошибки, ни баннера, ни повтора; каталог от Worker остаётся
+      for (const [nm, fn] of [['обрыв', r => r.abort()], ['500', r => r.fulfill({ status: 500, contentType: 'text/plain', body: 'x' })], ['мусор', r => r.fulfill({ status: 200, contentType: 'text/html', body: '<html></html>' })]]) {
+        wh.fn = wOk('З воркера v1 (старое)', 'EXPIRED');
+        let n = 0;
+        const Z3 = await mk(7006, wh, { before: async page => { await page.route(/\/api\?action=catalog/, r => { n++; return fn(r); }); } });
+        await Z3.c.page.waitForSelector('#grid .card');
+        await Z3.c.page.waitForTimeout(3500);
+        ok(n === 1 && /старое/.test(await notice(Z3.c.page)) && await count(Z3.c.page, '#grid .card') === 20 && await Z3.c.page.locator('#banner').isHidden() && await count(Z3.c.page, '[data-action="retry"]') === 0 && Z3.errs.length === 0 && await Z3.c.page.locator('#toast').isHidden(),
+          'з) EXPIRED, прямой запрос не удался (' + nm + '): один запрос, каталог от Worker остался, ни ошибки, ни баннера «нет связи», ни записи в сводку', { n, errs: Z3.errs });
+        await Z3.c.ctx.close();
+      }
+      // открытая шторка и прокрутка не сбиваются, пока прямой ответ идёт; после закрытия шторки экран свежий
+      wh.fn = wOk('З воркера v1 (старое)', 'EXPIRED');
+      const Z4 = await mk(7007, wh, { before: async page => { await page.route(/\/api\?action=catalog/, async r => { await new Promise(x => setTimeout(x, 1500)); return r.fallback(); }); } });
+      await Z4.c.page.waitForSelector('#grid .card');
+      await Z4.c.page.evaluate(() => window.scrollTo(0, 300));
+      const id4 = await Z4.c.page.locator('#grid .card').first().getAttribute('data-id');
+      await Z4.c.page.locator('#grid .card[data-id="' + id4 + '"]').first().click();
+      await Z4.c.page.waitForSelector('#sheet:not([hidden])');
+      const top4 = () => Z4.c.page.evaluate(id => { const c = document.querySelector('#grid .card[data-id="' + id + '"]'); return c ? Math.round(c.getBoundingClientRect().top + window.scrollY - (document.getElementById('notice').hidden ? 0 : document.getElementById('notice').offsetHeight)) : -1; }, id4); // положение карточки в документе без высоты полосы объявления
+      const y4 = await top4();
+      await Z4.c.page.waitForFunction(() => !/старое/.test(document.getElementById('notice').textContent), null, { timeout: 8000 });
+      const dbg4 = [await Z4.c.page.locator('#sheet').isVisible(), await top4(), y4];
+      ok(dbg4[0] && dbg4[1] >= 0 && Math.abs(dbg4[1] - y4) < 10, 'з) EXPIRED: шторка товара осталась открытой, прокрутка не сдвинулась, пока каталог обновился в фоне', dbg4);
+      await Z4.c.page.click('#sheet .sheet__close');
+      await Z4.c.page.waitForTimeout(400);
+      ok(await Z4.c.page.locator('#sheet').isHidden() && await count(Z4.c.page, '#grid .card') > 0 && Z4.errs.length === 0, 'з) после закрытия шторки каталог на месте, ошибок нет');
+      await Z4.c.ctx.close();
+    }
+
+    // и) правка админа: после сохранения каталог читается напрямую из Apps Script (Worker не спрашиваем), обычное открытие — через Worker
+    {
+      wh.fn = wOk('З воркера v1');
+      st.log.length = 0;
+      const I = await mk(900, wh, { open: { query: '?admin=1' } });
+      await I.c.page.waitForSelector('.ord');
+      await I.c.page.waitForTimeout(500);
+      const w0 = I.wreq.length, a0 = apiCat();
+      ok(w0 === 1 && a0 === 0, 'и) обычное открытие (в том числе админом): каталог через Worker', [w0, a0]);
+      await I.c.page.click('[data-tab="products"]');
+      await I.c.page.waitForSelector('#admList .sw');
+      await I.c.page.locator('#admList .sw').first().click();
+      await I.c.page.waitForTimeout(2600); // 1,2 с на склейку правок + запрос
+      ok(I.wreq.length === w0 && apiCat() === a0 + 1, 'и) после сохранения правки админа каталог перечитан напрямую из Apps Script, Worker не спрашивали', [I.wreq.length - w0, apiCat() - a0]);
+      await I.c.ctx.close();
+    }
 
     // б) Worker недоступен — разные виды сбоя; каталог из Apps Script
     const modes = [
@@ -5484,6 +5607,9 @@ const smallTargets = page => page.evaluate(() => {
       await C.c.page.waitForTimeout(3600);
       ok(C.errs.length === 1 && /^net catalog: network$/.test(C.errs[0].m) && C.wreq.length === 1 && await count(C.c.page, '#grid .card') === 0, 'в) Worker и Apps Script недоступны: экран ошибки с кнопкой повтора, одна запись net catalog: network', C.errs);
       await C.c.page.screenshot({ path: OUT + '/9b5-both-down.png' });
+      await C.c.page.click('[data-action="retry"]'); // «Спробувати ще раз»: сразу в Apps Script, Worker второй раз не спрашиваем
+      await C.c.page.waitForTimeout(1500);
+      ok(C.wreq.length === 1, 'в) кнопка «Спробувати ще раз» идёт напрямую в Apps Script, Worker не спрашивается повторно', C.wreq.length);
       await C.c.ctx.close();
     }
 

@@ -586,14 +586,17 @@
   function fetchCatalog(url, ms, box) {
     var ctrl = window.AbortController ? new AbortController() : null;
     if (box) box.ctrl = ctrl;
-    var timedOut = false;
+    var timedOut = false, cacheHdr = '';
+    if (box) box.cache = '';
     var timer = setTimeout(function () { timedOut = true; if (ctrl) ctrl.abort(); }, ms);
     return fetch(url, ctrl ? { signal: ctrl.signal } : undefined).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      try { cacheHdr = String(r.headers.get('X-Pamir-Cache') || ''); } catch (e) { cacheHdr = ''; } // заголовок Worker: HIT / STALE / REFRESHED / MISS / EXPIRED — витрина реагирует только на EXPIRED; прочие значения и нечитаемый заголовок (null без Access-Control-Expose-Headers) равнозначны
       return r.json();
     }).then(function (data) {
       clearTimeout(timer);
       if (!data || !data.ok || !Array.isArray(data.products)) throw new Error('bad catalog');
+      if (box) box.cache = cacheHdr;
       return data;
     }, function (err) { clearTimeout(timer); throw err; }).catch(function (err) {
       if (box && box.own) throw ownAbort();
@@ -626,6 +629,37 @@
     });
   }
 
+  /**
+   * Мягкая страховка: Worker пометил ответ EXPIRED (копия старше 5 минут, до 24 ч). Каталог уже показан; один раз (на загрузку) тихо пробуем Apps Script напрямую.
+   * Удалось — обновляем витрину без мигания (позиция прокрутки сохраняется; при открытой шторке перерисовка основного экрана откладывается до её закрытия).
+   * Не удалось (сеть, таймаут, плохой ответ, новая загрузка вытеснила эту) — ничего: ни ошибки, ни сводки, ни повтора.
+   */
+  var staleBox = null;
+  function staleRecheck(gen) {
+    if (!cfg.API_URL) return;
+    var box = staleBox = { ctrl: null, own: false };
+    fetchCatalog(catalogUrl(), 10000, box).then(function (data) {
+      if (box.own || gen !== catGen || staleBox !== box) return;
+      var fresh = JSON.stringify({ c: data.categories, p: data.products, s: data.shop });
+      var old = state.catalog ? JSON.stringify({ c: state.catalog.categories, p: state.catalog.products, s: state.catalog.shop }) : '';
+      store.set(CACHE_KEY, JSON.stringify({ url: cfg.API_URL, data: data }));
+      if (fresh === old) return;
+      var y = window.scrollY || 0;
+      var openId = state.sheet ? state.sheet.id : '', before = openId && state.catalog && state.catalog.byId[openId] ? JSON.stringify(state.catalog.byId[openId]) : '';
+      if (state.sheet) {
+        setCatalog(data);
+        stale.main = 'force'; // экран под шторкой перерисуем, когда её закроют (flushStale)
+        var np2 = data.byId[openId];
+        if (!np2 || JSON.stringify(np2) !== before) renderSheet();
+        renderChips(); renderBanner();
+      } else {
+        setCatalog(data);
+        renderAll();
+        if ((window.scrollY || 0) !== y) window.scrollTo(0, y);
+      }
+    }).catch(function () { /* страховка не сработала — покупатель видит каталог от Worker */ });
+  }
+
   function loadCatalog(direct) {
     // 1) Мгновенно показываем сохранённую копию, 2) в фоне берём свежую.
     var cachedText = cfg.API_URL ? store.get(CACHE_KEY) : null;
@@ -641,7 +675,9 @@
     captureSrc();
 
     var gen = ++catGen;
-    return requestCatalog(direct === true)
+    try { if (staleBox) { staleBox.own = true; if (staleBox.ctrl) staleBox.ctrl.abort(); } } catch (e) { /* уже закончен */ }
+    var p = requestCatalog(direct === true), box0 = catBox;
+    return p
       .then(function (data) {
         if (gen !== catGen) return; // за это время началась более новая загрузка
         if (state.offline) { state.offline = false; renderBanner(); }
@@ -658,6 +694,7 @@
         deepId = '';
         captureSrc();
         openReLink();
+        if (box0 && box0.cache === 'EXPIRED') staleRecheck(gen); // Worker отдал СТАРУЮ копию (старше 5 минут, Apps Script не ответил): один тихий прямой запрос. HIT / STALE / REFRESHED / MISS / нет заголовка — каталог свежий, ничего не делаем
       })
       .catch(function (err) {
         if ((err && err.own) || gen !== catGen) return; // отменено самой витриной: новая загрузка уже идёт
@@ -1867,7 +1904,7 @@
     askWriteAccess().then(function () { return postApi('notify', { id: id, lang: state.lang }); }).then(function (res) {
       notifying[id] = false; btnFree(btn);
       if (!res || !res.ok) throw new Error('fail');
-      if (res.instock) { loadCatalog(); return; } // товар уже вернулся — просто обновляем витрину
+      if (res.instock) { loadCatalog(true); return; } // direct: покупатель видит «немає», а товар уже вернулся — Worker мог держать старую копию // товар уже вернулся — просто обновляем витрину
       if (subs.indexOf(id) < 0) { subs.unshift(id); subs = subs.slice(0, 40); saveList(SUBS_KEY, '', subs); }
       haptic('success');
       track('notify', id);
@@ -4087,7 +4124,7 @@
       var act = e.target.closest('[data-action]');
       if (act) {
         var kind = act.getAttribute('data-action');
-        if (kind === 'retry') loadCatalog();
+        if (kind === 'retry') loadCatalog(true); // direct: первая загрузка уже не удалась (и через Worker, и напрямую) — второй круг через Worker только добавил бы ожидание
         if (kind === 'reset') {
           state.cat = ''; flt.sort = ''; flt.onlyStock = false; flt.onlySale = false;
           setSearch('');
@@ -4605,6 +4642,7 @@
       if (res && res.ok === false) {
         var now = Date.now();
         if (Number(res.retryAfter) > 0) { npErrAt = []; npPauseSet(res); }
+        else if (res.error === 'busy') { /* такой же запрос уже в пути: это не ошибка НП, в счёт «3 за 2 минуты» не идёт */ }
         else {
           npErrAt.push(now);
           npErrAt = npErrAt.filter(function (t0) { return now - t0 <= 120000; });
@@ -4680,14 +4718,18 @@
       var c0 = npc.cache[w.key];
       if (c0 === 'loading' || typeof c0 === 'number' || npPaused()) { if (npc.want === w.key) npc.want = ''; return; }
       npc.cache[w.key] = 'loading';
-      var done = function (c) {
-        if (c) npc.cache[w.key] = c; else { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now(); }
+      // short — сдвиг метки ошибки: ключ спросим снова не через 10 минут, а через (10 минут − short)
+      var done = function (c, short) {
+        if (c) npc.cache[w.key] = c; else { npc.cache[w.key] = 'fail'; npc.failAt[w.key] = Date.now() - (short || 0); }
         npcSave();
       };
       npGet('action=np.price&city=' + encodeURIComponent(w.ref) + '&w=' + w.grams + '&sum=' + w.sum, 8000).then(function (res) {
         if (res && res.ok === false && res.error === 'off') npc.off = true;                // данные отправителя устарели: стоимость не спрашиваем до перезагрузки каталога
         else if (res && res.ok === true && !('cost' in res)) npc.off = true;               // старый бэкенд: на неизвестное действие отвечает {ok:true} без данных — функции нет
-        done(res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0);   // прочие ошибки (np_error, busy): этот ключ — не раньше чем через 10 минут
+        var ra = res && res.ok === false ? Number(res.retryAfter) : 0;
+        // busy без retryAfter (такой же запрос уже в пути) — этот ключ снова через 90 с; busy с retryAfter — сразу после общей паузы; прочие ошибки (np_error) — через 10 минут
+        var short = res && res.ok === false && res.error === 'busy' ? (ra > 0 ? NPC_RETRY_MS : NPC_RETRY_MS - 90000) : 0;
+        done(res && res.ok && Number(res.cost) > 0 ? Math.round(Number(res.cost)) : 0, short);
       }).catch(function () { done(0); })
         .then(function () { if (npc.want === w.key) npc.want = ''; npCostSync(); }); // устаревший ответ только ложится в кэш: показывается то, что нужно сейчас
     }, NPC_DEBOUNCE);
@@ -4787,7 +4829,7 @@
     npGet('action=np.city&q=' + encodeURIComponent(q)).then(function (res) {
       var list = res && res.ok && Array.isArray(res.list) ? res.list : null;
       if (list) np.cities[key] = list;
-      if (!list && res && res.ok === false && res.error === 'busy' && !retried) { // такой же запрос уже идёт: один повтор через ~2,5 с, если текст не менялся
+      if (!list && res && res.ok === false && res.error === 'busy' && !(Number(res.retryAfter) > 0) && !retried) { // с retryAfter — общая пауза (npGet), повтор не нужен; такой же запрос уже идёт: один повтор через ~2,5 с, если текст не менялся
         setTimeout(function () { if (seq === np.seq) npCityFetch(q, seq, pick, chip, true); else if (np.seq === seq) npBusy('cityBusy', false); }, 2500);
         finish();
         return;
@@ -4877,7 +4919,7 @@
       var list = res && res.ok && Array.isArray(res.list) ? res.list.filter(function (x) { return Array.isArray(x) && Number(x[0]) > 0; })
         .map(function (x) { return [Number(x[0]), String(x[1] || ''), x[2] === 'p' ? 'p' : 'w']; }) : null;
       var npErr = res && res.ok === false;
-      if (npErr && res.error === 'busy' && !retried) { // список города грузит другой запрос: ждём ~5 с и пробуем один раз
+      if (npErr && res.error === 'busy' && !(Number(res.retryAfter) > 0) && !retried) { // busy с retryAfter — общая пауза (npGet), ниже whAt = 0; список города грузит другой запрос: ждём ~5 с и пробуем один раз
         np.wh[ref] = 'wait'; np.whPending[ref] = true;
         if (np.ref === ref) npBusy('whBusy', false);
         setTimeout(function () { if (npPaused()) { np.wh[ref] = 'err'; np.whAt[ref] = Date.now(); np.whPending[ref] = false; return; } np.wh[ref] = 'loading'; npWhAll(ref, true); }, 5000);
@@ -6207,7 +6249,7 @@
   var catalogTimer = null;
   function catalogSoon() {
     clearTimeout(catalogTimer);
-    catalogTimer = setTimeout(loadCatalog, 1200);
+    catalogTimer = setTimeout(function () { loadCatalog(true); }, 1200); // direct: Worker держит копию до минуты, а админ только что сохранил правку
   }
   /**
    * Замер времени. Виден, только когда владелец включил его на сервере (свойство скрипта PERF_LOG = 1):
